@@ -1,0 +1,80 @@
+name: Build and Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build_msi:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: |
+          git config --global core.autocrlf false
+          ./gradlew.bat
+
+      - name: Build MSI
+        run: ./gradlew packageReleaseMsi
+
+      - name: Archive MSI artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: msi-artifact
+          path: '**/build/compose/binaries/main-release/msi/*.msi'
+
+  build_deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build DEB
+        run: ./gradlew packageReleaseDeb
+
+      - name: Archive DEB artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: deb-artifact
+          path: '**/build/compose/binaries/main-release/deb/*.deb'
+
+  build_dmg:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build DMG
+        run: ./gradlew packageReleaseDmg
+
+      - name: Archive DMG artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: dmg-artifact
+          path: '**/build/compose/binaries/main-release/dmg/*.dmg'
+
