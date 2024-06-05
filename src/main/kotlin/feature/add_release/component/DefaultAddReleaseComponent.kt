@@ -79,10 +79,9 @@ class DefaultAddReleaseComponent(
                 version = currentRelease.version,
                 url = currentRelease.downloadUrl,
                 onProgress = { downloadingProgress ->
-                    val progress = if (downloadingProgress == 100f) null else downloadingProgress
                     stateStore.updateState {
                         it.copy(
-                            downloadProgress = progress
+                            downloadProgress = downloadingProgress
                         )
                     }
                 }

@@ -12,6 +12,7 @@ import utils.SystemInfo
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.TimeUnit
 
 
 class AddReleaseInteractor {
@@ -23,6 +24,7 @@ class AddReleaseInteractor {
         val releaseList = gameRepository.getGameReleaseList()
 
         return releaseList.map { releaseGame ->
+            println(releaseGame.assets)
             val asset = releaseGame.assets.find { asset ->
                 isValidContentType(asset.contentType, currentOS)
             }
@@ -68,14 +70,46 @@ class AddReleaseInteractor {
 
                 onSuccess()
             }
+
+            if (outputPath.contains("dmg")) {
+                extractDmgRelease(
+                    dmgPath = outputPath,
+                    targetPath = targetPath
+                )
+
+                saveBundleConfig(
+                    version = version,
+                    targetPath = targetPath,
+                    executable = "VoxelEngine"
+                )
+
+                onSuccess()
+            }
+
+            // Appimage
+            if (outputPath.contains("AppImage")) {
+                extractAppImageRelease(
+                    appImagePath = outputPath,
+                    targetPath = targetPath
+                )
+
+                saveBundleConfig(
+                    version = version,
+                    targetPath = targetPath,
+                    executable = "VoxelEngine"
+                )
+
+                onSuccess()
+
+            }
         }
     }
 
     private fun isValidContentType(contentType: String, os: SystemInfo): Boolean {
         return when (os) {
             SystemInfo.WINDOWS -> contentType.contains("zip")
-            SystemInfo.MACOS -> false
-            SystemInfo.LINUX -> contentType.contains("appimage") || contentType.contains("octet-stream")
+            SystemInfo.MACOS -> contentType.contains("apple")
+            SystemInfo.LINUX -> contentType.contains("appimage")
             SystemInfo.UNKNOWN -> false
         }
     }
@@ -127,6 +161,97 @@ class AddReleaseInteractor {
 
         tempDir.deleteRecursively()
         archiveFile.delete()
+    }
+
+
+    private fun extractDmgRelease(
+        dmgPath: String,
+        targetPath: String
+    ) {
+        val tempMountPoint = File("/Volumes/tempMount")
+
+        if (!tempMountPoint.exists()) {
+            tempMountPoint.mkdir()
+        }
+
+        val outputDir = File(targetPath)
+        outputDir.mkdirs()
+
+        // Монтируем DMG файл
+        val mountProcess = ProcessBuilder("hdiutil", "attach", dmgPath, "-mountpoint", tempMountPoint.absolutePath).start()
+        if (!mountProcess.waitFor(60, TimeUnit.SECONDS)) {
+            mountProcess.destroy()
+            throw RuntimeException("Mounting DMG process timeout")
+        }
+
+        val mountOutput = mountProcess.inputStream.bufferedReader().readText()
+        val mountError = mountProcess.errorStream.bufferedReader().readText()
+        if (mountProcess.exitValue() != 0) {
+            throw RuntimeException("Error mounting DMG: $mountError")
+        }
+        println(mountOutput)
+
+        // Копируем файлы из смонтированного образа в целевую директорию
+        try {
+            copyDirectoryRecursively(tempMountPoint, outputDir)
+        } catch (e: Exception) {
+            throw RuntimeException("Error copying files: ${e.message}")
+        } finally {
+            // Размонтируем DMG файл
+            val unmountProcess = ProcessBuilder("hdiutil", "detach", tempMountPoint.absolutePath).start()
+            if (!unmountProcess.waitFor(60, TimeUnit.SECONDS)) {
+//                unmountProcess.destroy()
+                throw RuntimeException("Unmounting DMG process timeout")
+            }
+
+            val unmountOutput = unmountProcess.inputStream.bufferedReader().readText()
+            val unmountError = unmountProcess.errorStream.bufferedReader().readText()
+
+            File(dmgPath).delete()
+
+            if (unmountProcess.exitValue() != 0) {
+                throw RuntimeException("Error unmounting DMG: $unmountError")
+            }
+//            println(unmountOutput)
+        }
+    }
+
+    private fun copyDirectoryRecursively(source: File, target: File) {
+        if (source.isDirectory) {
+            if (!target.exists()) {
+                target.mkdirs()
+            }
+            source.listFiles()?.forEach { file ->
+                copyDirectoryRecursively(file, File(target, file.name))
+            }
+        } else {
+            Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    private fun extractAppImageRelease(appImagePath: String, targetPath: String) {
+        val appImageFile = File(appImagePath)
+        val targetDir = File(targetPath)
+        if (!targetDir.exists()) {
+            targetDir.mkdirs()
+        }
+
+        runCatching {
+            val process = ProcessBuilder(appImageFile.absolutePath, "--appimage-extract")
+                .directory(targetDir)
+                .start()
+            if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                process.destroy()
+                throw RuntimeException("AppImage extraction process timeout")
+            }
+            val reader = process.inputStream.bufferedReader()
+            val output = reader.readText()
+            println(output)
+            reader.close()
+        }.onFailure {
+            it.printStackTrace()
+            throw RuntimeException("Error extracting AppImage: ${it.message}")
+        }
     }
 }
 

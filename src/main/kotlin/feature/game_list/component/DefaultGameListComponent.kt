@@ -58,13 +58,19 @@ class DefaultGameListComponent(
                 }
             }.stateIn(scope)
         }
+
+        launchSafe(errorHandler = {}) {
+            gameProcessInteractor.logs.onEach { logs ->
+//                println("Log ${logs}")
+            }.stateIn(scope)
+        }
     }
 
     override fun gameSelect(name: String) {
         val game = stateStore.value.installedGameList.firstOrNull {it.name == name} ?: return
         gameProcessInteractor.runGame(
             gameName = name,
-            executable = "qBittorrent.app"
+            executable = game.executable
         )
     }
 

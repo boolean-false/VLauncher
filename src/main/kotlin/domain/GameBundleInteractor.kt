@@ -38,7 +38,8 @@ class GameBundleInteractor {
                         val game = InstalledGame(
                             name = gameDir.name,
                             version = releaseInfo.version,
-                            systemInfo = SystemInfo.fromString(releaseInfo.targetOS)
+                            systemInfo = SystemInfo.fromString(releaseInfo.targetOS),
+                            executable = releaseInfo.executable
                         )
                         newGames.add(game)
                     } catch (e: Exception) {

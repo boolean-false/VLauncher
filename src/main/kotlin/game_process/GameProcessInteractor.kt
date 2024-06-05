@@ -29,7 +29,7 @@ class GameProcessInteractor {
         gameName: String,
         executable: String,
         timeoutAmount: Long = 60,
-        timeoutUnit: TimeUnit = TimeUnit.SECONDS
+        timeoutUnit: TimeUnit = TimeUnit.SECONDS,
     ) {
         job?.cancel()
         job = scope.launch {
@@ -40,43 +40,29 @@ class GameProcessInteractor {
             if (!gameDir.exists() || !gameDir.isDirectory) {
                 throw IllegalArgumentException("Game directory does not exist: $gamePath")
             }
+            if (!executableFile.exists()) {
+                throw IllegalArgumentException("Executable file does not exist or is not executable: ${executableFile.absolutePath}")
+            }
 
             val processBuilder = when (SystemInfo.current()) {
                 SystemInfo.WINDOWS -> {
-                    val execFile = File(gameDir, "$executable.exe")
-                    if (!executableFile.exists() || !executableFile.canExecute()) {
-                        throw IllegalArgumentException(
-                            "Executable file does not exist or is not executable: ${executableFile.absolutePath}"
-                        )
-                    }
-                    ProcessBuilder(execFile.absolutePath)
+                    ProcessBuilder(executableFile.absolutePath).directory(gameDir)
                 }
+
                 SystemInfo.MACOS -> {
-                    val appArgs: List<String> = listOf("-AppCommandLineArg")
-                    val execFile = File(gameDir, executable)
-                    if (!execFile.exists() || !execFile.canExecute()) {
-                        throw IllegalArgumentException(
-                            "Executable file does not exist or is not executable: ${executableFile.absolutePath}"
-                        )
-                    }
-                    val command = listOf("open", "-n", executableFile.absolutePath, "--args") + appArgs
-                    ProcessBuilder(command)
+                    val command = listOf("./${executableFile.name}")
+                    ProcessBuilder(command).directory(gameDir)
                 }
+
                 SystemInfo.LINUX -> {
-                    val execFile = File(gameDir, executable)
-                    if (!execFile.exists() || !execFile.canExecute()) {
-                        throw IllegalArgumentException("Executable file does not exist or is not executable: ${executableFile.absolutePath}")
-                    }
-                    ProcessBuilder(execFile.absolutePath)
+                    ProcessBuilder("./${executableFile.name}").directory(gameDir)
                 }
+
                 else -> throw UnsupportedOperationException("Unsupported operating system")
             }
 
             runCatching {
-                println(gameDir)
-
                 val process = processBuilder
-                    .directory(gameDir)
                     .redirectErrorStream(true)
                     .start()
 
@@ -87,16 +73,19 @@ class GameProcessInteractor {
                     while (process.isAlive) {
                         line = reader.readLine()
                         if (line != null) {
-                            println(line)
                             _logs.update { currentLogs -> currentLogs + line!! }
                         }
                     }
+
                     while (reader.readLine().also { line = it } != null) {
                         _logs.update { currentLogs -> currentLogs + (line ?: "") }
                     }
+                } catch (e: Exception) {
+                    println(e)
                 } finally {
                     reader.close()
                 }
+
                 if (!process.waitFor(timeoutAmount, timeoutUnit)) {
                     process.destroy()
                     throw RuntimeException("Game process timeout")
@@ -106,29 +95,15 @@ class GameProcessInteractor {
                 _logs.update { currentLogs -> currentLogs + "Error: ${it.message}" }
             }
         }
-
-//        when (systemInfo) {
-//            SystemInfo.WINDOWS -> {
-//
-//            }
-//            SystemInfo.MACOS -> {
-//
-//            }
-//            SystemInfo.LINUX -> {
-//
-//            }
-//            SystemInfo.UNKNOWN -> {
-//                // TODO
-//                println("ПШЕЛ НАХУЙ")
-//            }
-//        }
     }
 
-//    fun stopGame() {
-//        job?.cancel()
-//    }
-//
-//    fun clearLogs() {
-//        _logs.value = emptyList()
-//    }
+    fun stopGame() {
+        job?.cancel()
+    }
+
+    fun clearLogs() {
+        _logs.value = emptyList()
+    }
+
+
 }
