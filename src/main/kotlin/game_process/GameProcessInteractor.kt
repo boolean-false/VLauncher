@@ -55,7 +55,9 @@ class GameProcessInteractor {
                 }
 
                 SystemInfo.LINUX -> {
-                    ProcessBuilder("./${executableFile.name}").directory(gameDir)
+                    val command = listOf(executableFile.absolutePath, "--dir", gameDir.absolutePath)
+                    executableFile.setExecutable(true)
+                    ProcessBuilder(command).directory(gameDir)
                 }
 
                 else -> throw UnsupportedOperationException("Unsupported operating system")

@@ -4,7 +4,6 @@ import AppContainer
 import Settings
 import domain.models.ReleaseInfo
 import feature.add_release.domain.model.ReleaseForCurrentOS
-import io.exoquery.fansi.Str
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.lingala.zip4j.ZipFile
@@ -26,7 +25,7 @@ class AddReleaseInteractor {
         return releaseList.map { releaseGame ->
             println(releaseGame.assets)
             val asset = releaseGame.assets.find { asset ->
-                isValidContentType(asset.contentType, currentOS)
+                isValidContentType(asset.url, asset.contentType, currentOS)
             }
             ReleaseForCurrentOS(
                 id = releaseGame.id,
@@ -88,7 +87,7 @@ class AddReleaseInteractor {
 
             // Appimage
             if (outputPath.contains("AppImage")) {
-                extractAppImageRelease(
+                processAppImage(
                     appImagePath = outputPath,
                     targetPath = targetPath
                 )
@@ -96,7 +95,7 @@ class AddReleaseInteractor {
                 saveBundleConfig(
                     version = version,
                     targetPath = targetPath,
-                    executable = "VoxelEngine"
+                    executable = "VoxelEngine.AppImage"
                 )
 
                 onSuccess()
@@ -105,11 +104,11 @@ class AddReleaseInteractor {
         }
     }
 
-    private fun isValidContentType(contentType: String, os: SystemInfo): Boolean {
+    private fun isValidContentType(url: String, contentType: String, os: SystemInfo): Boolean {
         return when (os) {
-            SystemInfo.WINDOWS -> contentType.contains("zip")
+            SystemInfo.WINDOWS -> contentType.contains("zip") && url.contains("voxelengine")
             SystemInfo.MACOS -> contentType.contains("apple")
-            SystemInfo.LINUX -> contentType.contains("appimage")
+            SystemInfo.LINUX -> contentType.contains("octet-stream")
             SystemInfo.UNKNOWN -> false
         }
     }
@@ -216,6 +215,26 @@ class AddReleaseInteractor {
         }
     }
 
+    private fun processAppImage(
+        appImagePath: String,
+        targetPath: String
+    ) {
+        val appImageFile = File(appImagePath)
+        val outputDir = File(targetPath)
+        val content = File(outputDir, "content")
+
+        if (!outputDir.exists()) {
+            outputDir.mkdirs()
+        }
+        if (!content.exists()) {
+            content.mkdirs()
+        }
+
+        val targetAppImageFile = File(outputDir, "VoxelEngine.AppImage")
+        appImageFile.copyTo(targetAppImageFile, overwrite = true)
+        appImageFile.delete()
+    }
+
     private fun copyDirectoryRecursively(source: File, target: File) {
         if (source.isDirectory) {
             if (!target.exists()) {
@@ -226,31 +245,6 @@ class AddReleaseInteractor {
             }
         } else {
             Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
-    }
-
-    private fun extractAppImageRelease(appImagePath: String, targetPath: String) {
-        val appImageFile = File(appImagePath)
-        val targetDir = File(targetPath)
-        if (!targetDir.exists()) {
-            targetDir.mkdirs()
-        }
-
-        runCatching {
-            val process = ProcessBuilder(appImageFile.absolutePath, "--appimage-extract")
-                .directory(targetDir)
-                .start()
-            if (!process.waitFor(60, TimeUnit.SECONDS)) {
-                process.destroy()
-                throw RuntimeException("AppImage extraction process timeout")
-            }
-            val reader = process.inputStream.bufferedReader()
-            val output = reader.readText()
-            println(output)
-            reader.close()
-        }.onFailure {
-            it.printStackTrace()
-            throw RuntimeException("Error extracting AppImage: ${it.message}")
         }
     }
 }

@@ -74,6 +74,7 @@ class DefaultAddReleaseComponent(
 
         launchSafe(errorHandler = ::handleError) {
             println(currentRelease.downloadUrl)
+
             addReleaseInteractor.installRelease(
                 name = stateStore.value.name,
                 version = currentRelease.version,

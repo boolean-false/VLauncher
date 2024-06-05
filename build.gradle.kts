@@ -19,7 +19,7 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.foundation)
     implementation(compose.materialIconsExtended)
-//    implementation(compose.material3)
+    //implementation(compose.material3)
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.6.3")
@@ -59,9 +59,12 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
         }
-
+//        buildTypes.release.proguard {
+//            configurationFiles.from(project.file("proguard-rules.pro"))
+//        }
     }
 }
+
 
 kotlin {
     jvmToolchain(17)
