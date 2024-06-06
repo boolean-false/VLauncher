@@ -1,8 +1,8 @@
 package feature.add_release.component
 
-import utils.state.SharedEventFlow
 import feature.add_release.ui.model.AddReleaseUiAction
 import feature.add_release.ui.model.AddReleaseUiState
+import utils.state.SharedEventFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class PreviewAddReleaseComponent : AddReleaseComponent {

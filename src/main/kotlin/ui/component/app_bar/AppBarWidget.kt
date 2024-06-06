@@ -24,7 +24,8 @@ import ui.theme.VLauncherTheme
 @Composable
 fun AppBarWidget(
     title: String,
-    onBackClick: (() -> Unit)? = null
+    onBackClick: (() -> Unit)? = null,
+    endContent: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -50,6 +51,12 @@ fun AppBarWidget(
             style = MaterialTheme.typography.h5,
             color = MaterialTheme.colors.onSurface
         )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        if (endContent != null) {
+            endContent()
+        }
     }
 }
 

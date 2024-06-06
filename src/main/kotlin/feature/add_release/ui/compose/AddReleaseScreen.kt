@@ -36,6 +36,7 @@ import feature.add_release.component.PreviewAddReleaseComponent
 import feature.add_release.ui.model.AddReleaseUiAction
 import feature.add_release.ui.model.AddReleaseUiState
 import feature.add_release.ui.model.InstallProgressUiModel
+import feature.logs_screen.component.PreviewLogsScreenComponent
 import ui.component.app_bar.AppBarWidget
 import ui.theme.VLauncherTheme
 
@@ -44,6 +45,12 @@ fun AddReleaseScreen(
     component: AddReleaseComponent
 ) {
     val uiState by component.uiState.collectAsState()
+
+    val onBackClick = if (uiState.installProgress == null) {
+        { component.emitUiAction(AddReleaseUiAction.Back) }
+    } else {
+        null
+    }
 
     Surface(
         modifier = Modifier
@@ -56,9 +63,7 @@ fun AddReleaseScreen(
         ) {
             AppBarWidget(
                 title = "Добавить образ",
-                onBackClick = {
-                    component.emitUiAction(AddReleaseUiAction.Back)
-                }
+                onBackClick = onBackClick
             )
 
             when {
@@ -135,6 +140,7 @@ private fun AddReleaseScreenContent(
         OutlinedTextField(
             value = uiState.name,
             onValueChange = onChangeName,
+            maxLines = 1,
             label = { Text("Название") },
             modifier = Modifier.fillMaxWidth()
         )

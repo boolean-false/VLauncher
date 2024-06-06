@@ -65,6 +65,7 @@ class DefaultGameListComponent(
 
     override fun runGame(name: String) {
         gameBundleInteractor.runGame(name)
+        gameLogs(name)
     }
 
     override fun gameDelete(name: String) {
@@ -76,7 +77,7 @@ class DefaultGameListComponent(
     }
 
     override fun gameLogs(name: String) {
-
+        emitUiAction(GameListUiAction.ShowLogList(name))
     }
     override fun showFolderGame(name: String) {
         val folder = when (SystemInfo.current()) {

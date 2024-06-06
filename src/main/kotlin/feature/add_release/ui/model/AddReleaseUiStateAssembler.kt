@@ -1,6 +1,7 @@
 package feature.add_release.ui.model
 
 import feature.add_release.component.AddReleaseVmState
+import feature.logs_screen.component.LogsScreenVmState
 import kotlinx.collections.immutable.toImmutableList
 
 class AddReleaseUiStateAssembler {

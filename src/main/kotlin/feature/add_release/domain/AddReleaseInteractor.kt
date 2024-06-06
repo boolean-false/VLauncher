@@ -23,7 +23,6 @@ class AddReleaseInteractor {
         val releaseList = gameRepository.getGameReleaseList()
 
         return releaseList.map { releaseGame ->
-            println(releaseGame.assets)
             val asset = releaseGame.assets.find { asset ->
                 isValidContentType(asset.url, asset.contentType, currentOS)
             }
@@ -188,6 +187,7 @@ class AddReleaseInteractor {
         if (mountProcess.exitValue() != 0) {
             throw RuntimeException("Error mounting DMG: $mountError")
         }
+
         println(mountOutput)
 
         // Копируем файлы из смонтированного образа в целевую директорию

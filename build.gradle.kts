@@ -2,8 +2,8 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     kotlin("jvm") version "1.9.23"
-    kotlin("plugin.serialization") version "1.9.23"
     id("org.jetbrains.compose") version "1.6.20-dev1646"
+    kotlin("plugin.serialization")
 }
 
 repositories {
@@ -29,7 +29,8 @@ dependencies {
     val decompose_version = "3.0.0"
     implementation("com.arkivanov.decompose:decompose:$decompose_version")
     implementation("com.arkivanov.decompose:extensions-compose:$decompose_version")
-//    testImplementation(kotlin("test"))
+
+    //    testImplementation(kotlin("test"))
 
     // Ktor
     val ktor_version = "2.3.11"
@@ -49,42 +50,18 @@ dependencies {
     implementation("net.lingala.zip4j:zip4j:2.11.5")
 }
 
-//tasks.test {
-//    useJUnitPlatform()
-//}
-
 compose.desktop {
     application {
         mainClass = "MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
         }
-//        buildTypes.release.proguard {
-//            configurationFiles.from(project.file("proguard-rules.pro"))
-//        }
+        buildTypes.release.proguard {
+            configurationFiles.from(project.file("proguard-rules.pro"))
+        }
     }
 }
-
 
 kotlin {
     jvmToolchain(17)
 }
-
-//tasks.register<Jar>("customJar") {
-//    group = "build"
-//    description = "Assembles a jar archive containing the main classes."
-//    archiveClassifier.set("custom")
-//
-//    from(sourceSets.main.get().output)
-//
-//    manifest {
-//        attributes["Main-Class"] = "MainKt"
-//    }
-//
-//    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-//
-//    dependsOn(configurations.runtimeClasspath)
-//    from({
-//        configurations.runtimeClasspath.get().filter { it.name.endsWith("jar") }.map { zipTree(it) }
-//    })
-//}

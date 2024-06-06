@@ -21,7 +21,6 @@ class GameBundleInteractor {
 
     fun initialize() {
         scanGamesDirectory()
-        println(games)
     }
 
     private fun scanGamesDirectory() {

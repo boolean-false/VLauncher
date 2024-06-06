@@ -1,6 +1,7 @@
 package feature.add_release.component
 
 import feature.add_release.domain.model.ReleaseForCurrentOS
+import feature.logs_screen.component.LogsScreenVmState
 
 data class AddReleaseVmState(
     val isLoading: Boolean,

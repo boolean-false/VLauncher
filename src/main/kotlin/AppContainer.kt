@@ -7,25 +7,22 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
 object AppContainer {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        prettyPrint = true
+        isLenient = true
+    }
+
     private val httpClient: HttpClient by lazy {
         HttpClient {
             install(ContentNegotiation) {
-                json(
-                    Json {
-                        ignoreUnknownKeys = true
-                        prettyPrint = true
-                        isLenient = true
-                    }
-                )
+                json(json)
             }
-//        install(Logging) {
-//            level = LogLevel.INFO
-//        }
         }
     }
 
     private val gitHubApi: GithubApi by lazy {
-        GithubApi(httpClient)
+        GithubApi(json, httpClient)
     }
 
     val gameRepository: GameRepository by lazy {
