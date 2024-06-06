@@ -2,7 +2,6 @@ package feature.logs_screen.ui.compose
 
 import AppContainer.gameBundleInteractor
 import androidx.compose.desktop.ui.tooling.preview.Preview
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.layout.Box
@@ -14,22 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.Button
-import androidx.compose.material.CircularProgressIndicator
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.MultipleStop
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,7 +30,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import feature.logs_screen.component.PreviewLogsScreenComponent
 import feature.logs_screen.component.LogsScreenComponent
 import feature.logs_screen.ui.model.LogsScreenUiAction
@@ -112,13 +112,20 @@ fun LogList(logs: List<String>, scrollState: ScrollState) {
                 .verticalScroll(scrollState)
                 .padding(end = 12.dp)
         ) {
-            logs.forEach { log ->
-                Text(
-                    text = log,
-                    style = MaterialTheme.typography.body2,
-                    color = MaterialTheme.colors.onSurface,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                )
+            SelectionContainer {
+                Column {
+                    logs.forEach { log ->
+                        val annotatedLog = formatLog(log)
+                        Text(
+                            text = annotatedLog,
+                            style = MaterialTheme.typography.body2.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            ),
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -132,6 +139,38 @@ fun LogList(logs: List<String>, scrollState: ScrollState) {
         )
     }
 }
+
+private fun formatLog(fullLog: String): AnnotatedString {
+    val typeMaxCharCount = 21
+    val log = fullLog.replaceFirst("[I] ", "")
+    val timeRegex = """\d{4}/\d{2}/\d{2} (\d{2}:\d{2}:\d{2})\.\d{3}\+\d{4}""".toRegex()
+    val tagRegex = """\[[^]]*]""".toRegex()
+
+    return buildAnnotatedString {
+        var lastIndex = 0
+
+        timeRegex.find(log)?.let { matchResult ->
+            append(log.substring(lastIndex, matchResult.range.first))
+            withStyle(style = SpanStyle(color = Color.Cyan)) {
+                append(matchResult.groupValues[1])
+            }
+            lastIndex = matchResult.range.last + 1
+        }
+
+        tagRegex.find(log, startIndex = lastIndex)?.let { matchResult ->
+            val tag = matchResult.value.substring(1, matchResult.value.length - 1).trim()
+            val paddedTag = tag.padEnd(typeMaxCharCount, ' ')
+            append(log.substring(lastIndex, matchResult.range.first))
+            withStyle(style = SpanStyle(color = Color(0xFFFFA500))) {
+                append(paddedTag)
+            }
+            lastIndex = matchResult.range.last + 1
+        }
+
+        append(log.substring(lastIndex))
+    }
+}
+
 
 @Composable
 @Preview

@@ -106,7 +106,7 @@ class AddReleaseInteractor {
     private fun isValidContentType(url: String, contentType: String, os: SystemInfo): Boolean {
         return when (os) {
             SystemInfo.WINDOWS -> contentType.contains("zip") && url.contains("voxelengine")
-            SystemInfo.MACOS -> contentType.contains("apple")
+            SystemInfo.MACOS -> contentType.contains("apple") && !url.contains("no-libs")
             SystemInfo.LINUX -> contentType.contains("octet-stream")
             SystemInfo.UNKNOWN -> false
         }

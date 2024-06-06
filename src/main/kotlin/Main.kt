@@ -76,9 +76,6 @@ fun main() {
             ) {
                 window.minimumSize = Dimension(800, 600)
                 window.background = java.awt.Color.BLACK
-                val menu = MenuBar().apply { add(Menu()) }
-                window.menuBar = menu
-
                 RootScreen(root)
             }
         }
