@@ -6,6 +6,8 @@ plugins {
     kotlin("plugin.serialization")
 }
 
+version = "1.0.0"
+
 repositories {
     google()
     mavenCentral()

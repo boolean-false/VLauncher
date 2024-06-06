@@ -21,9 +21,16 @@ import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Button
 import androidx.compose.material.CircularProgressIndicator
+import androidx.compose.material.Icon
+import androidx.compose.material.IconButton
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Surface
 import androidx.compose.material.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.MultipleStop
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,13 +67,15 @@ fun LogsScreen(
                     component.emitUiAction(LogsScreenUiAction.Back)
                 },
                 endContent = {
-                    Button(
+                    IconButton(
+                        modifier = Modifier
+                            .size(28.dp),
                         onClick = {
                             gameBundleInteractor.stopGame(component.gameName)
                             component.emitUiAction(LogsScreenUiAction.Back)
-                        }
+                        },
                     ) {
-                        Text("Завершить")
+                        Icon(Icons.Outlined.Stop, contentDescription = "")
                     }
                 }
             )

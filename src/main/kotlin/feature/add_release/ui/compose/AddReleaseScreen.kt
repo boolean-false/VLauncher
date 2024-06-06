@@ -60,6 +60,8 @@ fun AddReleaseScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
+
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             AppBarWidget(
                 title = "Добавить образ",
