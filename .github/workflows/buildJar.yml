@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build_msi:
+  build_jar:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -31,7 +31,7 @@ jobs:
           ./gradlew.bat
 
       - name: Build Jar
-        run: ./gradlew packageUberJarForCurrentOS
+        run: ./gradlew packageReleaseUberJarForCurrentOS
 
       - name: Archive Jar artifact
         uses: actions/upload-artifact@v3
