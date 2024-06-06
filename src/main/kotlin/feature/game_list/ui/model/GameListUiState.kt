@@ -15,12 +15,12 @@ data class GameListUiState(
                 GamePreviewUiModel(
                     name = "Игра1",
                     version = "1.2.3",
-                    modsCount = "0"
+                    modsCount = "0",
                 ),
                 GamePreviewUiModel(
                     name = "Игра2",
                     version = "1.3.3",
-                    modsCount = "2"
+                    modsCount = "2",
                 )
             )
         )

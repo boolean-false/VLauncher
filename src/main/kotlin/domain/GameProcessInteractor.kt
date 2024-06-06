@@ -1,4 +1,4 @@
-package game_process
+package domain
 
 import Settings
 import kotlinx.coroutines.CoroutineScope
@@ -14,25 +14,33 @@ import utils.SystemInfo
 import java.io.File
 import java.util.concurrent.TimeUnit
 
+
 /**
  * Интерактор запуска игры
  */
-class GameProcessInteractor {
+class GameProcessInteractor(
+    private val gameName: String
+) {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
+
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
     private var job: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    private var process: Process? = null
+
 
     fun runGame(
-        gameName: String,
         executable: String,
         timeoutAmount: Long = 60,
         timeoutUnit: TimeUnit = TimeUnit.SECONDS,
     ) {
         job?.cancel()
         job = scope.launch {
+            _isRunning.value = true
             val gamePath = "${Settings.targetDirectory}/$gameName"
             val gameDir = File(gamePath)
 
@@ -64,15 +72,15 @@ class GameProcessInteractor {
             }
 
             runCatching {
-                val process = processBuilder
+                process = processBuilder
                     .redirectErrorStream(true)
                     .start()
 
-                val reader = process.inputStream.bufferedReader()
+                val reader = process!!.inputStream.bufferedReader()
 
                 try {
                     var line: String?
-                    while (process.isAlive) {
+                    while (process!!.isAlive) {
                         line = reader.readLine()
                         if (line != null) {
                             _logs.update { currentLogs -> currentLogs + line!! }
@@ -86,26 +94,28 @@ class GameProcessInteractor {
                     println(e)
                 } finally {
                     reader.close()
+                    _isRunning.value = false
                 }
 
-                if (!process.waitFor(timeoutAmount, timeoutUnit)) {
-                    process.destroy()
+                if (!process!!.waitFor(timeoutAmount, timeoutUnit)) {
+                    process!!.destroy()
                     throw RuntimeException("Game process timeout")
                 }
             }.onFailure {
                 it.printStackTrace()
                 _logs.update { currentLogs -> currentLogs + "Error: ${it.message}" }
+                _isRunning.value = false
             }
         }
     }
 
     fun stopGame() {
+        process?.destroy()
         job?.cancel()
+        _isRunning.value = false
     }
 
     fun clearLogs() {
         _logs.value = emptyList()
     }
-
-
 }

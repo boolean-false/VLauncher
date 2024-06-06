@@ -11,7 +11,7 @@ class GameListUiStateAssembler() {
             GamePreviewUiModel(
                 name = it.name,
                 version = it.version,
-                modsCount = "0"
+                modsCount = "0",
             )
         }.toImmutableList()
 

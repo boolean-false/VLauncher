@@ -55,7 +55,7 @@ fun AddReleaseScreen(
                 .padding(16.dp),
         ) {
             AppBarWidget(
-                title = "Добавим игрулю",
+                title = "Добавить образ",
                 onBackClick = {
                     component.emitUiAction(AddReleaseUiAction.Back)
                 }
@@ -185,9 +185,10 @@ private fun AddReleaseScreenContent(
 
         Button(
             onClick = onApplyClick,
-            modifier = Modifier.align(Alignment.End)
+            modifier = Modifier.align(Alignment.End),
+            enabled = uiState.isApplyEnabled
         ) {
-            Text("Apply")
+            Text("Установить")
         }
     }
 }

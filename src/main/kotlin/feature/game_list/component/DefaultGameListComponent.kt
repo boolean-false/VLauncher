@@ -2,19 +2,17 @@ package feature.game_list.component
 
 import AppContainer
 import com.arkivanov.decompose.ComponentContext
-import com.boolfalse.rickandmorty.utils.state.SharedEventFlow
-import feature.add_release.component.AddReleaseVmState
+import utils.state.SharedEventFlow
 import feature.game_list.ui.GameListUiAction
 import feature.game_list.ui.model.GameListUiState
 import feature.game_list.ui.model.GameListUiStateAssembler
-import game_process.GameProcessInteractor
-import kotlinx.coroutines.flow.MutableStateFlow
+import domain.GameProcessInteractor
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import utils.SystemInfo
 import utils.decompose.CoroutineComponent
 import utils.decompose.CoroutineComponentImpl
 import utils.decompose.launchSafe
@@ -26,7 +24,6 @@ class DefaultGameListComponent(
     ComponentContext by componentContext,
     CoroutineComponent by CoroutineComponentImpl(componentContext) {
     private val gameBundleInteractor = AppContainer.gameBundleInteractor
-    private val gameProcessInteractor = GameProcessInteractor()
 
     private val uiStateAssembler = GameListUiStateAssembler()
     private val stateStore = StateStore(
@@ -60,19 +57,36 @@ class DefaultGameListComponent(
         }
 
         launchSafe(errorHandler = {}) {
-            gameProcessInteractor.logs.onEach { logs ->
-//                println("Log ${logs}")
-            }.stateIn(scope)
+//            gameProcessInteractor.logs.onEach { logs ->
+////                println("Log ${logs}")
+//            }.stateIn(scope)
         }
     }
 
-    override fun gameSelect(name: String) {
-        val game = stateStore.value.installedGameList.firstOrNull {it.name == name} ?: return
-        gameProcessInteractor.runGame(
-            gameName = name,
-            executable = game.executable
-        )
+    override fun runGame(name: String) {
+        gameBundleInteractor.runGame(name)
     }
+
+    override fun gameDelete(name: String) {
+        gameBundleInteractor.deleteGame(name)
+    }
+
+    override fun gameStop(name: String) {
+        gameBundleInteractor.stopGame(name)
+    }
+
+    override fun gameLogs(name: String) {
+
+    }
+    override fun showFolderGame(name: String) {
+        val folder = when (SystemInfo.current()) {
+            SystemInfo.LINUX -> "content"
+            else -> "res/content"
+        }
+
+        gameBundleInteractor.showGameFolder(name, folder)
+    }
+
 
     override fun emitUiAction(action: GameListUiAction) {
         scope.launch {

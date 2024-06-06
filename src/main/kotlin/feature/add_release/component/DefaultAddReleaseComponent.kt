@@ -2,7 +2,7 @@ package feature.add_release.component
 
 import AppContainer
 import com.arkivanov.decompose.ComponentContext
-import com.boolfalse.rickandmorty.utils.state.SharedEventFlow
+import utils.state.SharedEventFlow
 import feature.add_release.domain.AddReleaseInteractor
 import feature.add_release.ui.model.AddReleaseUiAction
 import feature.add_release.ui.model.AddReleaseUiState
@@ -15,6 +15,7 @@ import utils.decompose.CoroutineComponent
 import utils.decompose.CoroutineComponentImpl
 import utils.decompose.launchSafe
 import utils.state.StateStore
+import java.io.File
 import java.lang.Exception
 
 class DefaultAddReleaseComponent(
@@ -26,7 +27,14 @@ class DefaultAddReleaseComponent(
 
 
     private val uiStateAssembler = AddReleaseUiStateAssembler()
-    private val stateStore = StateStore(AddReleaseVmState.initial())
+
+    private val busyFolderNameList = getFolderNamesFromInstances()
+
+    private val stateStore = StateStore(
+        AddReleaseVmState.initial(
+            busyFolderNameList = busyFolderNameList
+        )
+    )
 
     override val uiAction = SharedEventFlow<AddReleaseUiAction>()
     override val uiState = stateStore.stateFlow
@@ -87,7 +95,7 @@ class DefaultAddReleaseComponent(
                     }
                 }
             ) {
-               AppContainer.gameBundleInteractor.initialize()
+                AppContainer.gameBundleInteractor.initialize()
                 emitUiAction(AddReleaseUiAction.Back)
             }
         }
@@ -113,6 +121,16 @@ class DefaultAddReleaseComponent(
                 selectedReleaseId = releaseId
             )
         }
+    }
+
+    private fun getFolderNamesFromInstances(directoryPath: String = "instances"): List<String> {
+        val instancesDir = File(directoryPath)
+
+        if (!instancesDir.exists() || !instancesDir.isDirectory) {
+            instancesDir.mkdir()
+            return listOf()
+        }
+        return instancesDir.listFiles { file -> file.isDirectory }?.map { it.name } ?: emptyList()
     }
 
     private fun handleError(exception: Exception) {

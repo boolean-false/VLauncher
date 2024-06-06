@@ -6,15 +6,19 @@ data class AddReleaseVmState(
     val isLoading: Boolean,
     val name: String,
     val selectedReleaseId: Long?,
+    val busyFolderNameList: List<String>,
     val releaseList: List<ReleaseForCurrentOS>,
     val downloadProgress: Float?
 ) {
     companion object {
-        fun initial() = AddReleaseVmState(
+        fun initial(
+            busyFolderNameList: List<String>
+        ) = AddReleaseVmState(
             isLoading = true,
             selectedReleaseId = null,
             name = "",
             releaseList = listOf(),
+            busyFolderNameList = busyFolderNameList,
             downloadProgress = null
         )
     }

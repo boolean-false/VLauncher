@@ -8,7 +8,8 @@ data class AddReleaseUiState(
     val name: String,
     val selectedRelease: ChangeReleaseAssetUiModel?,
     val selectReleaseAssetList: ImmutableList<ChangeReleaseAssetUiModel>,
-    val installProgress: InstallProgressUiModel?
+    val installProgress: InstallProgressUiModel?,
+    val isApplyEnabled: Boolean
 ) {
     companion object {
         fun initial() = AddReleaseUiState(
@@ -16,7 +17,8 @@ data class AddReleaseUiState(
             name = "",
             selectedRelease = null,
             selectReleaseAssetList = persistentListOf(),
-            installProgress = null
+            installProgress = null,
+            isApplyEnabled = false
         )
 
         fun preview() = AddReleaseUiState(
@@ -39,7 +41,8 @@ data class AddReleaseUiState(
                     isAvailable = true
                 )
             ),
-            installProgress = null
+            installProgress = null,
+            isApplyEnabled = true
         )
     }
 }

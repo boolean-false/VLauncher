@@ -29,12 +29,16 @@ class AddReleaseUiStateAssembler {
             )
         }
 
+        val isApplyEnabled =
+            vmState.name.isNotEmpty() && !vmState.busyFolderNameList.contains(vmState.name)
+
         return AddReleaseUiState(
             name = vmState.name,
             selectReleaseAssetList = selectReleaseAssetList,
             selectedRelease = selectedRelease,
             isLoading = vmState.isLoading,
-            installProgress = installProgress
+            installProgress = installProgress,
+            isApplyEnabled = isApplyEnabled
         )
     }
 }
