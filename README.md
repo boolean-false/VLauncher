@@ -1,2 +1,0 @@
-# VLauncher
-Launcher for VoxelLaucher
