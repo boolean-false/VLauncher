@@ -1,0 +1,37 @@
+@font-face {
+  font-family: "Workbench Mono";
+  src: url("/fonts/workbench-mono.woff") format("woff");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+/* Основная палитра. */
+:root {
+  --font-ui: Inter, "Noto Sans", system-ui, sans-serif;
+  --mono: "Workbench Mono", monospace;
+  --bg: #171b20;
+  --surface-inset: #12161a;
+  --panel: #1e242b;
+  --surface-2: #272f37;
+  --line: #35414c;
+  --text: #e8e7e0;
+  --muted: #aab2bc;
+  --accent: #dad9ca;
+  --accent-text: #dad9ca;
+  --accent-bg: #30332f;
+  --accent-hover: #ecebdf;
+  --on-accent: #23251f;
+  --focus-ring: #dad9ca;
+  --warning: #dbc08e;
+  --warning-bg: #302a20;
+  --warning-line: #6d5938;
+  --danger: #e7a5a1;
+  --danger-bg: #342523;
+  --danger-line: #754b46;
+  --success: #b9cd95;
+  --success-bg: #283022;
+  --success-line: #526340;
+  --overlay: #090e12b8;
+  --radius: 0px;
+}

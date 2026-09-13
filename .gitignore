@@ -1,0 +1,51 @@
+# Сборка и зависимости
+node_modules/
+target/
+dist/
+dist-ssr/
+/build/
+/src-tauri/gen/
+*.tsbuildinfo
+/release-config.json
+
+# Локальные настройки и ключи
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+/.local/
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Логи и кэш
+logs/
+*.log
+.cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+/tmp/
+/backups/
+
+# Системные файлы
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+.AppleDouble
+._*
+Thumbs.db
+Desktop.ini
+*.suo
+*.user
+*.swp
+*.swo
+*~

@@ -1,0 +1,46 @@
+[package]
+name = "vlauncher"
+version = "1.0.4"
+description = "Desktop launcher for VoxelCore"
+authors = ["DaggerLab"]
+edition = "2024"
+publish = false
+license = "GPL-3.0-only"
+repository = "https://github.com/boolean-false/VLauncher"
+homepage = "https://vlauncher.space"
+
+[lib]
+name = "vlauncher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+vlauncher-core = { path = "../core" }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+tauri-plugin-clipboard-manager = "2"
+discord-rich-presence = "1.1.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+gtk = "0.18"

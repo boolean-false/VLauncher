@@ -1,0 +1,5 @@
+# Сборка Cargo
+/target/
+
+# Схемы Tauri
+/gen/schemas

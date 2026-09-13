@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:cache
+      - run: npm run check:design-system
+      - name: Verify npm license report
+        if: runner.os == 'Linux'
+        run: npm run licenses:npm && git diff --exit-code -- NPM_THIRD_PARTY_LICENSES.html
+      - name: Test Linux bundle preparation
+        if: runner.os == 'Linux'
+        run: python -m unittest discover -s scripts -p 'test_*.py'
+      - run: cargo fmt --manifest-path core/Cargo.toml --check
+      - run: cargo test --manifest-path core/Cargo.toml --locked
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Verify Rust license report
+        if: runner.os == 'Linux'
+        run: |
+          cargo install --locked --features cli --version 0.9.1 cargo-about
+          npm run licenses:rust
+          git diff --exit-code -- RUST_THIRD_PARTY_LICENSES.html
+      - name: Build Windows application with embedded frontend
+        if: runner.os == 'Windows'
+        run: npm run tauri -- build --debug --no-bundle

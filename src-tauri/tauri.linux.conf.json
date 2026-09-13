@@ -1,0 +1,5 @@
+{
+  "build": {
+    "beforeBundleCommand": "python3 scripts/prepare-linux-bundle.py"
+  }
+}
