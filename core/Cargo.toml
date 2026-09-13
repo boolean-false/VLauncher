@@ -9,7 +9,7 @@ repository = "https://github.com/boolean-false/VLauncher"
 homepage = "https://vlauncher.space"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = "2"
 hex = "0.4"
 fs2 = "0.4"
