@@ -78,18 +78,11 @@ impl Presence {
                         client = Some(c);
                     }
                     let c = client.as_mut().unwrap();
+                    let (details, state) = activity_text(playing);
                     c.set_activity(
                         activity::Activity::new()
-                            .details(if playing {
-                                "Играет в кубики"
-                            } else {
-                                "В меню"
-                            })
-                            .state(if playing {
-                                "Игра запущена через VLauncher"
-                            } else {
-                                "Контент-паки, сборки и миры для"
-                            })
+                            .details(details)
+                            .state(state)
                             .timestamps(activity::Timestamps::new().start(since)),
                     )
                     .map_err(|e| e.to_string())?;
@@ -127,6 +120,13 @@ impl Presence {
         self.status.lock().unwrap().clone()
     }
 }
+fn activity_text(playing: bool) -> (&'static str, &'static str) {
+    if playing {
+        ("Исследует мир VoxelCore", "Запущено через VLauncher")
+    } else {
+        ("Собирает мир по кусочкам", "Контент-паки, сборки и карты")
+    }
+}
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -145,4 +145,21 @@ pub fn update_discord_presence(
 #[tauri::command]
 pub fn discord_presence_status(state: tauri::State<'_, Presence>) -> PresenceStatus {
     state.status()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::activity_text;
+
+    #[test]
+    fn activity_describes_launcher_and_game_states() {
+        assert_eq!(
+            activity_text(false),
+            ("Собирает мир по кусочкам", "Контент-паки, сборки и карты")
+        );
+        assert_eq!(
+            activity_text(true),
+            ("Исследует мир VoxelCore", "Запущено через VLauncher")
+        );
+    }
 }

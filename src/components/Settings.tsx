@@ -124,63 +124,63 @@ export function Settings({
           </div>
           <label className="checkbox-row"><input type="checkbox" checked={discordEnabled} onChange={e=>setDiscordEnabled(e.target.checked)} />Показывать активность</label>
         </section>
-        <section className="setting-row">
-          <div>
+        <section className="setting-row vlauncher-settings">
+          <div className="vlauncher-about">
             <h3>VLauncher</h3>
             <p className="selectable">
               {appVersion ? `Версия ${appVersion}` : versionError ? "Не удалось определить версию" : "Определяем версию…"}
             </p>
             <p>Copyright © 2026 DaggerLab.</p>
-            <p>Свободное программное обеспечение под лицензией GPL-3.0-only, без гарантий.</p>
             <button
               onClick={() => void openUrl("https://github.com/boolean-false/VLauncher")}
             >
-              Исходный код и лицензия
+              Исходный код
             </button>
-            <p>
-              {import.meta.env.DEV
-                ? "Режим разработки. Обновление через исходники проекта."
-                : message || "Проверка новой версии приложения."}
-            </p>
+            {import.meta.env.DEV && <p>Режим разработки. Обновление через исходники проекта.</p>}
           </div>
-          {!import.meta.env.DEV && <div className="actions">
-            <label className="update-channel-control">
-              <span>Канал обновлений</span>
-              <Select
-                value={updateChannel}
-                disabled={busy}
-                onChange={(event) => setUpdateChannel(event.target.value as AppUpdateChannel)}
+          {!import.meta.env.DEV && <div className="vlauncher-update">
+            <div className="vlauncher-update-controls">
+              <label className="update-channel-control">
+                <span>Канал обновлений</span>
+                <Select
+                  value={updateChannel}
+                  disabled={busy}
+                  onChange={(event) => setUpdateChannel(event.target.value as AppUpdateChannel)}
+                >
+                  <option value="stable">Стабильный</option>
+                  <option value="beta">Бета и стабильные</option>
+                </Select>
+              </label>
+              <button
+                disabled={busy || gameRunning}
+                onClick={() =>
+                  void run("Обновление VLauncher", async (stage) => {
+                    if (update) {
+                      await update.download((event) => {
+                        if (event.event === "Progress")
+                          stage("Загрузка обновления…");
+                      });
+                      if (gameRunning) throw new Error("Завершите игру перед обновлением");
+                      await update.install();
+                      await relaunch();
+                    } else {
+                      const available = await checkForAppUpdate(updateChannel);
+                      setUpdate(available);
+                      setMessage(
+                        available
+                          ? `Доступна версия ${available.version}`
+                          : "Новых версий нет",
+                      );
+                    }
+                  })
+                }
               >
-                <option value="stable">Стабильный</option>
-                <option value="beta">Бета и стабильные</option>
-              </Select>
-            </label>
-            <button
-              disabled={busy || gameRunning}
-              onClick={() =>
-                void run("Обновление VLauncher", async (stage) => {
-                  if (update) {
-                    await update.download((event) => {
-                      if (event.event === "Progress")
-                        stage("Загрузка обновления…");
-                    });
-                    if (gameRunning) throw new Error("Завершите игру перед обновлением");
-                    await update.install();
-                    await relaunch();
-                  } else {
-                    const available = await checkForAppUpdate(updateChannel);
-                    setUpdate(available);
-                    setMessage(
-                      available
-                        ? `Доступна версия ${available.version}`
-                        : "Новых версий нет",
-                    );
-                  }
-                })
-              }
-            >
-              {update ? "Установить и перезапустить" : "Проверить обновления"}
-            </button>
+                {update ? "Установить и перезапустить" : "Проверить обновления"}
+              </button>
+            </div>
+            <p className="vlauncher-update-status" role="status">
+              {message || "Проверка новой версии приложения."}
+            </p>
           </div>}
         </section>
         {import.meta.env.DEV && (
