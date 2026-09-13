@@ -15,6 +15,7 @@ export function CategoryFilter({
   const more = useRef<HTMLButtonElement>(null);
   const [count, setCount] = useState(items.length);
   const [open, setOpen] = useState(false);
+  const itemIds = items.map((item) => item.id).join("\0");
   const toggle = (id: string) =>
     onChange(
       value.includes(id) ? value.filter((x) => x !== id) : [...value, id],
@@ -60,7 +61,7 @@ export function CategoryFilter({
       document.removeEventListener("keydown", escape, true);
     };
   }, [open]);
-  useEffect(() => setOpen(false), [items]);
+  useEffect(() => setOpen(false), [itemIds]);
   const hidden = items.slice(count);
   return (
     <div ref={root} className="category-filter">
@@ -134,7 +135,10 @@ export function CategoryFilter({
           }}
           aria-label="Другие категории"
           onBlur={(event) => {
-            if (!root.current?.contains(event.relatedTarget as Node))
+            if (
+              event.relatedTarget instanceof Node &&
+              !root.current?.contains(event.relatedTarget)
+            )
               setOpen(false);
           }}
         >
