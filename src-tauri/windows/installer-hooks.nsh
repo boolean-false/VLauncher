@@ -1,0 +1,9 @@
+; Цвета установщика.
+!define MUI_BGCOLOR "171B20"
+!define MUI_TEXTCOLOR "E8E7E0"
+; Иначе чекбокс на последней странице рисуется чёрным.
+!define MUI_FORCECLASSICCONTROLS
+!define MUI_HEADER_TRANSPARENT_TEXT
+!define MUI_INSTFILESPAGE_COLORS "E8E7E0 12161A"
+!define MUI_DIRECTORYPAGE_BGCOLOR "12161A"
+!define MUI_DIRECTORYPAGE_TEXTCOLOR "E8E7E0"

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VLauncher third-party Rust licenses</title>
+  <style>
+    body { font: 14px/1.5 sans-serif; max-width: 960px; margin: 32px auto; padding: 0 20px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #aaa; padding: 16px; }
+  </style>
+</head>
+<body>
+  <h1>VLauncher third-party Rust licenses</h1>
+  <p>Rust dependencies used by VLauncher.</p>
+  {{#each licenses}}
+    {{#if first_of_kind}}<h2 id="{{id}}">{{name}}</h2>{{/if}}
+    <h3>Used by</h3>
+    <ul>
+      {{#each used_by}}
+        <li>{{crate.name}} {{crate.version}}</li>
+      {{/each}}
+    </ul>
+    <pre>{{text}}</pre>
+  {{/each}}
+</body>
+</html>

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VLauncher",
+  "version": "1.0.4",
+  "identifier": "space.vlauncher",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist",
+    "additionalWatchFolders": [
+      "../core"
+    ]
+  },
+  "app": {
+    "enableGTKAppId": true,
+    "windows": [
+      {
+        "title": "VLauncher",
+        "useHttpsScheme": true,
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' blob: asset: https: data:; connect-src ipc: http://ipc.localhost https:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "publisher": "DaggerLab",
+    "homepage": "https://vlauncher.space",
+    "copyright": "Copyright © 2026 DaggerLab",
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../NPM_THIRD_PARTY_LICENSES.html": "NPM_THIRD_PARTY_LICENSES.html",
+      "../RUST_THIRD_PARTY_LICENSES.html": "RUST_THIRD_PARTY_LICENSES.html",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../TRADEMARKS.md": "TRADEMARKS.md",
+      "../public/fonts/JetBrainsMono-LICENSE.txt": "JetBrainsMono-LICENSE.txt"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "windows/installer-header.bmp",
+        "uninstallerHeaderImage": "windows/installer-header.bmp",
+        "sidebarImage": "windows/installer-sidebar.bmp",
+        "installerHooks": "windows/installer-hooks.nsh",
+        "languages": [
+          "Russian"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "vlauncher"
+        ]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE2OEFBQkE2NTE3RUE3Q0UKUldUT3AzNVJwcXVLRm51R0JwdjJEaHFrSlY0SGR1NDVJVVREQ0E4Wjk3QWRycWhLWU8wUGxDbUMK",
+      "endpoints": [
+        "https://example.invalid/api/v1/launcher-updates/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}

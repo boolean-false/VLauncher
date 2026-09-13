@@ -1,0 +1,302 @@
+/* Основное окно и библиотека. */
+.workbench {
+  background: var(--bg);
+}
+
+.workbench :where(button, input, select, textarea, dialog) {
+  border-radius: var(--radius);
+}
+
+.workbench button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.workbench .sidebar {
+  width: 224px;
+  padding: 28px 12px 12px;
+  border-color: var(--line);
+  background: var(--surface-inset);
+}
+
+.workbench .brand {
+  padding: 0 12px 32px;
+}
+
+.workbench .sidebar nav { gap: 1px; }
+.workbench .sidebar nav button,
+.workbench .sidebar-bottom button {
+  position: relative;
+  min-height: 44px;
+  padding-left: 15px;
+  color: var(--muted);
+}
+
+.workbench .sidebar nav button.active,
+.workbench .sidebar-bottom button.active {
+  color: var(--accent-text);
+  background: var(--accent-bg);
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+.workbench .sidebar-profiles { margin-top: 36px; }
+.workbench .sidebar-label {
+  padding-left: 13px;
+}
+
+.workbench .profile-link {
+  gap: 12px;
+  padding: 10px;
+  margin: 5px 0;
+  border-color: transparent;
+}
+
+.workbench .profile-link.selected {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+.workbench .profile-link.selected::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-left: auto;
+  background: var(--success);
+  flex-shrink: 0;
+}
+
+.workbench .profile-link > span:last-of-type {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workbench .profile-initial {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+.workbench .profile-link small {
+  font-family: var(--font-ui);
+  font-size: 11px;
+}
+
+.workbench .sidebar-bottom { border-color: var(--line); }
+.workbench .statusbar {
+  background: var(--surface-inset);
+  border-color: var(--line);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.workbench .status-dot { border-radius: var(--radius); }
+
+.workbench[data-screen="library"] main {
+  padding: 26px 32px 40px;
+  background-color: var(--bg);
+
+}
+
+.library-page { max-width: 1440px; margin-inline: auto; }
+.library-page .page-heading { margin-bottom: 24px; align-items: center; }
+.library-page h1 { font-size: 27px; letter-spacing: -0.8px; }
+.library-page .page-heading p { margin-top: 5px; }
+.library-page .page-heading button {
+  background: var(--surface-2);
+  border-color: var(--line);
+  font-size: 12px;
+}
+
+/* Шапка выбранного профиля. */
+.library-page .game-heading {
+  display: flex;
+  gap: 20px;
+  padding: 24px 0 30px;
+  min-height: 150px;
+}
+.library-page .game-emblem {
+  width: 72px;
+  height: 72px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+}
+.library-page .game-emblem img { border-radius: var(--radius); }
+.library-page .game-title h2 {
+  font: 400 clamp(23px, 2.5vw, 36px)/1.25 var(--mono);
+  letter-spacing: -1.6px;
+  margin: 8px 0 12px;
+  color: var(--text);
+}
+.library-page .game-title p {
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.library-page .launch-area { margin: 0; max-width: 240px; }
+.library-page .launch-area button {
+  min-width: 172px;
+  min-height: 48px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 400;
+}
+.library-page .launch-area small {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: normal;
+}
+.library-page .tab-bar {
+  gap: 26px;
+  margin: 0;
+  border-color: var(--line);
+}
+.library-page .tab-bar > button {
+  padding: 12px 0;
+  min-height: 46px;
+  font-size: 13px;
+}
+.library-page .tab-bar > button.active { color: var(--accent-text); }
+.library-page .tab-bar > button.folder-shortcut { padding-right: 0; font: inherit; font-size: 11px; }
+.library-page .count { border-radius: var(--radius); background: var(--surface-2); color: var(--text); font-size: 9px; }
+.library-page [role="tabpanel"] {
+  padding: 24px 0;
+  min-height: 280px;
+}
+.library-page .section-heading { gap: 16px; margin-bottom: 20px; }
+.library-page .section-heading h3 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+.library-page .section-heading p { font-size: 11px; max-width: 400px; }
+.library-page .section-heading .actions { justify-content: flex-end; }
+.library-page .section-heading button { background: var(--surface-2); border-color: var(--line); }
+.library-page .content-list { border-radius: var(--radius); border-color: var(--line); }
+.library-page .list-heading {
+  grid-template-columns: minmax(0, 1fr) 80px 30px;
+  gap: 14px;
+  background: var(--panel);
+  padding: 10px 14px;
+}
+.library-page .list-heading > :nth-child(2) { text-align: right; }
+.library-page .content-row > .icon-button { width: 30px; padding: 6px; flex: 0 0 30px; }
+.library-page .installed-package {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 14px;
+  justify-content: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+.library-page .installed-package:hover { background: transparent; }
+.library-page .installed-package:hover strong { color: var(--accent-text); text-decoration: underline; }
+.installed-package-copy { min-width: 0; }
+.installed-package-summary { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.installed-package .package-symbol img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; }
+.library-page .content-row {
+  gap: 14px;
+  min-height: 64px;
+  padding: 10px 14px;
+  border-color: var(--line);
+  background: var(--panel);
+}
+.library-page .content-row:nth-child(odd) { background: var(--surface-2); }
+.library-page .content-row strong { font-size: 13px; font-weight: 550; }
+.library-page .content-row code { font: 11px var(--mono); color: var(--muted); }
+.library-page .content-row small { color: var(--muted); }
+.library-page .package-symbol {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.library-page .world-preview { width: 48px; height: 48px; border-radius: var(--radius); border: 1px solid var(--line); }
+.library-page .setting-row { border-color: var(--line); }
+.library-page .setting-row:first-child { padding-top: 0; }
+.library-page .setting-row:last-child { border-bottom: 0; }
+.library-page .setting-row h3 { font-weight: 550; }
+.library-page .profile-icon-preview { border-radius: var(--radius); }
+.library-page .empty { padding-block: 40px; }
+.library-page .empty-symbol { border-radius: var(--radius); border-color: var(--line); background: var(--surface-2); color: var(--muted); }
+.library-page .empty h2 { font-family: var(--mono); font-size: 17px; font-weight: 400; }
+.library-page .log-view { border-radius: var(--radius); background: var(--panel); border-color: var(--line); }
+
+.library-welcome {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 44px 24px 30px;
+}
+.library-welcome .empty { min-height: 0; padding: 4px 0 20px; }
+.library-welcome .empty-symbol { display: none; }
+.library-welcome .empty h2 { font-size: 22px; margin-bottom: 16px; }
+.library-welcome .empty > p { line-height: 1.9; margin-bottom: 26px; }
+.library-welcome .empty .primary { font: 12px var(--mono); min-height: 44px; padding-inline: 22px; }
+@media (max-width: 1100px) {
+  .workbench .sidebar { width: 192px; padding-inline: 10px; }
+  .workbench .brand { padding-inline: 4px; }
+  .workbench[data-screen="library"] main { padding: 24px; }
+  .library-page .game-heading { gap: 18px; }
+  .library-page .game-emblem { width: 64px; height: 64px; }
+  .library-page .game-title h2 { font-size: 25px; letter-spacing: -1px; }
+  .library-page .launch-area { max-width: 190px; }
+  .library-page .launch-area button { min-width: 150px; font-size: 12px; }
+  .library-page .tab-bar { gap: 20px; }
+  .library-page .section-heading { flex-wrap: wrap; }
+  .library-page .section-heading .actions { margin-left: auto; }
+  .library-page .content-row { gap: 10px; padding-inline: 12px; }
+  .library-page .list-heading { gap: 10px; padding-inline: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench button:active:not(:disabled) { transform: none; }
+}
+
+/* Карточки и категории. */
+.workbench .catalog-card,
+.workbench .form-card,
+.workbench .review-card {
+  background: var(--panel);
+  border-color: var(--line);
+  border-radius: var(--radius);
+}
+.workbench .catalog-card:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--muted);
+}
+.workbench .catalog-card footer { border-color: var(--line); }
+.workbench .category-tabs button,
+.workbench .category-choices label {
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: var(--radius);
+}
+.workbench .category-tabs button:hover:not(:disabled),
+.workbench .category-popover label:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.workbench .category-tabs button.active,
+.workbench .category-choices label:has(input:checked) {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.workbench .category-popover {
+  background: var(--panel);
+  border-color: var(--line);
+  border-radius: var(--radius);
+}

@@ -1,0 +1,163 @@
+name: VLauncher release builds
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer version (for example 1.0.0)
+        required: true
+      channel:
+        type: choice
+        options: [stable, beta]
+        default: stable
+permissions:
+  contents: read
+concurrency:
+  group: vlauncher-release-${{ inputs.version }}-${{ inputs.channel }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux
+            arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            bundles: appimage
+          - os: windows-latest
+            target: windows
+            arch: x86_64
+            rust_target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - os: macos-15-intel
+            target: darwin
+            arch: x86_64
+            rust_target: x86_64-apple-darwin
+            bundles: dmg,app
+          - os: macos-15
+            target: darwin
+            arch: aarch64
+            rust_target: aarch64-apple-darwin
+            bundles: dmg,app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - name: Validate release secrets
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+        run: test -n "$UPDATER_KEY" && test -n "$REGISTRY_URL"
+      - name: Prepare version override
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import urllib.parse
+
+          version = os.environ["RELEASE_VERSION"]
+          channel = os.environ["RELEASE_CHANNEL"]
+          number = r"(?:0|[1-9][0-9]*)"
+          identifier = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+          semver = rf"{number}\.{number}\.{number}(?:-{identifier}(?:\.{identifier})*)?"
+          if not re.fullmatch(semver, version):
+              raise SystemExit("Release version must be valid SemVer")
+          if channel == "stable" and "-" in version:
+              raise SystemExit("Prerelease versions must use the beta channel")
+          if channel == "beta" and "-" not in version:
+              raise SystemExit("Beta channel requires a prerelease version")
+          registry_url = os.environ["REGISTRY_URL"].strip().rstrip("/")
+          parsed = urllib.parse.urlsplit(registry_url)
+          if (
+              parsed.scheme != "https"
+              or not parsed.hostname
+              or parsed.username
+              or parsed.password
+              or parsed.query
+              or parsed.fragment
+          ):
+              raise SystemExit("VLAUNCHER_REGISTRY_URL must be a plain HTTPS API URL")
+          notes = pathlib.Path("RELEASE_NOTES.md")
+          if not notes.is_file() or not notes.read_text(encoding="utf-8").strip():
+              raise SystemExit("RELEASE_NOTES.md must exist and contain release notes")
+          first_line = notes.read_text(encoding="utf-8").splitlines()[0].strip()
+          if first_line != f"VLauncher {version}":
+              raise SystemExit("RELEASE_NOTES.md must start with the release version")
+          pathlib.Path("release-config.json").write_text(
+              json.dumps({
+                  "version": version,
+                  "plugins": {
+                      "updater": {
+                          "endpoints": [
+                              f"{registry_url}/launcher-updates/"
+                              "{{target}}/{{arch}}/{{current_version}}"
+                          ]
+                      }
+                  },
+              }),
+              encoding="utf-8",
+          )
+          PY
+      - name: Build and sign update files
+        run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} --config release-config.json
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+          VLAUNCHER_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vlauncher-${{ inputs.version }}-${{ matrix.target }}-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*
+          if-no-files-found: error
+
+  github-draft:
+    name: Prepare GitHub draft
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: vlauncher-${{ inputs.version }}-*
+          path: release-artifacts
+      - name: Create draft and register it in VSpace
+        run: python scripts/create-github-draft.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          VLAUNCHER_PUBLISH_TOKEN: ${{ secrets.VLAUNCHER_PUBLISH_TOKEN }}
+          VLAUNCHER_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
