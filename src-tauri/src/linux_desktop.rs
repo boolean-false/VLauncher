@@ -5,6 +5,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 const APP_ID: &str = "space.vlauncher";
 const WINDOW_ID: &str = "vlauncher";
 const ICON: &[u8] = include_bytes!("../icons/icon.png");
@@ -96,6 +99,43 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     temporary
         .persist(path)
         .map_err(|error| error.error.to_string())?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn hide_appimage_launcher_entry(applications: &Path, executable: &Path) -> Result<(), String> {
+    let Some(executable) = executable.to_str() else {
+        return Ok(());
+    };
+    let try_exec = format!("TryExec={executable}");
+    let entries = fs::read_dir(applications).map_err(|error| error.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("appimagekit_") || !name.ends_with("-VLauncher.desktop") {
+            continue;
+        }
+        let Ok(mut contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if !contents.lines().any(|line| line == try_exec) {
+            continue;
+        }
+        if contents.lines().any(|line| line == "NoDisplay=true") {
+            continue;
+        }
+        let marker = "Type=Application\n";
+        if !contents.contains(marker) {
+            continue;
+        }
+        contents = contents.replacen(marker, "Type=Application\nNoDisplay=true\n", 1);
+        write_atomic(&path, contents.as_bytes())?;
+    }
     Ok(())
 }
 
@@ -106,15 +146,19 @@ fn install_desktop_files(data_dir: &Path, executable: &Path) -> Result<PathBuf, 
     let icon = data_dir
         .join("icons/hicolor/512x512/apps")
         .join(format!("{APP_ID}.png"));
-    let contents = format!(
+    let handler_contents = format!(
         "[Desktop Entry]\nType=Application\nName=VLauncher\nComment=VoxelCore launcher and content platform\nExec={} %u\nIcon={APP_ID}\nStartupWMClass={WINDOW_ID}\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/vlauncher;\n",
         desktop_exec(executable)?
     );
-    write_atomic(&desktop, contents.as_bytes())?;
-    // Wayland ищет иконку по имени бинарника, GTK - по app id.
-    let alias_contents = contents.replace("MimeType=x-scheme-handler/vlauncher;\n", "");
-    write_atomic(&identifier_alias, alias_contents.as_bytes())?;
+    write_atomic(&desktop, handler_contents.as_bytes())?;
     write_atomic(&icon, ICON)?;
+    let launcher_contents = format!(
+        "[Desktop Entry]\nType=Application\nName=VLauncher\nComment=VoxelCore launcher and content platform\nExec={}\nIcon={}\nStartupWMClass={WINDOW_ID}\nTerminal=false\nCategories=Game;\n",
+        desktop_exec(executable)?,
+        icon.display()
+    );
+    write_atomic(&identifier_alias, launcher_contents.as_bytes())?;
+    hide_appimage_launcher_entry(&applications, executable)?;
 
     // Старый deep-link плагин создаёт второй desktop-файл без иконки.
     let legacy = applications.join("vlauncher-handler.desktop");
@@ -233,10 +277,27 @@ mod tests {
         assert!(contents.contains("Icon=space.vlauncher\n"));
         assert!(contents.contains("StartupWMClass=vlauncher\n"));
         assert!(contents.contains("Exec=\"/tmp/VLauncher build/\\$release\\`1\\`.AppImage\" %u\n"));
+        assert!(contents.contains("NoDisplay=true\n"));
         assert!(!applications.join("vlauncher-handler.desktop").exists());
         let alias = fs::read_to_string(applications.join("space.vlauncher.desktop")).unwrap();
-        assert!(alias.contains("Icon=space.vlauncher\n"));
+        assert!(alias.contains(&format!(
+            "Icon={}\n",
+            directory
+                .path()
+                .join("icons/hicolor/512x512/apps/space.vlauncher.png")
+                .display()
+        )));
+        assert!(!alias.contains("NoDisplay="));
         assert!(!alias.contains("MimeType="));
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(applications.join("space.vlauncher.desktop"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
         assert_eq!(
             fs::read(
                 directory
@@ -245,6 +306,38 @@ mod tests {
             )
             .unwrap(),
             ICON
+        );
+    }
+
+    #[test]
+    fn hides_only_the_matching_appimage_launcher_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let applications = directory.path().join("applications");
+        fs::create_dir_all(&applications).unwrap();
+        let matching = applications.join("appimagekit_123-VLauncher.desktop");
+        fs::write(
+            &matching,
+            "[Desktop Entry]\nType=Application\nTryExec=/tmp/VLauncher.AppImage\n",
+        )
+        .unwrap();
+        let other = applications.join("appimagekit_456-VLauncher.desktop");
+        fs::write(
+            &other,
+            "[Desktop Entry]\nType=Application\nTryExec=/tmp/Other.AppImage\n",
+        )
+        .unwrap();
+
+        hide_appimage_launcher_entry(&applications, Path::new("/tmp/VLauncher.AppImage")).unwrap();
+
+        assert!(
+            fs::read_to_string(matching)
+                .unwrap()
+                .contains("NoDisplay=true\n")
+        );
+        assert!(
+            !fs::read_to_string(other)
+                .unwrap()
+                .contains("NoDisplay=true\n")
         );
     }
 }

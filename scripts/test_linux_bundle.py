@@ -58,7 +58,9 @@ HOOKSDIR="$APPDIR"
 HOOKFILE="$HOOKSDIR/linuxdeploy-plugin-gtk.sh"
 cat > "$HOOKFILE" <<'EOF'
 export GDK_BACKEND=x11 # upstream default
-export GTK_THEME=Adwaita
+gsettings get org.gnome.desktop.interface gtk-theme 2> /dev/null | grep -qi "dark" && GTK_THEME_VARIANT="dark" || GTK_THEME_VARIANT="light"
+APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:$GTK_THEME_VARIANT"}" # Allow user to override theme (discouraged)
+export GTK_THEME="$APPIMAGE_GTK_THEME"
 EOF
 '''
         patched = module.patch_plugin(source)
@@ -74,7 +76,9 @@ EOF
             self.assertEqual([p.name for p in libs.iterdir()], ["libgtk-3.so.0"])
             hook = (root / "linuxdeploy-plugin-gtk.sh").read_text()
             self.assertNotIn("GDK_BACKEND", hook)
-            self.assertIn("GTK_THEME", hook)
+            self.assertIn('APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:dark"}"', hook)
+            self.assertNotIn("GTK_THEME_VARIANT", hook)
+            self.assertIn('export GTK_THEME="$APPIMAGE_GTK_THEME"', hook)
 
     def test_unknown_plugin_is_rejected(self):
         with self.assertRaises(RuntimeError):

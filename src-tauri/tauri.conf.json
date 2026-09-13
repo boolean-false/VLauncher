@@ -17,6 +17,7 @@
     "windows": [
       {
         "title": "VLauncher",
+        "theme": "Dark",
         "useHttpsScheme": true,
         "width": 1280,
         "height": 800,

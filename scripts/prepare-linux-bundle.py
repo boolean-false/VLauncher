@@ -9,6 +9,9 @@ import urllib.error
 import urllib.request
 
 MARKER = "# VLauncher host Wayland libraries v1"
+THEME_SOURCE = '''gsettings get org.gnome.desktop.interface gtk-theme 2> /dev/null | grep -qi "dark" && GTK_THEME_VARIANT="dark" || GTK_THEME_VARIANT="light"
+APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:$GTK_THEME_VARIANT"}" # Allow user to override theme (discouraged)'''
+THEME_PATCH = '''APPIMAGE_GTK_THEME="${APPIMAGE_GTK_THEME:-"Adwaita:dark"}" # Allow user to override theme'''
 UPSTREAM_COMMIT = "b5eb8d05b4c0ed40107fe2158c5d8527f94568ef"
 URL = (
     "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/"
@@ -42,6 +45,9 @@ def patch_plugin(source: str) -> str:
         return source
     if 'HOOKFILE="$HOOKSDIR/linuxdeploy-plugin-gtk.sh"' not in source:
         raise RuntimeError("GTK deployment plugin changed; review compatibility patch")
+    if THEME_SOURCE not in source:
+        raise RuntimeError("GTK deployment plugin theme hook changed; review compatibility patch")
+    source = source.replace(THEME_SOURCE, THEME_PATCH, 1)
     # GTK сам выберет Wayland или X11.
     source = "\n".join(
         line for line in source.splitlines()
