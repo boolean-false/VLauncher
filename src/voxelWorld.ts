@@ -19,12 +19,28 @@ export type VoxelWorldMod = {
   logo_url: string | null;
   links?: { id: number; type: string; url: string }[];
 };
+export type VoxelWorldVersion = {
+  id: number;
+  version_number: string;
+  changelog: string | null;
+  detail_changelog?: string | null;
+  status: { id: number; title: string };
+  engine: { id: number; version_number: string }[];
+  dependencies?: (VoxelWorldVersion & {
+    project: { id: number; slug: string; title: string; type: string };
+  })[];
+  created_at: string | null;
+};
 
 type VoxelWorldPage = {
   data: VoxelWorldMod[];
   meta: { current_page: number; last_page: number; total: number };
 };
 type TagResponse = { data: VoxelWorldTag[] };
+type VersionPage = {
+  data: VoxelWorldVersion[];
+  meta: { current_page: number; last_page: number; total: number };
+};
 
 const tagCacheKey = "vlauncher.voxelworld.tags.v1";
 const tagCacheLifetime = 24 * 60 * 60 * 1000;
@@ -198,6 +214,50 @@ export function useVoxelWorldMod(slug: string) {
     `voxelworld:mod:${slug}`,
     async () => (await request<{ data: VoxelWorldMod }>(`mods/${slug}`)).data,
     !!slug,
+  );
+}
+
+async function loadAllVoxelWorldVersions(slug: string) {
+  const first = await request<VersionPage>(
+    `mods/${slug}/versions`,
+    new URLSearchParams({ page: "1", item_count: "100", sortOrder: "desc" }),
+  );
+  const rest = await Promise.all(
+    Array.from(
+      { length: Math.max(0, first.meta.last_page - 1) },
+      (_, index) => index + 2,
+    ).map((page) =>
+      request<VersionPage>(
+        `mods/${slug}/versions`,
+        new URLSearchParams({
+          page: String(page),
+          item_count: "100",
+          sortOrder: "desc",
+        }),
+      ),
+    ),
+  );
+  return [first, ...rest].flatMap((page) => page.data);
+}
+
+export function useVoxelWorldVersions(slug: string) {
+  return useRequest(
+    `voxelworld:versions:${slug}`,
+    () => loadAllVoxelWorldVersions(slug),
+    !!slug,
+  );
+}
+
+export function useVoxelWorldVersion(slug: string, versionId: number) {
+  return useRequest(
+    `voxelworld:version:${slug}:${versionId}`,
+    async () =>
+      (
+        await request<{ data: VoxelWorldVersion }>(
+          `mods/${slug}/versions/${versionId}`,
+        )
+      ).data,
+    !!slug && versionId > 0,
   );
 }
 

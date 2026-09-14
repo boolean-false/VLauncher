@@ -102,6 +102,9 @@ pub fn prepare_package(
             .map_err(|error| problem(error.to_string()))?
             .to_string_lossy()
             .replace('\\', "/");
+        if relative.split('/').next() == Some(".git") {
+            continue;
+        }
         archive
             .start_file(&relative, options)
             .map_err(|error| problem(error.to_string()))?;

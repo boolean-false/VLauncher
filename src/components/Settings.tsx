@@ -119,7 +119,7 @@ export function Settings({
           <section className="setting-row">
             <div>
               <h3>Совместный каталог VoxelWorld</h3>
-              <p>Добавляет моды VoxelWorld в поиск и объединяет категории двух площадок. Установка пока недоступна.</p>
+              <p>Добавляет моды VoxelWorld в поиск, объединяет категории площадок и позволяет устанавливать их в профиль.</p>
             </div>
             <label className="checkbox-row">
               <input

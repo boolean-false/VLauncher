@@ -8,6 +8,16 @@ export type LocalProfile = {
   roots: string[];
   root_requirements?: Record<string, string>;
   packages: { id: string; version: string; title?: string | null }[];
+  external_packages?: {
+    id: string;
+    source: "voxelworld";
+    project_id: number;
+    slug: string;
+    version_id: number;
+    version: string;
+    title: string;
+    artifact_sha256: string;
+  }[];
   manual_packages?: string[];
   problem?: string | null;
 };

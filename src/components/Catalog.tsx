@@ -33,6 +33,8 @@ import {
   useVoxelWorldMod,
   useVoxelWorldMods,
   useVoxelWorldTags,
+  useVoxelWorldVersion,
+  useVoxelWorldVersions,
   voxelWorldTagForCategory,
   voxelWorldTagName,
   type VoxelWorldMod,
@@ -68,6 +70,7 @@ export function Catalog({
   preview,
   deepLink,
   create,
+  refreshProfiles,
 }: {
   active?: boolean;
   profiles: LocalProfile[];
@@ -79,6 +82,7 @@ export function Catalog({
   preview: (value: Preview) => void;
   deepLink: string;
   create: () => void;
+  refreshProfiles: () => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("mod");
@@ -444,6 +448,13 @@ export function Catalog({
           <VoxelWorldProjectView
             key={detail}
             slug={detail.slice("voxelworld:".length)}
+            profiles={profiles}
+            selected={selected}
+            select={select}
+            busy={busy}
+            running={running}
+            run={run}
+            refreshProfiles={refreshProfiles}
             close={() => setDetail("")}
           />
         ) : (
@@ -495,17 +506,78 @@ function ProjectIcon({ project }: { project: Project }) {
 }
 function VoxelWorldProjectView({
   slug,
+  profiles,
+  selected,
+  select,
+  busy,
+  running,
+  run,
+  refreshProfiles,
   close,
 }: {
   slug: string;
+  profiles: LocalProfile[];
+  selected: string;
+  select: (id: string) => void;
+  busy: boolean;
+  running: Set<string>;
+  run: RunTask;
+  refreshProfiles: () => Promise<void>;
   close: () => void;
 }) {
   const result = useVoxelWorldMod(slug);
   const project = result.data;
+  const versionsResult = useVoxelWorldVersions(slug);
+  const versions = versionsResult.data ?? [];
+  const profile = profiles.find((item) => item.id === selected);
+  const profileEngine = engineVersion(profile);
+  const [versionId, setVersionId] = useState(0);
+  const [acceptedRisk, setAcceptedRisk] = useState(false);
+  const [allowIncompatible, setAllowIncompatible] = useState(false);
+  const selectedVersion = versions.find((version) => version.id === versionId);
+  const versionResult = useVoxelWorldVersion(slug, versionId);
+  const versionDetail = versionResult.data;
+  const compatible =
+    !!selectedVersion &&
+    (!selectedVersion.engine.length ||
+      selectedVersion.engine.some((item) =>
+        sameEngineVersion(item.version_number, profileEngine),
+      ));
+  useEffect(() => {
+    if (!versions.length) return;
+    setVersionId((current) => {
+      if (versions.some((version) => version.id === current)) return current;
+      return (
+        versions.find(
+          (version) =>
+            !version.engine.length ||
+            version.engine.some((item) =>
+              sameEngineVersion(item.version_number, profileEngine),
+            ),
+        ) ?? versions[0]
+      ).id;
+    });
+  }, [versions, profileEngine]);
   const openProject = () =>
     void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(slug)}`);
+  const install = () => {
+    if (!project || !profile || !selectedVersion || !versionDetail) return;
+    void run(`Установка ${project.title}`, async (stage) => {
+      stage("Загружаем и проверяем архивы VoxelWorld…");
+      await invoke("install_voxelworld_mod", {
+        profileId: profile.id,
+        projectId: project.id,
+        slug: project.slug,
+        versionId: selectedVersion.id,
+        allowIncompatible,
+      });
+      await refreshProfiles();
+    }).then((ok) => {
+      if (ok) close();
+    });
+  };
   return (
-    <Modal title={project?.title ?? "Проект VoxelWorld"} close={close} busy={false}>
+    <Modal title={project?.title ?? "Проект VoxelWorld"} close={close} busy={busy}>
       {result.error && !project ? (
         <ErrorNotice retry={result.refresh}>{result.error}</ErrorNotice>
       ) : !project ? (
@@ -544,15 +616,180 @@ function VoxelWorldProjectView({
               </dd>
             </div>
           </dl>
-          <p className="notice">Просмотр работает в экспериментальном режиме. Установка из VoxelWorld появится отдельно.</p>
+          {versionsResult.error && !versions.length ? (
+            <ErrorNotice retry={versionsResult.refresh}>Не удалось загрузить версии проекта.</ErrorNotice>
+          ) : versionsResult.loading ? (
+            <p role="status">Загружаем версии…</p>
+          ) : versions.length ? (
+            <>
+              <div className="form-columns">
+                <label>
+                  Версия проекта
+                  <Select
+                    value={versionId}
+                    onChange={(event) => {
+                      setVersionId(Number(event.target.value));
+                      setAcceptedRisk(false);
+                      setAllowIncompatible(false);
+                    }}
+                  >
+                    {versions.map((version) => (
+                      <option key={version.id} value={version.id}>
+                        {version.version_number} · {voxelWorldChannel(version.status.title)}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+                <label>
+                  Установить в профиль
+                  <Select
+                    value={selected}
+                    onChange={(event) => {
+                      select(event.target.value);
+                      setAcceptedRisk(false);
+                      setAllowIncompatible(false);
+                    }}
+                    disabled={!profiles.length}
+                  >
+                    <option value="" disabled>Выберите профиль</option>
+                    {profiles.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} · {engineVersion(item) || "версия не выбрана"}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              </div>
+              {selectedVersion && (
+                <div className="release-info">
+                  <span>
+                    VoxelCore {voxelWorldEngineRange(selectedVersion.engine.map((item) => item.version_number))}
+                  </span>
+                  <span>{selectedVersion.created_at?.slice(0, 10) || "Дата не указана"}</span>
+                </div>
+              )}
+              {selectedVersion?.changelog && (
+                <details>
+                  <summary>Изменения в версии {selectedVersion.version_number}</summary>
+                  <p className="preserve-lines">{selectedVersion.changelog}</p>
+                </details>
+              )}
+              {!!versionDetail?.dependencies?.length && (
+                <section className="release-dependencies">
+                  <h3>Будут установлены зависимости</h3>
+                  {versionDetail.dependencies.map((dependency) => (
+                    <div className="dependency-row" key={`${dependency.project.id}-${dependency.id}`}>
+                      <strong>{dependency.project.title}</strong>
+                      <span>{dependency.version_number}</span>
+                      <small>VoxelWorld</small>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {versionResult.loading && <p role="status">Проверяем зависимости…</p>}
+              {versionResult.error && (
+                <ErrorNotice retry={versionResult.refresh}>Не удалось проверить зависимости выбранной версии.</ErrorNotice>
+              )}
+              {profile && !profileEngine && <ErrorNotice>В профиле не выбрана версия VoxelCore.</ErrorNotice>}
+              {profileEngine && selectedVersion && !compatible && (
+                <>
+                  <ErrorNotice>Эта версия не поддерживает VoxelCore {profileEngine}.</ErrorNotice>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={allowIncompatible}
+                      onChange={(event) => setAllowIncompatible(event.target.checked)}
+                    />
+                    Установить всё равно. Мод может не запуститься или повредить данные мира
+                  </label>
+                </>
+              )}
+              {profile && running.has(profile.id) && <div className="notice">Завершите игру, чтобы изменить её контент.</div>}
+              <label className="checkbox-row external-install-consent">
+                <input
+                  type="checkbox"
+                  checked={acceptedRisk}
+                  onChange={(event) => setAcceptedRisk(event.target.checked)}
+                />
+                Архивы загружаются с VoxelWorld и не имеют опубликованной подписи или контрольной суммы
+              </label>
+            </>
+          ) : (
+            <p className="notice">У проекта пока нет доступных версий.</p>
+          )}
           <div className="modal-actions">
             <button onClick={close}>Закрыть</button>
-            <button className="primary" onClick={openProject}>Открыть на VoxelWorld</button>
+            <button onClick={openProject}>Открыть на VoxelWorld</button>
+            {!!versions.length && (
+              <button
+                className="primary"
+                disabled={
+                  busy ||
+                  !profile ||
+                  !profileEngine ||
+                  !selectedVersion ||
+                  !versionDetail ||
+                  (!compatible && !allowIncompatible) ||
+                  !acceptedRisk ||
+                  running.has(profile.id)
+                }
+                onClick={install}
+              >
+                {profile?.external_packages?.some((item) => item.project_id === project.id)
+                  ? "Обновить"
+                  : "Установить"}
+              </button>
+            )}
           </div>
         </>
       )}
     </Modal>
   );
+}
+function sameEngineVersion(left: string, right: string) {
+  const supported = numericVersion(left);
+  const current = numericVersion(right);
+  if (!supported || !current) {
+    return normalizeVersion(left) === normalizeVersion(right);
+  }
+  if (supported.length === 2) {
+    return supported[0] === current[0] && supported[1] === current[1];
+  }
+  return supported.every((part, index) => part === (current[index] ?? 0));
+}
+function normalizeVersion(value: string) {
+  return value.trim().replace(/^v/i, "");
+}
+function numericVersion(value: string) {
+  const core = normalizeVersion(value).split(/[+-]/, 1)[0];
+  if (!/^\d+\.\d+(?:\.\d+)?$/.test(core)) return null;
+  return core.split(".").map(Number);
+}
+function voxelWorldEngineRange(versions: string[]) {
+  if (!versions.length) return "любая версия";
+  const parsed = versions.map(numericVersion);
+  if (parsed.every((version): version is number[] => !!version && version.length === 2)) {
+    const unique = [...new Map(parsed.map((version) => [`${version[0]}.${version[1]}`, version])).values()]
+      .sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+    const first = unique[0];
+    const last = unique[unique.length - 1];
+    const contiguous = unique.every(
+      (version, index) => version[0] === first[0] && version[1] === first[1] + index,
+    );
+    if (contiguous) {
+      return `≥${first[0]}.${first[1]}.0 и <${last[0]}.${last[1] + 1}.0`;
+    }
+  }
+  return versions.join(", ");
+}
+function voxelWorldChannel(channel: string) {
+  return channel === "release"
+    ? "Стабильная"
+    : channel === "beta"
+      ? "Бета"
+      : channel === "alpha"
+        ? "Альфа"
+        : channel;
 }
 export function ProjectView({
   slug,

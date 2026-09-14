@@ -782,7 +782,7 @@ export default function App() {
                           {title}
                           {id === "content" && (
                             <span className="count">
-                              {profile.packages.length}
+                              {profile.packages.length + (profile.external_packages?.length ?? 0)}
                             </span>
                           )}
                           {id === "logs" && logs.some((item) => item.profile_id === profile.id) && (
@@ -848,7 +848,7 @@ export default function App() {
                               </button>
                             </div>
                           </div>
-                          {!profile.packages.length && !profile.manual_packages?.length ? (
+                          {!profile.packages.length && !profile.external_packages?.length && !profile.manual_packages?.length ? (
                             <Empty title="Чистая игра">
                               <p>
                                 Контент-паков пока нет. Можно играть сразу
@@ -900,6 +900,34 @@ export default function App() {
                                     )}
                                   </div>
                                 ))}
+                              {profile.external_packages?.map((pkg) => (
+                                <div className="content-row" key={`voxelworld-${pkg.project_id}`}>
+                                  <span className="package-symbol">
+                                    <Icon name="package" />
+                                  </span>
+                                  <div className="grow">
+                                    <strong title={pkg.id}>{pkg.title}</strong>
+                                    <small>VoxelWorld · управляется VLauncher</small>
+                                  </div>
+                                  <code>{pkg.version}</code>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Удалить ${pkg.title}`}
+                                    disabled={busy || running.has(profile.id)}
+                                    onClick={() =>
+                                      void run(`Удаление ${pkg.title}`, async () => {
+                                        await invoke("remove_voxelworld_mod", {
+                                          profileId: profile.id,
+                                          id: pkg.id,
+                                        });
+                                        await refresh();
+                                      })
+                                    }
+                                  >
+                                    <Icon name="close" size={16} />
+                                  </button>
+                                </div>
+                              ))}
                               {profile.manual_packages?.map((id) => (
                                 <div className="content-row" key={`manual-${id}`}>
                                   <span className="package-symbol">
@@ -982,6 +1010,7 @@ export default function App() {
               preview={setPendingPlan}
               deepLink={deepLink}
               create={() => setNewProfile(true)}
+              refreshProfiles={refresh}
             /></div>
           )}
           {screen === "activity" && (
