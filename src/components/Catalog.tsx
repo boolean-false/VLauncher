@@ -27,6 +27,7 @@ import {
 } from "../model";
 import { Empty, ErrorNotice, Icon, Modal } from "./ui";
 import { useJointCatalogEnabled } from "../experimental";
+import { catalogProjectKeys } from "../catalogIdentity";
 import {
   mergeModCategories,
   useAllRegistryProjects,
@@ -149,7 +150,11 @@ export function Catalog({
   const regularPage = result.data ?? previous.current ?? { items: [], total: 0 };
   const jointItems = useMemo(() => {
     const items: CatalogItem[] = [];
-    for (const project of includeVSpace ? allVSpace.data?.items ?? [] : [])
+    const vspaceProjects = includeVSpace ? allVSpace.data?.items ?? [] : [];
+    const vspaceProjectKeys = new Set(
+      vspaceProjects.flatMap((project) => [...catalogProjectKeys(project)]),
+    );
+    for (const project of vspaceProjects)
       items.push({
         key: `vspace:${project.slug}`,
         source: "vspace",
@@ -161,7 +166,9 @@ export function Catalog({
         footer: project.latest_release ? `v${project.latest_release.version}` : "Нет релизов",
         project,
       });
-    for (const project of includeVoxelWorld ? allVoxelWorld.data?.items ?? [] : [])
+    for (const project of includeVoxelWorld ? allVoxelWorld.data?.items ?? [] : []) {
+      if ([...catalogProjectKeys(project)].some((key) => vspaceProjectKeys.has(key)))
+        continue;
       items.push({
         key: `voxelworld:${project.id}`,
         source: "voxelworld",
@@ -173,6 +180,7 @@ export function Catalog({
         footer: project.author.name,
         voxelWorld: project,
       });
+    }
     items.sort((left, right) =>
       sort === "title"
         ? left.title.localeCompare(right.title, "ru", { sensitivity: "base" })
