@@ -5,8 +5,8 @@ pub mod profile;
 pub mod publishing;
 
 pub use manifest::{
-    Capability, DeliveryFile, DeliveryManifest, Dependency, DependencyKind, LockedPackage,
-    Lockfile, PackageEnvironment, PackageKind, PackageManifest, PackageProblem,
+    Capability, DeliveryFile, DeliveryManifest, Dependency, DependencyKind, ExternalPackageLock,
+    LockedPackage, Lockfile, PackageEnvironment, PackageKind, PackageManifest, PackageProblem,
 };
 pub use profile::{
     CacheStatus, ExternalInstallPackage, ExternalPackage, InstallPackage, InstallPlan,

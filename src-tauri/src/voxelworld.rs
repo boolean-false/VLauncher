@@ -1,13 +1,15 @@
 use crate::{TransferControl, TransferEvent, ensure_stopped, profile_store};
 use serde::Deserialize;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::Write,
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 use tauri::Emitter;
+use uuid::Uuid;
 use vlauncher_core::prepare_package;
+use vlauncher_core::{ExternalPackageLock, ProfileStore};
 
 #[tauri::command]
 pub(crate) async fn voxelworld_request(
@@ -162,6 +164,154 @@ fn voxelworld_engine_supports(current: &str, supported: &str) -> bool {
         .all(|(index, part)| current_parts.get(index).copied().unwrap_or(0) == *part)
 }
 
+fn install_versions(
+    app: &tauri::AppHandle,
+    store: &ProfileStore,
+    profile_id: Uuid,
+    client: &reqwest::blocking::Client,
+    versions: Vec<(VoxelWorldVersion, String)>,
+    cancelled: &AtomicBool,
+    locked: &HashMap<(u64, u64), ExternalPackageLock>,
+) -> Result<Vec<vlauncher_core::ExternalPackage>, String> {
+    let downloads = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let prepared = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let mut packages = Vec::new();
+    for (version, version_slug) in versions.into_iter().rev() {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("download paused by user".into());
+        }
+        let url = format!(
+            "https://api.voxelworld.ru/v2/mods/{}/versions/{}/download",
+            version.project.id, version.id
+        );
+        let mut response = client
+            .get(url)
+            .send()
+            .map_err(|_| "Не удалось скачать архив VoxelWorld".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "VoxelWorld не вернул архив: {}",
+                response.status().as_u16()
+            ));
+        }
+        let expected = response.content_length().unwrap_or(0);
+        let limit = 512 * 1024 * 1024_u64;
+        if expected > limit {
+            return Err("Архив VoxelWorld превышает 512 МБ".into());
+        }
+        let archive_path = downloads.path().join(format!("{}.zip", version.id));
+        let mut archive =
+            std::fs::File::create(&archive_path).map_err(|error| error.to_string())?;
+        let mut completed = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        let started = Instant::now();
+        loop {
+            let read = std::io::Read::read(&mut response, &mut buffer)
+                .map_err(|_| "Архив VoxelWorld загрузился не полностью".to_string())?;
+            if read == 0 {
+                break;
+            }
+            completed = completed.saturating_add(read as u64);
+            if completed > limit || expected > 0 && completed > expected {
+                return Err("VoxelWorld прислал слишком большой архив".into());
+            }
+            archive
+                .write_all(&buffer[..read])
+                .map_err(|error| error.to_string())?;
+            let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+            let _ = app.emit(
+                "transfer-progress",
+                TransferEvent {
+                    kind: "download",
+                    completed,
+                    total: expected.max(completed),
+                    bytes_per_second: speed,
+                    eta_seconds: if speed > 0 {
+                        expected.saturating_sub(completed) / speed
+                    } else {
+                        0
+                    },
+                },
+            );
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("download paused by user".into());
+            }
+        }
+        archive.sync_all().map_err(|error| error.to_string())?;
+        if expected > 0 && completed != expected {
+            return Err("Архив VoxelWorld загрузился не полностью".into());
+        }
+        let artifact =
+            prepare_package(&archive_path, prepared.path()).map_err(|error| error.to_string())?;
+        let lock = locked.get(&(version.project.id, version.id));
+        if lock.is_some_and(|item| {
+            item.id != artifact.manifest.id
+                || item.version != artifact.manifest.version
+                || item.artifact_sha256 != artifact.sha256
+                || item.artifact_size != artifact.size
+        }) {
+            return Err(format!(
+                "Зафиксированный пакет {} изменился на VoxelWorld",
+                version.project.title
+            ));
+        }
+        packages.push(vlauncher_core::ExternalInstallPackage {
+            package: vlauncher_core::ExternalPackage {
+                id: artifact.manifest.id.clone(),
+                source: "voxelworld".into(),
+                project_id: version.project.id,
+                slug: version.project.slug.unwrap_or(version_slug),
+                version_id: version.id,
+                version: artifact.manifest.version.clone(),
+                title: version.project.title,
+                artifact_sha256: artifact.sha256.clone(),
+                artifact_size: artifact.size,
+            },
+            artifact,
+        });
+    }
+    if locked.is_empty() {
+        store.install_external_packages(profile_id, packages)
+    } else {
+        store.replace_external_packages(profile_id, packages)
+    }
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn install_locked_packages(
+    app: &tauri::AppHandle,
+    store: &ProfileStore,
+    profile_id: Uuid,
+    packages: Vec<ExternalPackageLock>,
+    cancelled: &AtomicBool,
+) -> Result<Vec<vlauncher_core::ExternalPackage>, String> {
+    if packages.is_empty() {
+        return store
+            .replace_external_packages(profile_id, Vec::new())
+            .map_err(|error| error.to_string());
+    }
+    let client = voxelworld_client()?;
+    let mut locked = HashMap::new();
+    let mut versions = Vec::new();
+    for package in packages {
+        if package.source != "voxelworld"
+            || locked
+                .insert((package.project_id, package.version_id), package.clone())
+                .is_some()
+        {
+            return Err("Сборка содержит некорректный список VoxelWorld".into());
+        }
+        let version = voxelworld_version(&client, &package.slug, package.version_id)?;
+        if version.id != package.version_id || version.project.id != package.project_id {
+            return Err("VoxelWorld вернул другую версию зафиксированного пакета".into());
+        }
+        versions.push((version, package.slug));
+    }
+    install_versions(
+        app, store, profile_id, &client, versions, cancelled, &locked,
+    )
+}
+
 #[tauri::command]
 pub(crate) async fn install_voxelworld_mod(
     app: tauri::AppHandle,
@@ -245,93 +395,15 @@ pub(crate) async fn install_voxelworld_mod(
             versions.push((version, version_slug));
         }
 
-        let downloads = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let prepared = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let mut packages = Vec::new();
-        for (version, version_slug) in versions.into_iter().rev() {
-            if cancelled.load(Ordering::SeqCst) {
-                return Err("download paused by user".into());
-            }
-            let url = format!(
-                "https://api.voxelworld.ru/v2/mods/{}/versions/{}/download",
-                version.project.id, version.id
-            );
-            let mut response = client
-                .get(url)
-                .send()
-                .map_err(|_| "Не удалось скачать архив VoxelWorld".to_string())?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "VoxelWorld не вернул архив: {}",
-                    response.status().as_u16()
-                ));
-            }
-            let expected = response.content_length().unwrap_or(0);
-            let limit = 512 * 1024 * 1024_u64;
-            if expected > limit {
-                return Err("Архив VoxelWorld превышает 512 МБ".into());
-            }
-            let archive_path = downloads.path().join(format!("{}.zip", version.id));
-            let mut archive =
-                std::fs::File::create(&archive_path).map_err(|error| error.to_string())?;
-            let mut completed = 0_u64;
-            let mut buffer = [0_u8; 64 * 1024];
-            let started = Instant::now();
-            loop {
-                let read = std::io::Read::read(&mut response, &mut buffer)
-                    .map_err(|_| "Архив VoxelWorld загрузился не полностью".to_string())?;
-                if read == 0 {
-                    break;
-                }
-                completed = completed.saturating_add(read as u64);
-                if completed > limit || expected > 0 && completed > expected {
-                    return Err("VoxelWorld прислал слишком большой архив".into());
-                }
-                archive
-                    .write_all(&buffer[..read])
-                    .map_err(|error| error.to_string())?;
-                let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
-                let _ = app.emit(
-                    "transfer-progress",
-                    TransferEvent {
-                        kind: "download",
-                        completed,
-                        total: expected.max(completed),
-                        bytes_per_second: speed,
-                        eta_seconds: if speed > 0 {
-                            expected.saturating_sub(completed) / speed
-                        } else {
-                            0
-                        },
-                    },
-                );
-                if cancelled.load(Ordering::SeqCst) {
-                    return Err("download paused by user".into());
-                }
-            }
-            archive.sync_all().map_err(|error| error.to_string())?;
-            if expected > 0 && completed != expected {
-                return Err("Архив VoxelWorld загрузился не полностью".into());
-            }
-            let artifact = prepare_package(&archive_path, prepared.path())
-                .map_err(|error| error.to_string())?;
-            packages.push(vlauncher_core::ExternalInstallPackage {
-                package: vlauncher_core::ExternalPackage {
-                    id: artifact.manifest.id.clone(),
-                    source: "voxelworld".into(),
-                    project_id: version.project.id,
-                    slug: version.project.slug.unwrap_or(version_slug),
-                    version_id: version.id,
-                    version: version.version_number,
-                    title: version.project.title,
-                    artifact_sha256: artifact.sha256.clone(),
-                },
-                artifact,
-            });
-        }
-        store
-            .install_external_packages(id, packages)
-            .map_err(|error| error.to_string())
+        install_versions(
+            &app,
+            &store,
+            id,
+            &client,
+            versions,
+            &cancelled,
+            &HashMap::new(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?

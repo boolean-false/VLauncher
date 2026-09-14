@@ -527,14 +527,46 @@ fn create_initialized_profile(
 #[tauri::command]
 async fn create_profile_from_plan(
     app: tauri::AppHandle,
+    control: tauri::State<'_, TransferControl>,
     name: String,
     plan: SignedRemoteInstallPlan,
 ) -> Result<Profile, String> {
     let store = profile_store(&app)?;
-    tauri::async_runtime::spawn_blocking(move || store.create_with_signed_remote(&name, &plan))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    control.cancelled.store(false, Ordering::SeqCst);
+    let cancelled = control.cancelled.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let verified = plan
+            .verify_trusted(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            )
+            .map_err(|error| error.to_string())?;
+        let profile = store.create(&name).map_err(|error| error.to_string())?;
+        let result = (|| {
+            store
+                .apply_remote(profile.id, &verified)
+                .map_err(|error| error.to_string())?;
+            if let Some(packages) = verified.external_packages {
+                voxelworld::install_locked_packages(
+                    &app, &store, profile.id, packages, &cancelled,
+                )?;
+            }
+            store
+                .list()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|item| item.id == profile.id)
+                .ok_or_else(|| "profile does not exist".to_owned())
+        })();
+        if result.is_err() {
+            let _ = store.delete_profile(profile.id);
+        }
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1389,43 +1421,66 @@ async fn apply_remote_install_plan(
     let store = profile_store(&app)?;
     control.cancelled.store(false, Ordering::SeqCst);
     let cancelled = control.cancelled.clone();
-    let total = plan
-        .plan
+    let verified = plan
+        .verify_trusted(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+        )
+        .map_err(|error| error.to_string())?;
+    let total = verified
         .packages
         .iter()
         .map(|package| package.artifact_size)
-        .sum();
+        .sum::<u64>()
+        + verified
+            .external_packages
+            .iter()
+            .flatten()
+            .map(|package| package.artifact_size)
+            .sum::<u64>();
     let progress = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     let started = Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        store.apply_signed_remote_with_progress(id, &plan, |package, completed, _| {
-            let aggregate = if let Ok(mut values) = progress.lock() {
-                values.insert(package.to_owned(), completed);
-                values.values().copied().sum()
-            } else {
-                completed
-            };
-            let speed = (aggregate as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
-            let _ = app.emit(
-                "transfer-progress",
-                TransferEvent {
-                    kind: "download",
-                    completed: aggregate,
-                    total,
-                    bytes_per_second: speed,
-                    eta_seconds: if speed > 0 {
-                        total.saturating_sub(aggregate) / speed
-                    } else {
-                        0
+        store
+            .apply_remote_with_progress(id, &verified, |package, completed, _| {
+                let aggregate = if let Ok(mut values) = progress.lock() {
+                    values.insert(package.to_owned(), completed);
+                    values.values().copied().sum()
+                } else {
+                    completed
+                };
+                let speed = (aggregate as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+                let _ = app.emit(
+                    "transfer-progress",
+                    TransferEvent {
+                        kind: "download",
+                        completed: aggregate,
+                        total,
+                        bytes_per_second: speed,
+                        eta_seconds: if speed > 0 {
+                            total.saturating_sub(aggregate) / speed
+                        } else {
+                            0
+                        },
                     },
-                },
-            );
-            !cancelled.load(Ordering::SeqCst)
-        })
+                );
+                !cancelled.load(Ordering::SeqCst)
+            })
+            .map_err(|error| error.to_string())?;
+        if let Some(packages) = verified.external_packages {
+            if let Err(error) =
+                voxelworld::install_locked_packages(&app, &store, id, packages, &cancelled)
+            {
+                let _ = store.rollback(id);
+                return Err(error);
+            }
+        }
+        Ok::<(), String>(())
     })
     .await
     .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

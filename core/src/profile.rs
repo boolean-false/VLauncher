@@ -67,6 +67,8 @@ pub struct ExternalPackage {
     pub version: String,
     pub title: String,
     pub artifact_sha256: String,
+    #[serde(default)]
+    pub artifact_size: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +128,8 @@ pub struct RemoteInstallPlan {
     #[serde(default)]
     pub root_requirements: HashMap<String, String>,
     pub packages: Vec<RemoteInstallPackage>,
+    #[serde(default)]
+    pub external_packages: Option<Vec<crate::ExternalPackageLock>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1037,7 +1041,24 @@ impl ProfileStore {
         profile_id: Uuid,
         packages: Vec<ExternalInstallPackage>,
     ) -> Result<Vec<ExternalPackage>, PackageProblem> {
-        if packages.is_empty() {
+        self.update_external_packages(profile_id, packages, false)
+    }
+
+    pub fn replace_external_packages(
+        &self,
+        profile_id: Uuid,
+        packages: Vec<ExternalInstallPackage>,
+    ) -> Result<Vec<ExternalPackage>, PackageProblem> {
+        self.update_external_packages(profile_id, packages, true)
+    }
+
+    fn update_external_packages(
+        &self,
+        profile_id: Uuid,
+        packages: Vec<ExternalInstallPackage>,
+        replace_all: bool,
+    ) -> Result<Vec<ExternalPackage>, PackageProblem> {
+        if packages.is_empty() && !replace_all {
             return invalid("external install contains no packages");
         }
         let profile = self.profile(profile_id)?;
@@ -1113,7 +1134,12 @@ impl ProfileStore {
                 .packages
                 .iter()
                 .map(|package| package.id.clone())
-                .chain(existing.iter().map(|package| package.id.clone()))
+                .chain(
+                    existing
+                        .iter()
+                        .filter(|_| !replace_all)
+                        .map(|package| package.id.clone()),
+                )
                 .chain(profile.manual_packages.iter().cloned())
                 .chain(packages.iter().map(|item| item.package.id.clone()))
                 .collect::<HashSet<_>>();
@@ -1151,11 +1177,12 @@ impl ProfileStore {
             let replaced = existing
                 .iter()
                 .filter(|old| {
-                    packages.iter().any(|item| {
-                        item.package.id == old.id
-                            || item.package.source == old.source
-                                && item.package.project_id == old.project_id
-                    })
+                    replace_all
+                        || packages.iter().any(|item| {
+                            item.package.id == old.id
+                                || item.package.source == old.source
+                                    && item.package.project_id == old.project_id
+                        })
                 })
                 .map(|package| package.id.clone())
                 .chain(packages.iter().map(|item| item.package.id.clone()))
@@ -1538,29 +1565,52 @@ impl ProfileStore {
         output_folder: impl AsRef<Path>,
     ) -> Result<PreparedArtifact, PackageProblem> {
         let profile = self.profile(profile_id)?;
+        if profile.main_build.is_some() {
+            return invalid("a modpack cannot use a temporary main build");
+        }
+        if !profile.manual_packages.is_empty() {
+            return invalid("a modpack cannot include manually installed packages");
+        }
+        if profile
+            .external_packages
+            .iter()
+            .any(|package| package.artifact_size == 0)
+        {
+            return invalid("reinstall VoxelWorld packages before creating a modpack");
+        }
         let engine = profile
-            .voxelcore_version
-            .as_deref()
+            .main_build
+            .as_ref()
+            .and_then(|build| build.engine_version.as_deref())
+            .or(profile.voxelcore_version.as_deref())
             .ok_or_else(|| PackageProblem::Invalid("profile has no VoxelCore version".into()))?;
-        let installed = profile
+        let dependencies = profile
             .packages
             .iter()
-            .map(|package| (package.id.as_str(), package.version.as_str()))
-            .collect::<HashMap<_, _>>();
-        let dependencies = profile
-            .roots
-            .iter()
-            .map(|root| {
-                let selected = installed.get(root.as_str()).ok_or_else(|| {
-                    PackageProblem::Invalid(format!("root package '{root}' is not installed"))
-                })?;
-                Ok(serde_json::json!({
-                    "id": root,
-                    "requirement": format!("={selected}"),
+            .filter(|package| package.id != slug)
+            .map(|package| {
+                serde_json::json!({
+                    "id": package.id,
+                    "requirement": format!("={}", package.version),
                     "kind": "required"
-                }))
+                })
             })
-            .collect::<Result<Vec<_>, PackageProblem>>()?;
+            .collect::<Vec<_>>();
+        let external_packages = profile
+            .external_packages
+            .iter()
+            .map(|package| crate::ExternalPackageLock {
+                source: package.source.clone(),
+                id: package.id.clone(),
+                title: package.title.clone(),
+                project_id: package.project_id,
+                slug: package.slug.clone(),
+                version_id: package.version_id,
+                version: package.version.clone(),
+                artifact_sha256: package.artifact_sha256.clone(),
+                artifact_size: package.artifact_size,
+            })
+            .collect::<Vec<_>>();
         let output_folder = output_folder.as_ref();
         fs::create_dir_all(output_folder).map_err(|source| io_error(output_folder, source))?;
         let source = output_folder.join(format!(".modpack-source-{}", Uuid::new_v4()));
@@ -1577,6 +1627,7 @@ impl ProfileStore {
                 "license": license,
                 "voxelcore": format!("={engine}"),
                 "dependencies": dependencies,
+                "external_packages": external_packages,
                 "capabilities": [],
                 "environments": ["client"]
             });
@@ -3186,6 +3237,7 @@ mod tests {
                 download_url: "https://registry.invalid/artifact".into(),
                 dependencies: Vec::new(),
             }],
+            external_packages: None,
         };
         let signing_key = SigningKey::from_bytes(&[7; 32]);
         let public_key = signing_key.verifying_key().to_bytes();
@@ -3263,6 +3315,7 @@ mod tests {
             version: "1.0.0".into(),
             title: "External project".into(),
             artifact_sha256: artifact.sha256.clone(),
+            artifact_size: artifact.size,
         };
         store
             .install_external_packages(
@@ -3295,6 +3348,7 @@ mod tests {
                         version: "2.0.0".into(),
                         title: "External project".into(),
                         artifact_sha256: updated_artifact.sha256.clone(),
+                        artifact_size: updated_artifact.size,
                     },
                     artifact: updated_artifact,
                 }],
@@ -3309,6 +3363,40 @@ mod tests {
             .unwrap();
         assert!(!content.exists());
         assert!(store.list().unwrap()[0].external_packages.is_empty());
+    }
+
+    #[test]
+    fn an_empty_modpack_lock_removes_external_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("Strict build").unwrap();
+        store.initialize_vanilla(profile.id, "0.31.4").unwrap();
+        let artifact = external_artifact(temp.path(), "1.0.0");
+        store
+            .install_external_packages(
+                profile.id,
+                vec![ExternalInstallPackage {
+                    package: ExternalPackage {
+                        id: artifact.manifest.id.clone(),
+                        source: "voxelworld".into(),
+                        project_id: 10,
+                        slug: "external-project".into(),
+                        version_id: 20,
+                        version: artifact.manifest.version.clone(),
+                        title: "External project".into(),
+                        artifact_sha256: artifact.sha256.clone(),
+                        artifact_size: artifact.size,
+                    },
+                    artifact,
+                }],
+            )
+            .unwrap();
+        store
+            .replace_external_packages(profile.id, Vec::new())
+            .unwrap();
+        let installed = store.list().unwrap().remove(0);
+        assert!(installed.external_packages.is_empty());
+        assert!(!store.game_directory(profile.id).unwrap().join("content/external_mod").exists());
     }
 
     #[test]
@@ -3821,6 +3909,7 @@ mod tests {
                     roots: vec![],
                     root_requirements: HashMap::new(),
                     packages: vec![],
+                    external_packages: None,
                 },
             )
             .unwrap();
@@ -3894,6 +3983,26 @@ mod tests {
                 },
             )
             .unwrap();
+        let external_artifact = external_artifact(temp.path(), "1.0.0");
+        store
+            .install_external_packages(
+                profile.id,
+                vec![ExternalInstallPackage {
+                    package: ExternalPackage {
+                        id: external_artifact.manifest.id.clone(),
+                        source: "voxelworld".into(),
+                        project_id: 10,
+                        slug: "external-project".into(),
+                        version_id: 20,
+                        version: "1.0.0".into(),
+                        title: "External project".into(),
+                        artifact_sha256: external_artifact.sha256.clone(),
+                        artifact_size: external_artifact.size,
+                    },
+                    artifact: external_artifact,
+                }],
+            )
+            .unwrap();
         let config = store.profile_path(profile.id).join("game/config");
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("demo.json"), "custom").unwrap();
@@ -3912,6 +4021,9 @@ mod tests {
         assert_eq!(artifact.manifest.voxelcore, "=0.31.4");
         assert_eq!(artifact.manifest.dependencies[0].id, "demo_mod");
         assert_eq!(artifact.manifest.dependencies[0].requirement, "=1.0.0");
+        assert_eq!(artifact.manifest.external_packages.len(), 1);
+        assert_eq!(artifact.manifest.external_packages[0].source, "voxelworld");
+        assert_eq!(artifact.manifest.external_packages[0].version_id, 20);
     }
 
     #[test]

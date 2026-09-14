@@ -76,6 +76,18 @@ export type ResolvedPackage = {
   dependencies: string[];
 };
 
+export type ExternalPackageLock = {
+  source: "voxelworld";
+  id: string;
+  title: string;
+  project_id: number;
+  slug: string;
+  version_id: number;
+  version: string;
+  artifact_sha256: string;
+  artifact_size: number;
+};
+
 export type SignedInstallPlan = {
   plan: {
     revision: string;
@@ -85,6 +97,7 @@ export type SignedInstallPlan = {
     roots: string[];
     root_requirements: Record<string, string>;
     packages: ResolvedPackage[];
+    external_packages: ExternalPackageLock[] | null;
   };
   algorithm: "Ed25519";
   key_id: string;

@@ -113,6 +113,22 @@ pub struct PackageManifest {
     pub capabilities: Vec<Capability>,
     #[serde(default = "default_environments")]
     pub environments: Vec<PackageEnvironment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_packages: Vec<ExternalPackageLock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalPackageLock {
+    pub source: String,
+    pub id: String,
+    pub title: String,
+    pub project_id: u64,
+    pub slug: String,
+    pub version_id: u64,
+    pub version: String,
+    pub artifact_sha256: String,
+    pub artifact_size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -238,6 +254,7 @@ impl PackageManifest {
             provides: Vec::new(),
             capabilities: Vec::new(),
             environments: default_environments(),
+            external_packages: Vec::new(),
         })
     }
 
@@ -299,6 +316,39 @@ impl PackageManifest {
                 .any(|item| !environments.insert(item))
         {
             return invalid("at least one unique package environment is required");
+        }
+        let mut external_ids = HashSet::new();
+        if self.external_packages.len() > 256
+            || !self.external_packages.is_empty() && self.kind != PackageKind::Modpack
+        {
+            return invalid("external packages are only valid in modpacks");
+        }
+        for package in &self.external_packages {
+            validate_id(&package.id)?;
+            Version::parse(&package.version).map_err(|error| {
+                PackageProblem::Invalid(format!("invalid external package version: {error}"))
+            })?;
+            if package.source != "voxelworld"
+                || package.project_id == 0
+                || package.version_id == 0
+                || package.slug.is_empty()
+                || package.slug.len() > 255
+                || !package
+                    .slug
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                || package.title.trim().is_empty()
+                || package.title.chars().count() > 128
+                || package.artifact_sha256.len() != 64
+                || !package
+                    .artifact_sha256
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+                || package.artifact_size == 0
+                || !external_ids.insert(package.id.as_str())
+            {
+                return invalid("invalid external package lock");
+            }
         }
         Ok(())
     }

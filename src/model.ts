@@ -17,6 +17,7 @@ export type LocalProfile = {
     version: string;
     title: string;
     artifact_sha256: string;
+    artifact_size?: number;
   }[];
   manual_packages?: string[];
   problem?: string | null;
@@ -88,6 +89,9 @@ export const friendlyError = (value: unknown) => {
     ["profile does not exist", "Профиль больше не существует."],
     ["runtime package is incompatible", "Эта сборка VoxelCore предназначена для другой системы."],
     ["VoxelCore runtime is not installed", "Нужная версия VoxelCore не установлена."],
+    ["a modpack cannot use a temporary main build", "Сборку нельзя создать из временной версии main. Выберите стабильный выпуск VoxelCore."],
+    ["a modpack cannot include manually installed packages", "В профиле есть пакеты, добавленные вручную. Удалите или опубликуйте их перед созданием сборки."],
+    ["reinstall VoxelWorld packages before creating a modpack", "Переустановите пакеты VoxelWorld, чтобы зафиксировать их размер и контрольную сумму."],
   ];
   return translations.find(([fragment]) => text.includes(fragment))?.[1] ?? text;
 };

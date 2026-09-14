@@ -5358,6 +5358,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tempfile",
+ "uuid 1.26.1",
  "vlauncher-core",
  "webkit2gtk",
 ]

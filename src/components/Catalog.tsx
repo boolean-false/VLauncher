@@ -848,11 +848,18 @@ export function ProjectView({
   const install = () => {
     if (!profile || !release || !project) return;
     void run(`Проверка · ${project.title}`, async () => {
-      const roots = [...new Set([...profile.roots, slug])];
+      const roots =
+        project.type === "modpack"
+          ? [slug]
+          : [...new Set([...profile.roots, slug])];
+      const requirements =
+        project.type === "modpack"
+          ? { [slug]: `=${version}` }
+          : { ...(profile.root_requirements ?? {}), [slug]: `=${version}` };
       const plan = await resolveProject(
         roots,
         engineVersion(profile),
-        { ...(profile.root_requirements ?? {}), [slug]: `=${version}` },
+        requirements,
         release.channel === "stable" ? ["stable"] : ["stable", release.channel],
       );
       preview({ profile, plan, title: `Установка ${project.title}`, coverUrl: project.type === "modpack" ? project.cover_url ?? undefined : undefined });
@@ -1108,8 +1115,28 @@ export function InstallPreview({
   for (const pkg of profile.packages)
     if (!plan.plan.packages.some((p) => p.id === pkg.id))
       changes.push({ ...pkg, status: "Удалить", dependency: false, oldVersion: pkg.version });
+  const externalChanges = (plan.plan.external_packages ?? []).map((pkg) => {
+    const old = profile.external_packages?.find((item) => item.id === pkg.id);
+    return {
+      ...pkg,
+      status: !old
+        ? "Добавить"
+        : old.version !== pkg.version || old.artifact_sha256 !== pkg.artifact_sha256
+          ? "Изменить"
+          : "Без изменений",
+    };
+  });
+  if (plan.plan.external_packages)
+    for (const pkg of profile.external_packages ?? [])
+      if (!plan.plan.external_packages.some((item) => item.id === pkg.id))
+        externalChanges.push({
+          ...pkg,
+          artifact_size: pkg.artifact_size ?? 0,
+          status: "Удалить",
+        });
   const changed =
     changes.some((c) => c.status !== "Без изменений") ||
+    externalChanges.some((c) => c.status !== "Без изменений") ||
     JSON.stringify([...profile.roots].sort()) !==
     JSON.stringify([...plan.plan.roots].sort());
   return (
@@ -1147,10 +1174,32 @@ export function InstallPreview({
           </div>
         ))}
       </div>
+      {!!externalChanges.length && (
+        <>
+          <h3>VoxelWorld</h3>
+          <div className="install-changes">
+            {externalChanges.map((item) => (
+              <div key={`voxelworld-${item.id}`}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <small>{item.id} · {item.version} · зафиксированная версия</small>
+                </div>
+                <span className={item.status === "Удалить" ? "danger-text" : "muted"}>
+                  {item.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       <p className="muted">
         Размер архивов:{" "}
         {formatBytes(
-          plan.plan.packages.reduce((sum, p) => sum + p.artifact_size, 0),
+          plan.plan.packages.reduce((sum, p) => sum + p.artifact_size, 0) +
+            (plan.plan.external_packages ?? []).reduce(
+              (sum, p) => sum + p.artifact_size,
+              0,
+            ),
         )}
         . Часть файлов может быть в кэше.
       </p>
