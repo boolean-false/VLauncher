@@ -1337,6 +1337,34 @@ main>div[hidden] {
   font-size: 11px;
 }
 
+.compatibility-issues {
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.compatibility-issues>div {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.compatibility-issues>div:first-child {
+  border-top: 0;
+}
+
+.compatibility-issues strong {
+  font-size: 13px;
+}
+
+.compatibility-issues small,
+.compatibility-issues span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .catalog-project-page .project-install-panel .modal-actions {
   position: sticky;
   bottom: -18px;

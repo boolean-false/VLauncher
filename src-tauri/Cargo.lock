@@ -5361,6 +5361,7 @@ dependencies = [
  "uuid 1.26.1",
  "vlauncher-core",
  "webkit2gtk",
+ "zip 2.4.2",
 ]
 
 [[package]]

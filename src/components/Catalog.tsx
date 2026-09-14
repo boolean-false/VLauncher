@@ -22,6 +22,7 @@ import {
 import {
   engineVersion,
   formatBytes,
+  friendlyError,
   kinds,
   type LocalProfile,
   type RunTask,
@@ -61,6 +62,15 @@ type CatalogItem = {
   footer: string;
   project?: Project;
   voxelWorld?: VoxelWorldMod;
+};
+type VoxelWorldInstallPreview = {
+  package_count: number;
+  incompatibilities: {
+    title: string;
+    version: string;
+    supported_voxelcore: string[];
+    chain: string[];
+  }[];
 };
 export function Catalog({
   active = true,
@@ -615,7 +625,10 @@ function VoxelWorldProjectView({
   const profile = profiles.find((item) => item.id === selected);
   const profileEngine = engineVersion(profile);
   const [versionId, setVersionId] = useState(0);
-  const [allowIncompatible, setAllowIncompatible] = useState(false);
+  const [compatibilityWarning, setCompatibilityWarning] =
+    useState<VoxelWorldInstallPreview>();
+  const [checkingCompatibility, setCheckingCompatibility] = useState(false);
+  const [compatibilityError, setCompatibilityError] = useState("");
   const selectedVersion = versions.find((version) => version.id === versionId);
   const versionResult = useVoxelWorldVersion(slug, versionId);
   const versionDetail = versionResult.data;
@@ -642,8 +655,9 @@ function VoxelWorldProjectView({
   }, [versions, profileEngine]);
   const openProject = () =>
     void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(slug)}`);
-  const install = () => {
+  const applyInstall = (allowIncompatible: boolean) => {
     if (!project || !profile || !selectedVersion || !versionDetail) return;
+    setCompatibilityWarning(undefined);
     void run(`Установка ${project.title}`, async (stage) => {
       stage("Загружаем и проверяем архивы VoxelWorld…");
       await invoke("install_voxelworld_mod", {
@@ -658,7 +672,30 @@ function VoxelWorldProjectView({
       if (ok) close();
     });
   };
+  const install = async () => {
+    if (!project || !profile || !selectedVersion || !versionDetail) return;
+    setCheckingCompatibility(true);
+    setCompatibilityError("");
+    try {
+      const preview = await invoke<VoxelWorldInstallPreview>(
+        "preview_voxelworld_install",
+        {
+          profileId: profile.id,
+          projectId: project.id,
+          slug: project.slug,
+          versionId: selectedVersion.id,
+        },
+      );
+      if (preview.incompatibilities.length) setCompatibilityWarning(preview);
+      else applyInstall(false);
+    } catch (error) {
+      setCompatibilityError(friendlyError(error));
+    } finally {
+      setCheckingCompatibility(false);
+    }
+  };
   return (
+    <>
     <ProjectSurface title={project?.title ?? "Проект VoxelWorld"} close={close}>
       {result.error && !project ? (
         <ErrorNotice retry={result.refresh}>{result.error}</ErrorNotice>
@@ -717,9 +754,11 @@ function VoxelWorldProjectView({
                   Версия проекта
                   <Select
                     value={versionId}
+                    disabled={checkingCompatibility}
                     onChange={(event) => {
                       setVersionId(Number(event.target.value));
-                      setAllowIncompatible(false);
+                      setCompatibilityWarning(undefined);
+                      setCompatibilityError("");
                     }}
                   >
                     {versions.map((version) => (
@@ -735,9 +774,10 @@ function VoxelWorldProjectView({
                     value={selected}
                     onChange={(event) => {
                       select(event.target.value);
-                      setAllowIncompatible(false);
+                      setCompatibilityWarning(undefined);
+                      setCompatibilityError("");
                     }}
-                    disabled={!profiles.length}
+                    disabled={!profiles.length || checkingCompatibility}
                   >
                     <option value="" disabled>Выберите профиль</option>
                     {profiles.map((item) => (
@@ -785,19 +825,14 @@ function VoxelWorldProjectView({
               {versionResult.error && (
                 <ErrorNotice retry={versionResult.refresh}>Не удалось проверить зависимости выбранной версии.</ErrorNotice>
               )}
+              {compatibilityError && (
+                <ErrorNotice retry={() => void install()}>{compatibilityError}</ErrorNotice>
+              )}
               {profile && !profileEngine && <ErrorNotice>В профиле не выбрана версия VoxelCore.</ErrorNotice>}
               {profileEngine && selectedVersion && !compatible && (
-                <>
-                  <ErrorNotice>Эта версия не поддерживает VoxelCore {profileEngine}.</ErrorNotice>
-                  <label className="checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={allowIncompatible}
-                      onChange={(event) => setAllowIncompatible(event.target.checked)}
-                    />
-                    Установить всё равно. Мод может не запуститься или повредить данные мира
-                  </label>
-                </>
+                <ErrorNotice>
+                  Эта версия не поддерживает VoxelCore {profileEngine}. Перед установкой VLauncher покажет подробности.
+                </ErrorNotice>
               )}
               {profile && running.has(profile.id) && <div className="notice">Завершите игру, чтобы изменить её контент.</div>}
               <div className="notice external-source-warning">
@@ -814,18 +849,20 @@ function VoxelWorldProjectView({
                 className="primary"
                 disabled={
                   busy ||
+                  checkingCompatibility ||
                   !profile ||
                   !profileEngine ||
                   !selectedVersion ||
                   !versionDetail ||
-                  (!compatible && !allowIncompatible) ||
                   running.has(profile.id)
                 }
-                onClick={install}
+                onClick={() => void install()}
               >
-                {profile?.external_packages?.some((item) => item.project_id === project.id)
-                  ? "Обновить"
-                  : "Установить"}
+                {checkingCompatibility
+                  ? "Проверяем…"
+                  : profile?.external_packages?.some((item) => item.project_id === project.id)
+                    ? "Обновить"
+                    : "Установить"}
               </button>
             )}
           </div>
@@ -834,6 +871,37 @@ function VoxelWorldProjectView({
         </>
       )}
     </ProjectSurface>
+    {compatibilityWarning && profile && project && (
+      <Modal
+        title="Несовместимые зависимости"
+        close={() => setCompatibilityWarning(undefined)}
+        busy={busy}
+      >
+        <p>
+          Для установки <strong>{project.title}</strong> автоматически выбран набор из{" "}
+          {compatibilityWarning.package_count} пакетов. Некоторые версии не заявляют поддержку VoxelCore {profileEngine}.
+        </p>
+        <div className="compatibility-issues">
+          {compatibilityWarning.incompatibilities.map((issue) => (
+            <div key={`${issue.chain.join(":")}:${issue.version}`}>
+              <strong>{issue.title} · {issue.version}</strong>
+              <small>{issue.chain.join(" → ")}</small>
+              <span>Поддерживает VoxelCore: {issue.supported_voxelcore.join(", ")}</span>
+            </div>
+          ))}
+        </div>
+        <div className="notice">
+          Профиль пока не изменён. При продолжении эти версии могут не запуститься или повредить данные мира.
+        </div>
+        <div className="modal-actions">
+          <button disabled={busy} onClick={() => setCompatibilityWarning(undefined)}>Отмена</button>
+          <button className="primary" disabled={busy} onClick={() => applyInstall(true)}>
+            Установить всё равно
+          </button>
+        </div>
+      </Modal>
+    )}
+    </>
   );
 }
 function sameEngineVersion(left: string, right: string) {

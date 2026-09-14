@@ -1637,6 +1637,7 @@ pub fn run() {
             mainline::resolve_mainline_version,
             launcher_info,
             voxelworld::voxelworld_request,
+            voxelworld::preview_voxelworld_install,
             voxelworld::install_voxelworld_mod,
             voxelworld::remove_voxelworld_mod,
             write_theme_config,
