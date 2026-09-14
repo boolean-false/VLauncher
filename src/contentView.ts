@@ -1,4 +1,5 @@
 import { loadProject, loadReleases, resolveProject } from "./api";
+import { markdownImage } from "./markdownImage";
 
 export type ContentRef = {
   source: string;
@@ -69,7 +70,9 @@ export const vspaceContentSource: ContentSource = {
       title: project.title,
       description: project.description || project.summary,
       iconUrl:
-        project.cover_url || project.latest_release?.preview_url || undefined,
+        project.cover_url ||
+        project.latest_release?.preview_url ||
+        markdownImage(project.description),
       type: project.type,
       version: release?.version,
       versions: releases.map((item) => item.version),

@@ -1638,6 +1638,16 @@ impl ProfileStore {
                     .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
             )
             .map_err(|error| io_error(&source, error))?;
+            if let Some(icon) = profile.icon.as_deref() {
+                let encoded = icon
+                    .strip_prefix("data:image/png;base64,")
+                    .ok_or_else(|| PackageProblem::Invalid("profile icon must be PNG".into()))?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|_| PackageProblem::Invalid("invalid profile icon".into()))?;
+                fs::write(source.join("icon.png"), bytes)
+                    .map_err(|error| io_error(&source, error))?;
+            }
             let config = self.profile_path(profile_id).join("game/config");
             if config.is_dir() {
                 copy_tree(&config, &source.join("config"))?;
@@ -3982,6 +3992,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = ProfileStore::open(temp.path().join("state")).unwrap();
         let profile = store.create("Builder source").unwrap();
+        let icon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1cAAAAASUVORK5CYII=";
+        store.set_icon(profile.id, Some(icon)).unwrap();
         store
             .apply_with_metadata(
                 profile.id,
@@ -4038,6 +4050,8 @@ mod tests {
         assert_eq!(artifact.manifest.external_packages.len(), 1);
         assert_eq!(artifact.manifest.external_packages[0].source, "voxelworld");
         assert_eq!(artifact.manifest.external_packages[0].version_id, 20);
+        let mut archive = ZipArchive::new(fs::File::open(artifact.path).unwrap()).unwrap();
+        assert!(archive.by_name("icon.png").is_ok());
     }
 
     #[test]

@@ -6,6 +6,8 @@ import { ProjectLifecycleActions } from "./ProjectLifecycleActions";
 import { ProjectMediaEditor } from "./ProjectMediaEditor";
 import { ImageEditor } from "./ImageEditor";
 import { MarkdownEditor } from "./Markdown";
+import { markdownImage } from "../markdownImage";
+import { registryMediaUrl } from "../mediaUrl";
 import { ManifestContentLinks } from "./ManifestContentLinks";
 import { PrivateImage } from "./PrivateImage";
 import { Icon, Modal, ErrorNotice, type IconName } from "./ui";
@@ -758,6 +760,7 @@ export function Creator({
       </>
     );
   const current = projects.find((item) => item.slug === selectedProject);
+  const currentImage = creatorProjectImage(current);
   const modpackProfiles = localProfiles.filter(
     (profile) => !profileModpack(profile) || profileModpack(profile)?.id === current?.id,
   );
@@ -905,11 +908,11 @@ export function Creator({
                   }}
                 >
                   <span className="workshop-project-avatar">
-                    {project.cover_url || project.preview_url ? (
+                    {creatorProjectImage(project) ? (
                       <PrivateImage
-                        src={(project.cover_url || project.preview_url)!}
+                        src={creatorProjectImage(project)!}
                         alt=""
-                        token={token}
+                        token={registryMediaUrl(creatorProjectImage(project)!, registryUrl) ? token : ""}
                         fallback={project.title.slice(0, 1).toUpperCase()}
                       />
                     ) : project.title.slice(0, 1).toUpperCase()}
@@ -968,13 +971,23 @@ export function Creator({
           <div className="section-heading">
             <div className="workshop-project-identity">
               <span className={`workshop-kind-mark ${current.type}`}>
-                <Icon name={currentKind!.icon} size={24} />
+                {currentImage ? (
+                  <PrivateImage
+                    src={currentImage}
+                    alt=""
+                    token={registryMediaUrl(currentImage, registryUrl) ? token : ""}
+                    fallback={current.title.slice(0, 1).toUpperCase()}
+                  />
+                ) : (
+                  <Icon name={currentKind!.icon} size={24} />
+                )}
               </span>
               <div>
                 <p className="eyebrow supporting-label">
                   {currentKind!.name}
                 </p>
                 <h2>{current.title}</h2>
+                {current.summary && <p className="workshop-project-summary">{current.summary}</p>}
               </div>
             </div>
             <div className="form-row">
@@ -1851,4 +1864,8 @@ function projectKindInfo(kind: string): ProjectKindInfo {
 }
 function projectKind(kind: string) {
   return projectKindInfo(kind).name;
+}
+
+function creatorProjectImage(project?: CreatorProject) {
+  return project?.cover_url || project?.preview_url || markdownImage(project?.description);
 }

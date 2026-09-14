@@ -5,6 +5,7 @@ import { useRegistryResource } from "../useResource";
 import { CatalogSkeleton } from "./ui";
 import { CategoryFilter } from "./CategoryFilter";
 import { Markdown } from "./Markdown";
+import { markdownImage } from "../markdownImage";
 import { popupMenu, contextMenuPosition } from "../desktop";
 import { Select } from "./Select";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -608,8 +609,8 @@ function ExternalProjectIcon({ project }: { project: VoxelWorldMod }) {
     <span className="project-icon"><Icon name="package" size={26} /></span>
   );
 }
-function ProjectIcon({ project }: { project: Project }) {
-  const image = project.cover_url || project.latest_release?.preview_url;
+function ProjectIcon({ project }: { project: Project & { description?: string } }) {
+  const image = project.cover_url || project.latest_release?.preview_url || markdownImage(project.description);
   return image ? (
     <PrivateImage
       className="project-icon"
@@ -1493,7 +1494,13 @@ export function InstallPreview({
 }) {
   const inspect = useContentInspector();
   const [failed, setFailed] = useState(false);
-  const changes = plan.plan.packages.map((pkg) => {
+  const modpack = plan.plan.packages.find((pkg) => pkg.type === "modpack");
+  const installedModpack = modpack
+    ? profile.packages.find((pkg) => pkg.id === modpack.id && pkg.kind === "modpack")
+    : undefined;
+  const modpackChanged = !!modpack && installedModpack?.version !== modpack.version;
+  const contentPackages = plan.plan.packages.filter((pkg) => pkg.type !== "modpack");
+  const changes = contentPackages.map((pkg) => {
     const old = profile.packages.find((p) => p.id === pkg.id);
     return {
       id: pkg.id,
@@ -1510,8 +1517,8 @@ export function InstallPreview({
       oldVersion: old?.version,
     };
   });
-  for (const pkg of profile.packages)
-    if (!plan.plan.packages.some((p) => p.id === pkg.id))
+  for (const pkg of profile.packages.filter((pkg) => pkg.kind !== "modpack"))
+    if (!contentPackages.some((p) => p.id === pkg.id))
       changes.push({ ...pkg, status: "Удалить", dependency: false, oldVersion: pkg.version });
   const externalChanges = (plan.plan.external_packages ?? []).map((pkg) => {
     const old = profile.external_packages?.find((item) => item.id === pkg.id);
@@ -1533,6 +1540,7 @@ export function InstallPreview({
           status: "Удалить",
         });
   const changed =
+    modpackChanged ||
     changes.some((c) => c.status !== "Без изменений") ||
     externalChanges.some((c) => c.status !== "Без изменений") ||
     JSON.stringify([...profile.roots].sort()) !==
@@ -1544,8 +1552,16 @@ export function InstallPreview({
         {newProfileName ? "Будет создан профиль" : "Профиль"} <strong>{newProfileName || profile.name}</strong> · VoxelCore{" "}
         {plan.plan.voxelcore_version}
       </p>
-      <div className="install-changes">
-        {changes.map((c) => (
+      {modpack && (
+        <p className="install-modpack-version">
+          Версия сборки · {installedModpack && installedModpack.version !== modpack.version
+            ? `${installedModpack.version} → ${modpack.version}`
+            : modpack.version}
+        </p>
+      )}
+      {!!changes.length && (
+        <div className="install-changes">
+          {changes.map((c) => (
           <div key={c.id}>
             <div>
               <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: c.id, version: plan.plan.packages.find(pkg => pkg.id === c.id)?.version || c.oldVersion, parent: profile.name })}>{c.id}</button>
@@ -1570,8 +1586,9 @@ export function InstallPreview({
               </span>
             </div>
           </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
       {!!externalChanges.length && (
         <>
           <h3>VoxelWorld</h3>
