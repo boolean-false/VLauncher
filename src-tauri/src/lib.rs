@@ -73,6 +73,57 @@ fn launcher_info() -> LauncherInfo {
 }
 
 #[tauri::command]
+async fn voxelworld_request(path: String, query: String) -> Result<serde_json::Value, String> {
+    let valid_path = path == "mods"
+        || path == "tags"
+        || path.strip_prefix("mods/").is_some_and(|slug| {
+            !slug.is_empty()
+                && slug.len() <= 255
+                && slug
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        });
+    if !valid_path || query.len() > 4096 || query.contains(['#', '?']) {
+        return Err("Некорректный запрос к VoxelWorld".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut url = format!("https://api.voxelworld.ru/v2/{path}");
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query);
+        }
+        let client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|_| "Не удалось подготовить подключение к VoxelWorld".to_string())?;
+        let response = client
+            .get(url)
+            .header(
+                reqwest::header::USER_AGENT,
+                concat!(
+                    "VLauncher/",
+                    env!("CARGO_PKG_VERSION"),
+                    " (+https://vlauncher.space)"
+                ),
+            )
+            .send()
+            .map_err(|_| "VoxelWorld сейчас недоступен".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "VoxelWorld вернул ошибку {}",
+                response.status().as_u16()
+            ));
+        }
+        response
+            .json()
+            .map_err(|_| "VoxelWorld вернул некорректный ответ".to_string())
+    })
+    .await
+    .map_err(|_| "Запрос к VoxelWorld был прерван".to_string())?
+}
+
+#[tauri::command]
 fn write_theme_config(path: String, contents: String) -> Result<(), String> {
     if contents.len() > 128 * 1024 {
         return Err("theme configuration is too large".into());
@@ -1502,6 +1553,7 @@ pub fn run() {
             mainline::select_mainline_build,
             mainline::resolve_mainline_version,
             launcher_info,
+            voxelworld_request,
             write_theme_config,
             download_review_file,
             read_theme_config,
