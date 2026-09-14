@@ -5,6 +5,7 @@ import { formatBytes } from "../model";
 import { Modal, ErrorNotice } from "./ui";
 import { Select } from "./Select";
 import { Markdown } from "./Markdown";
+import { ManifestContentLinks } from "./ManifestContentLinks";
 import { PrivateImage } from "./PrivateImage";
 import { CategoryPicker } from "./CategoryPicker";
 import { invoke } from "@tauri-apps/api/core";
@@ -445,6 +446,7 @@ export function ManagementPanel({
                   <summary>Манифест и разрешения</summary>
                   <pre>{JSON.stringify(item.manifest, null, 2)}</pre>
                 </details>
+                <ManifestContentLinks manifest={item.manifest} parent={item.title || item.slug || item.id} />
                 <div className="actions">
                   <button
                     onClick={() =>

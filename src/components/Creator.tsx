@@ -6,6 +6,7 @@ import { ProjectLifecycleActions } from "./ProjectLifecycleActions";
 import { ProjectMediaEditor } from "./ProjectMediaEditor";
 import { ImageEditor } from "./ImageEditor";
 import { MarkdownEditor } from "./Markdown";
+import { ManifestContentLinks } from "./ManifestContentLinks";
 import { PrivateImage } from "./PrivateImage";
 import { Modal, ErrorNotice } from "./ui";
 import { ProjectAnalytics } from "./ProjectAnalytics";
@@ -65,6 +66,9 @@ type PreparedArtifact = {
     title: string;
     voxelcore: string;
     capabilities?: string[];
+    dependencies?: unknown[];
+    conflicts?: unknown[];
+    external_packages?: unknown[];
   };
 };
 const delay = (milliseconds: number) =>
@@ -1218,6 +1222,7 @@ export function Creator({
                 <strong>
                   {prepared.manifest.title} {prepared.manifest.version}
                 </strong>
+                <ManifestContentLinks manifest={prepared.manifest} parent={prepared.manifest.title} />
                 <span>
                   {(prepared.size / 1024 / 1024).toFixed(2)} MiB ·{" "}
                   {prepared.sha256.slice(0, 12)}…

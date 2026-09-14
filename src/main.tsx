@@ -2,6 +2,7 @@ import { startAnalytics } from "./telemetry";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { ContentIntegration } from "./components/ContentIntegration";
 import { applyTheme, loadActiveTheme } from "./design-system/theme";
 
 import { installDesktopBehavior } from "./desktop";
@@ -44,7 +45,7 @@ class ErrorBoundary extends React.Component<
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <ContentIntegration><App /></ContentIntegration>
     </ErrorBoundary>
   </React.StrictMode>,
 );

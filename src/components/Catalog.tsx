@@ -1,4 +1,5 @@
 import { recordContent } from "../telemetry";
+import { useContentInspector } from "./ContentInspector";
 import { PrivateImage } from "./PrivateImage";
 import { useRegistryResource } from "../useResource";
 import { CatalogSkeleton } from "./ui";
@@ -6,7 +7,7 @@ import { CategoryFilter } from "./CategoryFilter";
 import { Markdown } from "./Markdown";
 import { popupMenu, contextMenuPosition } from "../desktop";
 import { Select } from "./Select";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -51,6 +52,7 @@ type CatalogSource = "all" | "vspace" | "voxelworld";
 type CatalogItem = {
   key: string;
   source: "vspace" | "voxelworld";
+  kind: Project["type"];
   slug: string;
   title: string;
   summary: string;
@@ -70,8 +72,10 @@ export function Catalog({
   run,
   preview,
   deepLink,
+  resetDetail,
   create,
   refreshProfiles,
+  profileContext,
 }: {
   active?: boolean;
   profiles: LocalProfile[];
@@ -82,9 +86,12 @@ export function Catalog({
   run: RunTask;
   preview: (value: Preview) => void;
   deepLink: string;
+  resetDetail: number;
   create: () => void;
   refreshProfiles: () => Promise<void>;
+  profileContext?: { close: () => void };
 }) {
+  const inspect = useContentInspector();
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("mod");
   const jointCatalogEnabled = useJointCatalogEnabled();
@@ -96,8 +103,21 @@ export function Catalog({
   const [category, setCategory] = useState<string[]>([]);
   const [detail, setDetail] = useState("");
   const [search, setSearch] = useState(query);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   useEffect(() => { const timer = setTimeout(() => setSearch(query), 200); return () => clearTimeout(timer); }, [query]);
   const catalogEngine = engineVersion(profiles.find(p => p.id === selected));
+  const targetProfile = profileContext ? profiles.find(p => p.id === selected) : undefined;
+  const quickAdd = (item: CatalogItem) => {
+    if (!targetProfile || !catalogEngine || item.source !== "vspace") return;
+    void run(`Проверка · ${item.title}`, async () => {
+      const roots = [...new Set([...targetProfile.roots, item.slug])];
+      const requirements = { ...targetProfile.root_requirements };
+      delete requirements[item.slug];
+      const plan = await resolveProject(roots, catalogEngine, requirements);
+      preview({ profile: targetProfile, plan, title: `Добавить ${item.title} · ${targetProfile.name}` });
+    });
+  };
   const params = new URLSearchParams({ limit: "24", offset: String(offset), sort, kind });
   if (search.trim()) params.set("q", search.trim());
   for (const id of category) params.append("category", id);
@@ -158,6 +178,7 @@ export function Catalog({
       items.push({
         key: `vspace:${project.slug}`,
         source: "vspace",
+        kind: project.type,
         slug: project.slug,
         title: project.title,
         summary: project.summary,
@@ -172,6 +193,7 @@ export function Catalog({
       items.push({
         key: `voxelworld:${project.id}`,
         source: "voxelworld",
+        kind: "mod",
         slug: project.slug,
         title: project.title,
         summary: project.description,
@@ -194,6 +216,7 @@ export function Catalog({
   const regularItems: CatalogItem[] = regularPage.items.map((project) => ({
     key: `vspace:${project.slug}`,
     source: "vspace",
+    kind: project.type,
     slug: project.slug,
     title: project.title,
     summary: project.summary,
@@ -225,6 +248,7 @@ export function Catalog({
     ? (includeVSpace ? allVSpace.error : "") ||
     (includeVoxelWorld ? allVoxelWorld.error : "")
     : "";
+  const resetSeen = useRef(resetDetail);
   const refresh = () => {
     if (jointCatalog) {
       allVSpace.refresh();
@@ -232,13 +256,64 @@ export function Catalog({
     } else result.refresh();
   };
   const setRetry = (_: unknown) => { refresh(); categoryResult.refresh(); voxelWorldTags.refresh(); };
-  useEffect(() => { if (deepLink && active) setDetail(deepLink); }, [deepLink, active]);
-  useEffect(() => { if (!active) setDetail(""); }, [active]);
+  useEffect(() => { if (active) setDetail(deepLink); }, [deepLink, active]);
+  useEffect(() => {
+    if (resetSeen.current === resetDetail) return;
+    resetSeen.current = resetDetail;
+    setDetail("");
+  }, [resetDetail]);
+  useEffect(() => {
+    if (!detail) return;
+    const scroller = document.querySelector("main");
+    if (!scroller) return;
+    const listScrollTop = scroller.scrollTop;
+    scroller.scrollTop = 0;
+    return () => {
+      if (activeRef.current) scroller.scrollTop = listScrollTop;
+    };
+  }, [detail]);
+  if (detail) {
+    if (detail.startsWith("voxelworld:") && !jointCatalogEnabled) {
+      return <ProjectSurface title="Источник недоступен" close={() => setDetail("")}>
+        <p className="notice">Интеграция VoxelWorld выключена в настройках.</p>
+      </ProjectSurface>;
+    }
+    return detail.startsWith("voxelworld:") ? (
+      <VoxelWorldProjectView
+        key={detail}
+        slug={detail.slice("voxelworld:".length)}
+        profiles={profiles}
+        selected={selected}
+        select={select}
+        busy={busy}
+        running={running}
+        run={run}
+        refreshProfiles={refreshProfiles}
+        close={() => setDetail("")}
+      />
+    ) : (
+      <ProjectView
+        key={detail}
+        slug={detail}
+        profiles={profiles}
+        selected={selected}
+        select={select}
+        busy={busy}
+        running={running}
+        run={run}
+        preview={preview}
+        close={() => setDetail("")}
+        create={create}
+      />
+    );
+  }
   return (
     <>
       <header className="page-heading">
         <div>
           <h1>Каталог</h1>
+          {targetProfile && <p>Для профиля <strong>{targetProfile.name}</strong> · VoxelCore {catalogEngine || "не выбран"}</p>}
+          {profileContext && <button className="catalog-profile-back" onClick={profileContext.close}>← К профилю</button>}
         </div>
         <label className="search">
           <Icon name="search" size={18} />
@@ -395,18 +470,21 @@ export function Catalog({
         <>
           <div className="catalog-grid" aria-busy={updating}>
             {page.items.map((project) => (
+              <div className={profileContext ? "catalog-profile-card" : "catalog-card-container"} key={project.key}>
               <button
                 className="catalog-card"
                 disabled={updating}
-                key={project.key}
-                onClick={() => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}
+                onClick={() => profileContext
+                  ? inspect({ source: project.source, slug: project.slug, title: project.title, parent: targetProfile?.name, engine: catalogEngine })
+                  : setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   void popupMenu([
-                    { text: "Открыть проект", action: () => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug) },
+                    { text: "Быстрый просмотр", action: () => inspect({ source: project.source, slug: project.slug, title: project.title }) },
+                    { text: "Открыть страницу", action: () => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug) },
                     ...(project.source === "voxelworld"
                       ? [{ text: "Открыть на VoxelWorld", action: () => void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(project.slug)}`) }]
-                      : [{ text: "Версии и установка…", action: () => setDetail(project.slug) }]),
+                      : []),
                   ], contextMenuPosition(event));
                 }}
               >
@@ -414,7 +492,7 @@ export function Catalog({
                   {project.project ? <ProjectIcon project={project.project} /> : <ExternalProjectIcon project={project.voxelWorld!} />}
                   <div>
                     <span className="eyebrow supporting-label">
-                      Контент-пак{jointCatalog ? ` · ${project.source === "vspace" ? "VSpace" : "VoxelWorld"}` : ""}
+                      {kinds[project.kind]}{jointCatalog ? ` · ${project.source === "vspace" ? "VSpace" : "VoxelWorld"}` : ""}
                     </span>
                     <h2>{project.title}</h2>
                   </div>
@@ -428,6 +506,18 @@ export function Catalog({
                   </span>
                 </footer>
               </button>
+              {targetProfile && <div className="catalog-profile-card-actions">
+                <span>{(project.source === "vspace"
+                  ? targetProfile.packages.find(pkg => pkg.id === project.slug)?.version
+                  : targetProfile.external_packages?.find(pkg => pkg.slug === project.slug)?.version)
+                  ? `Установлен · ${project.source === "vspace" ? targetProfile.packages.find(pkg => pkg.id === project.slug)?.version : targetProfile.external_packages?.find(pkg => pkg.slug === project.slug)?.version}`
+                  : targetProfile.manual_packages?.includes(project.slug) ? "Добавлен вручную" : "Не установлен"}</span>
+                {project.source === "vspace" && project.kind !== "modpack" ? <button
+                  disabled={busy || updating || !catalogEngine || running.has(targetProfile.id) || targetProfile.packages.some(pkg => pkg.id === project.slug) || targetProfile.manual_packages?.includes(project.slug) || !project.project?.latest_release}
+                  onClick={() => quickAdd(project)}><Icon name="plus" size={14} />Добавить</button>
+                  : <button onClick={() => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}>Версии и установка</button>}
+              </div>}
+              </div>
             ))}
           </div>
           <div className="pagination">
@@ -450,36 +540,6 @@ export function Catalog({
             </div>
           </div>
         </>
-      )}
-      {detail && (
-        detail.startsWith("voxelworld:") ? (
-          <VoxelWorldProjectView
-            key={detail}
-            slug={detail.slice("voxelworld:".length)}
-            profiles={profiles}
-            selected={selected}
-            select={select}
-            busy={busy}
-            running={running}
-            run={run}
-            refreshProfiles={refreshProfiles}
-            close={() => setDetail("")}
-          />
-        ) : (
-          <ProjectView
-            key={detail}
-            slug={detail}
-            profiles={profiles}
-            selected={selected}
-            select={select}
-            busy={busy}
-            running={running}
-            run={run}
-            preview={preview}
-            close={() => setDetail("")}
-            create={create}
-          />
-        )
       )}
     </>
   );
@@ -512,6 +572,20 @@ function ProjectIcon({ project }: { project: Project }) {
     </span>
   );
 }
+function ProjectSurface({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+  return (
+    <section className="catalog-project-page">
+      <header className="project-page-heading">
+        <button className="project-back" onClick={close}>← К каталогу</button>
+        <div>
+          <span className="supporting-label">Каталог / проект</span>
+          <h1>{title}</h1>
+        </div>
+      </header>
+      {children}
+    </section>
+  );
+}
 function VoxelWorldProjectView({
   slug,
   profiles,
@@ -533,6 +607,7 @@ function VoxelWorldProjectView({
   refreshProfiles: () => Promise<void>;
   close: () => void;
 }) {
+  const inspect = useContentInspector();
   const result = useVoxelWorldMod(slug);
   const project = result.data;
   const versionsResult = useVoxelWorldVersions(slug);
@@ -540,7 +615,6 @@ function VoxelWorldProjectView({
   const profile = profiles.find((item) => item.id === selected);
   const profileEngine = engineVersion(profile);
   const [versionId, setVersionId] = useState(0);
-  const [acceptedRisk, setAcceptedRisk] = useState(false);
   const [allowIncompatible, setAllowIncompatible] = useState(false);
   const selectedVersion = versions.find((version) => version.id === versionId);
   const versionResult = useVoxelWorldVersion(slug, versionId);
@@ -585,7 +659,7 @@ function VoxelWorldProjectView({
     });
   };
   return (
-    <Modal title={project?.title ?? "Проект VoxelWorld"} close={close} busy={busy}>
+    <ProjectSurface title={project?.title ?? "Проект VoxelWorld"} close={close}>
       {result.error && !project ? (
         <ErrorNotice retry={result.refresh}>{result.error}</ErrorNotice>
       ) : !project ? (
@@ -593,6 +667,8 @@ function VoxelWorldProjectView({
       ) : (
         <>
           {result.error && <ErrorNotice retry={result.refresh}>Не удалось обновить данные. Показана сохранённая карточка.</ErrorNotice>}
+          <div className="project-page-layout">
+            <div className="project-page-content">
           <div className="project-detail-title">
             <ExternalProjectIcon project={project} />
             <div>
@@ -600,16 +676,19 @@ function VoxelWorldProjectView({
               <p>{project.description}</p>
             </div>
           </div>
-          <div className="project-description selectable">
-            <Markdown text={project.detail_description || project.description || "Автор пока не добавил подробное описание."} />
-          </div>
-          {!!project.tags.length && (
-            <div className="external-project-tags" aria-label="Категории проекта">
-              {project.tags.map((tag) => (
-                <span key={tag.id}>{voxelWorldTagName(tag.title)}</span>
-              ))}
+          <section className="project-overview">
+            <h2>О проекте</h2>
+            <div className="project-description selectable">
+              <Markdown text={project.detail_description || project.description || "Автор пока не добавил подробное описание."} />
             </div>
-          )}
+            {!!project.tags.length && (
+              <div className="external-project-tags" aria-label="Категории проекта">
+                {project.tags.map((tag) => (
+                  <span key={tag.id}>{voxelWorldTagName(tag.title)}</span>
+                ))}
+              </div>
+            )}
+          </section>
           <dl className="metadata">
             <div>
               <dt>Загрузки</dt>
@@ -624,6 +703,9 @@ function VoxelWorldProjectView({
               </dd>
             </div>
           </dl>
+            </div>
+            <aside className="project-install-panel">
+              <h2>Установка</h2>
           {versionsResult.error && !versions.length ? (
             <ErrorNotice retry={versionsResult.refresh}>Не удалось загрузить версии проекта.</ErrorNotice>
           ) : versionsResult.loading ? (
@@ -637,7 +719,6 @@ function VoxelWorldProjectView({
                     value={versionId}
                     onChange={(event) => {
                       setVersionId(Number(event.target.value));
-                      setAcceptedRisk(false);
                       setAllowIncompatible(false);
                     }}
                   >
@@ -654,7 +735,6 @@ function VoxelWorldProjectView({
                     value={selected}
                     onChange={(event) => {
                       select(event.target.value);
-                      setAcceptedRisk(false);
                       setAllowIncompatible(false);
                     }}
                     disabled={!profiles.length}
@@ -684,12 +764,23 @@ function VoxelWorldProjectView({
               )}
               {!!versionDetail?.dependencies?.length && (
                 <section className="release-dependencies">
-                  <h3>Будут установлены зависимости</h3>
+                  <h3>Зависимости</h3>
+                  <p className="dependency-explanation">
+                    Эти пакеты нужны для работы {project.title}. VLauncher установит указанные версии автоматически.
+                  </p>
                   {versionDetail.dependencies.map((dependency) => (
-                    <div className="dependency-row" key={`${dependency.project.id}-${dependency.id}`}>
-                      <strong>{dependency.project.title}</strong>
-                      <span>{dependency.version_number}</span>
-                      <small>VoxelWorld</small>
+                    <div className="dependency-card" key={`${dependency.project.id}-${dependency.id}`}>
+                      <div className="dependency-card-heading">
+                        <button className="dependency-project-link" onClick={() => inspect({ source: "voxelworld", slug: dependency.project.slug, title: dependency.project.title, version: dependency.version_number, versionId: dependency.id, parent: project.title, relation: "required" })}>
+                          {dependency.project.title}
+                        </button>
+                        <span>Обязательная</span>
+                      </div>
+                      <p>Нужна проекту для работы и будет добавлена вместе с ним.</p>
+                      <footer>
+                        <span>VoxelWorld</span>
+                        <code>{dependency.version_number}</code>
+                      </footer>
                     </div>
                   ))}
                 </section>
@@ -713,20 +804,14 @@ function VoxelWorldProjectView({
                 </>
               )}
               {profile && running.has(profile.id) && <div className="notice">Завершите игру, чтобы изменить её контент.</div>}
-              <label className="checkbox-row external-install-consent">
-                <input
-                  type="checkbox"
-                  checked={acceptedRisk}
-                  onChange={(event) => setAcceptedRisk(event.target.checked)}
-                />
-                Архивы загружаются с VoxelWorld и не имеют опубликованной подписи или контрольной суммы
-              </label>
+              <div className="notice external-source-warning">
+                Архивы загружаются с VoxelWorld и не имеют опубликованной подписи или контрольной суммы.
+              </div>
             </>
           ) : (
             <p className="notice">У проекта пока нет доступных версий.</p>
           )}
           <div className="modal-actions">
-            <button onClick={close}>Закрыть</button>
             <button onClick={openProject}>Открыть на VoxelWorld</button>
             {!!versions.length && (
               <button
@@ -738,7 +823,6 @@ function VoxelWorldProjectView({
                   !selectedVersion ||
                   !versionDetail ||
                   (!compatible && !allowIncompatible) ||
-                  !acceptedRisk ||
                   running.has(profile.id)
                 }
                 onClick={install}
@@ -749,9 +833,11 @@ function VoxelWorldProjectView({
               </button>
             )}
           </div>
+            </aside>
+          </div>
         </>
       )}
-    </Modal>
+    </ProjectSurface>
   );
 }
 function sameEngineVersion(left: string, right: string) {
@@ -799,6 +885,25 @@ function voxelWorldChannel(channel: string) {
         ? "Альфа"
         : channel;
 }
+type DependencyKind = NonNullable<Release["dependencies"]>[number]["kind"];
+function dependencyKindLabel(kind: DependencyKind) {
+  return kind === "required"
+    ? "Обязательная"
+    : kind === "optional"
+      ? "Необязательная"
+      : kind === "conflict"
+        ? "Конфликт"
+        : "Порядок загрузки";
+}
+function dependencyKindDescription(kind: DependencyKind) {
+  return kind === "required"
+    ? "Нужна проекту для работы. VLauncher добавит совместимую версию автоматически."
+    : kind === "optional"
+      ? "Расширяет возможности проекта, но автоматически не устанавливается."
+      : kind === "conflict"
+        ? "Не может использоваться одновременно с выбранной версией проекта."
+        : "Учитывается при загрузке, но автоматически не устанавливается.";
+}
 export function ProjectView({
   slug,
   profiles,
@@ -822,6 +927,7 @@ export function ProjectView({
   close: () => void;
   create: () => void;
 }) {
+  const inspect = useContentInspector();
   const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
   const releasesResult = useRegistryResource<Release[]>(`/projects/${encodeURIComponent(slug)}/releases`);
   const project = projectResult.data;
@@ -867,7 +973,7 @@ export function ProjectView({
     }).then((ok) => setFailed(!ok));
   };
   return (
-    <Modal title={project?.title ?? "Проект"} close={close} busy={busy}>
+    <ProjectSurface title={project?.title ?? "Проект"} close={close}>
       {projectResult.error && !project ? (
         <ErrorNotice retry={retryDetails}>{projectResult.error}</ErrorNotice>
       ) : !project ? (
@@ -876,6 +982,8 @@ export function ProjectView({
         <>
           {(projectResult.error || releasesResult.error) && <ErrorNotice retry={retryDetails}>Не удалось обновить данные проекта. Повторите перед установкой.</ErrorNotice>}
           {releasesResult.loading && <p role="status">Загружаем версии…</p>}
+          <div className="project-page-layout">
+            <div className="project-page-content">
           <div className="project-detail-title">
             <ProjectIcon project={project} />
             <div>
@@ -886,17 +994,28 @@ export function ProjectView({
               <p>{project.summary}</p>
             </div>
           </div>
-          <div className="project-description selectable">
-            <Markdown text={project.description || "Автор пока не добавил подробное описание."} />
-          </div>
-          {!!project.gallery_urls?.length && (
-            <div className="project-gallery">
-              {project.gallery_urls.map((url) => (
-                <PrivateImage key={url} src={url} alt={`Скриншот ${project.title}`} />
-              ))}
+          <section className="project-overview">
+            <h2>О проекте</h2>
+            <div className="project-description selectable">
+              <Markdown text={project.description || "Автор пока не добавил подробное описание."} />
             </div>
-          )}
+            {!!project.gallery_urls?.length && (
+              <div className="project-gallery">
+                {project.gallery_urls.map((url) => (
+                  <PrivateImage key={url} src={url} alt={`Скриншот ${project.title}`} />
+                ))}
+              </div>
+            )}
+          </section>
           <dl className="metadata">
+            <div>
+              <dt>Загрузки</dt>
+              <dd>{project.downloads.toLocaleString("ru")}</dd>
+            </div>
+            <div>
+              <dt>Обновлён</dt>
+              <dd>{project.updated_at ? new Date(project.updated_at).toLocaleDateString("ru") : "Не указано"}</dd>
+            </div>
             <div>
               <dt>Лицензия</dt>
               <dd>{project.license || "Не указана"}</dd>
@@ -906,6 +1025,9 @@ export function ProjectView({
               <dd>{project.slug}</dd>
             </div>
           </dl>
+            </div>
+            <aside className="project-install-panel">
+              <h2>Установка</h2>
           {releases.length ? (
             <>
               <div className="form-columns">
@@ -966,20 +1088,23 @@ export function ProjectView({
               )}
               {!!release?.dependencies?.length && (
                 <section className="release-dependencies">
-                  <h3>Связи пакета</h3>
+                  <h3>Зависимости и совместимость</h3>
+                  <p className="dependency-explanation">
+                    Здесь показано, как выбранная версия связана с другими пакетами.
+                  </p>
                   {release.dependencies.map((dependency) => (
-                    <div key={`${dependency.kind}-${dependency.id}`} className="dependency-row">
-                      <strong>{dependency.id}</strong>
-                      <span>{dependency.requirement}</span>
-                      <small>
-                        {dependency.kind === "required"
-                          ? "обязательная"
-                          : dependency.kind === "optional"
-                            ? "необязательная"
-                            : dependency.kind === "conflict"
-                              ? "конфликт"
-                              : "слабая"}
-                      </small>
+                    <div key={`${dependency.kind}-${dependency.id}`} className="dependency-card">
+                      <div className="dependency-card-heading">
+                        <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: dependency.id, requirement: dependency.requirement, relation: dependency.kind, parent: project.title, engine: engineVersion(profile) })}>
+                          {dependency.id}
+                        </button>
+                        <span>{dependencyKindLabel(dependency.kind)}</span>
+                      </div>
+                      <p>{dependencyKindDescription(dependency.kind)}</p>
+                      <footer>
+                        <span>VSpace</span>
+                        <code>{dependency.requirement}</code>
+                      </footer>
                     </div>
                   ))}
                 </section>
@@ -1013,37 +1138,6 @@ export function ProjectView({
                   Не удалось подобрать зависимости. Причина записана в журнале.
                 </ErrorNotice>
               )}
-              <div className="modal-actions">
-                <button onClick={close} disabled={busy}>
-                  Закрыть
-                </button>
-                {!profiles.length ? (
-                  <button
-                    className="primary"
-                    onClick={() => {
-                      close();
-                      create();
-                    }}
-                  >
-                    Создать профиль
-                  </button>
-                ) : (
-                  <button
-                    className="primary"
-                    disabled={
-                      busy ||
-                      !profile ||
-                      !engineVersion(profile) ||
-                      manualCollision ||
-                      running.has(profile.id) ||
-                      !release?.download_url
-                    }
-                    onClick={install}
-                  >
-                    {busy ? "Проверяем…" : "Посмотреть состав установки"}
-                  </button>
-                )}
-              </div>
               {reportToken && (
                 <details className="report-project">
                   <summary>Пожаловаться на проект</summary>
@@ -1071,13 +1165,43 @@ export function ProjectView({
                   {reportStatus && <small>{reportStatus}</small>}
                 </details>
               )}
+              <div className="modal-actions">
+                {!profiles.length ? (
+                  <button
+                    className="primary"
+                    onClick={() => {
+                      close();
+                      create();
+                    }}
+                  >
+                    Создать профиль
+                  </button>
+                ) : (
+                  <button
+                    className="primary"
+                    disabled={
+                      busy ||
+                      !profile ||
+                      !engineVersion(profile) ||
+                      manualCollision ||
+                      running.has(profile.id) ||
+                      !release?.download_url
+                    }
+                    onClick={install}
+                  >
+                    {busy ? "Проверяем…" : "Посмотреть состав установки"}
+                  </button>
+                )}
+              </div>
             </>
           ) : (
             <p className="notice">У проекта пока нет доступных релизов.</p>
           )}
+            </aside>
+          </div>
         </>
       )}
-    </Modal>
+    </ProjectSurface>
   );
 }
 export function InstallPreview({
@@ -1094,6 +1218,7 @@ export function InstallPreview({
   apply: () => Promise<boolean>;
   skipVersion?: (id: string, version: string) => Promise<boolean>;
 }) {
+  const inspect = useContentInspector();
   const [failed, setFailed] = useState(false);
   const changes = plan.plan.packages.map((pkg) => {
     const old = profile.packages.find((p) => p.id === pkg.id);
@@ -1150,7 +1275,7 @@ export function InstallPreview({
         {changes.map((c) => (
           <div key={c.id}>
             <div>
-              <strong>{c.id}</strong>
+              <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: c.id, version: plan.plan.packages.find(pkg => pkg.id === c.id)?.version || c.oldVersion, parent: profile.name })}>{c.id}</button>
               <small>
                 {c.dependency ? "Зависимость" : "Выбранный пакет"} · {c.version}
               </small>
@@ -1181,7 +1306,7 @@ export function InstallPreview({
             {externalChanges.map((item) => (
               <div key={`voxelworld-${item.id}`}>
                 <div>
-                  <strong>{item.title}</strong>
+                  <button className="dependency-project-link" onClick={() => inspect({ source: item.source, slug: item.slug, title: item.title, version: item.version, versionId: item.version_id, parent: profile.name })}>{item.title}</button>
                   <small>{item.id} · {item.version} · зафиксированная версия</small>
                 </div>
                 <span className={item.status === "Удалить" ? "danger-text" : "muted"}>

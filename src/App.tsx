@@ -39,8 +39,10 @@ import {
   ErrorNotice,
   type IconName,
 } from "./components/ui";
-import { Catalog, InstallPreview, ProjectView } from "./components/Catalog";
+import { Catalog, InstallPreview } from "./components/Catalog";
 import { InstalledPackage } from "./components/InstalledPackage";
+import { useContentInspector, useInspectorNavigation } from "./components/ContentInspector";
+import { ProfileContentPicker } from "./components/ProfileContentPicker";
 import { Creator } from "./components/Creator";
 import { Settings } from "./components/Settings";
 import { useMainlineStatus } from "./components/Mainline";
@@ -54,7 +56,7 @@ import "./design-system/components.css";
 import "./App.css";
 import "./Workbench.css";
 
-type Screen = "library" | "catalog" | "activity" | "creator" | "settings";
+type Screen = "library" | "catalog" | "activity" | "creator" | "settings" | "content-picker";
 type PendingPlan = {
   mainBuild?: MainBuild | null;
   profile: LocalProfile;
@@ -86,6 +88,7 @@ const storedTasks = (): Task[] => {
 };
 
 export default function App() {
+  const inspect = useContentInspector();
   const [screen, setScreen] = useState<Screen>("library");
   const visited = useRef(new Set<Screen>());
   visited.current.add(screen);
@@ -125,12 +128,26 @@ export default function App() {
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [deepLink, setDeepLink] = useState("");
-  const [libraryProject, setLibraryProject] = useState("");
+  const [catalogReset, setCatalogReset] = useState(0);
+  const registerInspectorNavigation = useInspectorNavigation();
+  useEffect(() => {
+    registerInspectorNavigation(ref => {
+      setDeepLink(ref.source === "vspace" ? ref.slug : `${ref.source}:${ref.slug}`);
+      setScreen("catalog");
+    });
+    return () => registerInspectorNavigation(null);
+  }, [registerInspectorNavigation]);
+  const [pickerProfileId, setPickerProfileId] = useState("");
   const [transferActive, setTransferActive] = useState(false);
   const [officialTransfer, setOfficialTransfer] = useState(false);
   const [worldPublish, setWorldPublish] = useState<{ profileId: string; folder: string } | null>(null);
   const [closeWithGame, setCloseWithGame] = useState(false);
   const [tab, setTab] = useState("content");
+  const openCatalog = useCallback(() => {
+    setDeepLink("");
+    setCatalogReset((value) => value + 1);
+    setScreen("catalog");
+  }, []);
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
   const currentTask = tasks[0];
   useEffect(() => {
@@ -199,13 +216,13 @@ export default function App() {
         event.preventDefault();
         // Не меняем страницу, пока открыта форма.
         if (document.querySelector("dialog[open]")) return;
-        setScreen("catalog");
+        openCatalog();
         requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".search input")?.focus());
       }
     };
     document.addEventListener("keydown", shortcut);
     return () => document.removeEventListener("keydown", shortcut);
-  }, []);
+  }, [openCatalog]);
   const run: RunTask = useCallback(async (title, work) => {
     if (taskLock.current) return false;
     taskLock.current = true;
@@ -526,7 +543,10 @@ export default function App() {
               key={item.id}
               className={screen === item.id ? "active" : ""}
               aria-current={screen === item.id ? "page" : undefined}
-              onClick={() => setScreen(item.id)}
+              onClick={() => {
+                if (item.id === "catalog") openCatalog();
+                else setScreen(item.id);
+              }}
             >
               <Icon name={item.icon} />
               {item.title}
@@ -608,7 +628,7 @@ export default function App() {
       <div className="workspace">
         <main id="main-content" ref={mainElement}>
           <AnalyticsConsent />
-          <VoxelWorldIntroduction openCatalog={() => setScreen("catalog")} />
+          <VoxelWorldIntroduction openCatalog={openCatalog} />
           <AppUpdates channel={updateChannel} running={running.size > 0} busy={busy} run={run} />
           {gameFailure && (
             <div className="notice error" role="alert">
@@ -843,7 +863,7 @@ export default function App() {
                               )}
                               <button
                                 disabled={busy}
-                                onClick={() => setScreen("catalog")}
+                                onClick={() => { setPickerProfileId(profile.id); setScreen("content-picker"); }}
                               >
                                 <Icon name="plus" size={16} />
                                 Добавить
@@ -857,7 +877,7 @@ export default function App() {
                                 <br />
                                 или подобрать контент в каталоге.
                               </p>
-                              <button onClick={() => setScreen("catalog")}>
+                              <button onClick={() => { setPickerProfileId(profile.id); setScreen("content-picker"); }}>
                                 <Icon name="catalog" size={16} />
                                 Открыть каталог
                               </button>
@@ -877,7 +897,9 @@ export default function App() {
                                 )
                                 .map((pkg) => (
                                   <div className="content-row" key={pkg.id}>
-                                    <InstalledPackage pkg={pkg} root={profile.roots.includes(pkg.id)} open={() => setLibraryProject(pkg.id)} />
+                                    <InstalledPackage pkg={pkg} root={profile.roots.includes(pkg.id)} open={() => {
+                                      inspect({ source: "vspace", slug: pkg.id, title: pkg.title || pkg.id, version: pkg.version, parent: profile.name, engine: engineVersion(profile) });
+                                    }} />
                                     <code>{pkg.version}</code>
                                     {profile.roots.includes(pkg.id) ? (
                                       <button
@@ -908,7 +930,7 @@ export default function App() {
                                     <Icon name="package" />
                                   </span>
                                   <div className="grow">
-                                    <strong title={pkg.id}>{pkg.title}</strong>
+                                    <button className="dependency-project-link" onClick={() => inspect({ source: pkg.source, slug: pkg.slug, title: pkg.title, version: pkg.version, versionId: pkg.version_id, parent: profile.name })}>{pkg.title}</button>
                                     <small>VoxelWorld · управляется VLauncher</small>
                                   </div>
                                   <code>{pkg.version}</code>
@@ -936,7 +958,7 @@ export default function App() {
                                     <Icon name="folder" />
                                   </span>
                                   <div className="grow">
-                                    <strong title={id}>{id}</strong>
+                                    <button className="dependency-project-link" onClick={() => inspect({ source: "local", slug: id, parent: profile.name })}>{id}</button>
                                     <small>Добавлен вручную · лаунчер не обновляет эти файлы</small>
                                   </div>
                                   <code>локальный</code>
@@ -959,7 +981,7 @@ export default function App() {
                           key={profile.id}
                           profile={profile}
                           folder={() => folder("worlds")}
-                          catalog={() => setScreen("catalog")}
+                          catalog={openCatalog}
                           busy={busy}
                           run={run}
                           publish={(worldFolder) => {
@@ -1000,6 +1022,12 @@ export default function App() {
               )}
             </div>
           )}
+          {pickerProfileId && profiles.some(item => item.id === pickerProfileId) && <div hidden={screen !== "content-picker"}>
+            <ProfileContentPicker key={pickerProfileId} profile={profiles.find(item => item.id === pickerProfileId)!}
+              active={screen === "content-picker"} refreshProfiles={refresh}
+              busy={busy} running={running.has(pickerProfileId)} run={run} preview={setPendingPlan}
+              close={() => { setSelected(pickerProfileId); setScreen("library"); }} />
+          </div>}
           {visited.current.has("catalog") && (
             <div hidden={screen !== "catalog"}><Catalog
               active={screen === "catalog"}
@@ -1011,6 +1039,7 @@ export default function App() {
               run={run}
               preview={setPendingPlan}
               deepLink={deepLink}
+              resetDetail={catalogReset}
               create={() => setNewProfile(true)}
               refreshProfiles={refresh}
             /></div>
@@ -1132,21 +1161,6 @@ export default function App() {
             <button className="primary" onClick={() => void invoke("exit_launcher")}>Закрыть лаунчер</button>
           </div>
         </Modal>
-      )}
-      {libraryProject && (
-        <ProjectView
-          key={libraryProject}
-          slug={libraryProject}
-          profiles={profiles}
-          selected={profile?.id ?? ""}
-          select={setSelected}
-          busy={busy}
-          running={running}
-          run={run}
-          preview={setPendingPlan}
-          close={() => setLibraryProject("")}
-          create={() => setNewProfile(true)}
-        />
       )}
       {pendingPlan && (
         <InstallPreview
@@ -1719,6 +1733,7 @@ function Worlds({
   run: RunTask;
   publish: (folder: string) => void;
 }) {
+  const inspect = useContentInspector();
   const result = useLocalResource<
     {
       folder: string;
@@ -1789,7 +1804,11 @@ function Worlds({
                 </small>
                 {!!world.dependencies.length && (
                   <small>
-                    Пакеты: {world.dependencies.join(", ")}
+                    Пакеты: {world.dependencies.map(id => <button key={id} className="dependency-project-link" onClick={() => {
+                      const external = profile.external_packages?.find(pkg => pkg.id === id);
+                      inspect(external ? { source: external.source, slug: external.slug, title: external.title, version: external.version, versionId: external.version_id, parent: world.name }
+                        : { source: profile.manual_packages?.includes(id) ? "local" : "vspace", slug: id, version: profile.packages.find(pkg => pkg.id === id)?.version, parent: world.name });
+                    }}>{id} </button>)}
                     {!!world.missing_dependencies.length &&
                       ` · отсутствуют: ${world.missing_dependencies.join(", ")}`}
                   </small>
