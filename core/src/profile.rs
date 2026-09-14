@@ -18,7 +18,9 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::{PackageKind, PackageManifest, PackageProblem, PreparedArtifact, prepare_package};
+use crate::{
+    DependencyKind, PackageKind, PackageManifest, PackageProblem, PreparedArtifact, prepare_package,
+};
 
 const MAX_FILES: usize = 100_000;
 const MAX_UNPACKED_SIZE: u64 = 2 * 1024 * 1024 * 1024;
@@ -38,6 +40,8 @@ pub struct Profile {
     pub root_requirements: HashMap<String, String>,
     pub packages: Vec<InstalledPackage>,
     #[serde(default)]
+    pub external_packages: Vec<ExternalPackage>,
+    #[serde(default)]
     pub manual_packages: Vec<String>,
     pub created_at: i64,
     #[serde(default)]
@@ -50,6 +54,26 @@ pub struct InstalledPackage {
     pub version: String,
     #[serde(default)]
     pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalPackage {
+    pub id: String,
+    pub source: String,
+    pub project_id: u64,
+    pub slug: String,
+    pub version_id: u64,
+    pub version: String,
+    pub title: String,
+    pub artifact_sha256: String,
+    #[serde(default)]
+    pub artifact_size: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalInstallPackage {
+    pub package: ExternalPackage,
+    pub artifact: PreparedArtifact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,6 +127,8 @@ pub struct RemoteInstallPlan {
     #[serde(default)]
     pub root_requirements: HashMap<String, String>,
     pub packages: Vec<RemoteInstallPackage>,
+    #[serde(default)]
+    pub external_packages: Option<Vec<crate::ExternalPackageLock>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -345,6 +371,7 @@ impl ProfileStore {
             roots: Vec::new(),
             root_requirements: HashMap::new(),
             packages: Vec::new(),
+            external_packages: Vec::new(),
             manual_packages: Vec::new(),
             created_at: timestamp(),
             problem: None,
@@ -804,6 +831,7 @@ impl ProfileStore {
                         roots,
                         root_requirements,
                         packages: Vec::new(),
+                        external_packages: Vec::new(),
                         manual_packages: Vec::new(),
                         created_at,
                         problem: None,
@@ -872,11 +900,24 @@ impl ProfileStore {
                     }
                 })
                 .collect();
+            profile.external_packages = match self.read_external_packages(profile.id) {
+                Ok(packages) => packages,
+                Err(error) => {
+                    profile.problem = Some(error.to_string());
+                    Vec::new()
+                }
+            };
             let mut managed = profile
                 .packages
                 .iter()
                 .map(|package| package.id.clone())
                 .collect::<HashSet<_>>();
+            managed.extend(
+                profile
+                    .external_packages
+                    .iter()
+                    .map(|package| package.id.clone()),
+            );
             let profile_path = self.profile_path(profile.id);
             let game = profile_path.join("game");
             if let Ok(materialized_revision) = fs::read_to_string(game.join(".vlauncher-revision"))
@@ -919,6 +960,14 @@ impl ProfileStore {
         let result = (|| {
             let cloned_path = self.profile_path(cloned.id);
             self.set_icon(cloned.id, source.icon.as_deref())?;
+            let external_metadata = self.profile_path(source.id).join("external-packages.json");
+            if external_metadata.is_file() {
+                fs::copy(
+                    &external_metadata,
+                    cloned_path.join("external-packages.json"),
+                )
+                .map_err(|error| io_error(&external_metadata, error))?;
+            }
             if let Some(revision) = &source.active_revision {
                 let source_snapshot = self
                     .profile_path(source.id)
@@ -985,6 +1034,261 @@ impl ProfileStore {
     pub fn apply(&self, profile_id: Uuid, plan: &InstallPlan) -> Result<(), PackageProblem> {
         let metadata = self.profile_metadata(profile_id)?;
         self.apply_with_metadata(profile_id, plan, &metadata)
+    }
+
+    pub fn install_external_packages(
+        &self,
+        profile_id: Uuid,
+        packages: Vec<ExternalInstallPackage>,
+    ) -> Result<Vec<ExternalPackage>, PackageProblem> {
+        self.update_external_packages(profile_id, packages, false)
+    }
+
+    pub fn replace_external_packages(
+        &self,
+        profile_id: Uuid,
+        packages: Vec<ExternalInstallPackage>,
+    ) -> Result<Vec<ExternalPackage>, PackageProblem> {
+        self.update_external_packages(profile_id, packages, true)
+    }
+
+    fn update_external_packages(
+        &self,
+        profile_id: Uuid,
+        packages: Vec<ExternalInstallPackage>,
+        replace_all: bool,
+    ) -> Result<Vec<ExternalPackage>, PackageProblem> {
+        if packages.is_empty() && !replace_all {
+            return invalid("external install contains no packages");
+        }
+        let profile = self.profile(profile_id)?;
+        if profile.active_revision.is_none() {
+            return invalid("profile is not initialized");
+        }
+        let _operation_lock = self.lock_profile(profile_id)?;
+        let profile_path = self.profile_path(profile_id);
+        let content = profile_path.join("game/content");
+        fs::create_dir_all(&content).map_err(|source| io_error(&content, source))?;
+        let operation = Uuid::new_v4();
+        let staging = profile_path.join(format!(".external-staging-{operation}"));
+        let backup = profile_path.join(format!(".external-backup-{operation}"));
+        fs::create_dir_all(&staging).map_err(|source| io_error(&staging, source))?;
+        fs::create_dir_all(&backup).map_err(|source| io_error(&backup, source))?;
+
+        let result = (|| {
+            let existing = self.read_external_packages(profile_id)?;
+            let vspace_ids = profile
+                .packages
+                .iter()
+                .map(|package| package.id.as_str())
+                .collect::<HashSet<_>>();
+            let external_ids = existing
+                .iter()
+                .map(|package| package.id.as_str())
+                .collect::<HashSet<_>>();
+            let mut incoming_ids = HashSet::new();
+            let mut incoming_projects = HashSet::new();
+            for item in &packages {
+                let record = &item.package;
+                let manifest = &item.artifact.manifest;
+                if record.source != "voxelworld"
+                    || record.id != manifest.id
+                    || !matches!(manifest.kind, PackageKind::Mod | PackageKind::Library)
+                    || !incoming_ids.insert(record.id.clone())
+                    || !incoming_projects.insert((record.source.clone(), record.project_id))
+                {
+                    return invalid("invalid external package identity");
+                }
+                if vspace_ids.contains(record.id.as_str()) {
+                    return invalid(format!(
+                        "external package '{}' conflicts with a VSpace package",
+                        record.id
+                    ));
+                }
+                if content.join(&record.id).exists() && !external_ids.contains(record.id.as_str()) {
+                    return invalid(format!(
+                        "local package '{}' already exists in this profile",
+                        record.id
+                    ));
+                }
+                if !verify_file(
+                    &item.artifact.path,
+                    &item.artifact.sha256,
+                    item.artifact.size,
+                )? {
+                    return invalid(format!("external archive '{}' changed", record.id));
+                }
+                let destination = staging.join(&record.id);
+                fs::create_dir_all(&destination)
+                    .map_err(|source| io_error(&destination, source))?;
+                let archive = fs::File::open(&item.artifact.path)
+                    .map_err(|source| io_error(&item.artifact.path, source))?;
+                extract_archive(archive, &destination)?;
+                let extracted = PackageManifest::read(&destination)?;
+                if extracted != *manifest {
+                    return invalid(format!("external package '{}' changed", record.id));
+                }
+            }
+
+            let mut available = profile
+                .packages
+                .iter()
+                .map(|package| package.id.clone())
+                .chain(
+                    existing
+                        .iter()
+                        .filter(|_| !replace_all)
+                        .map(|package| package.id.clone()),
+                )
+                .chain(profile.manual_packages.iter().cloned())
+                .chain(packages.iter().map(|item| item.package.id.clone()))
+                .collect::<HashSet<_>>();
+            for replaced in &packages {
+                for old in &existing {
+                    if old.source == replaced.package.source
+                        && old.project_id == replaced.package.project_id
+                        && old.id != replaced.package.id
+                    {
+                        available.remove(&old.id);
+                    }
+                }
+            }
+            for item in &packages {
+                for dependency in &item.artifact.manifest.dependencies {
+                    if dependency.kind == DependencyKind::Required
+                        && !available.contains(&dependency.id)
+                    {
+                        return invalid(format!(
+                            "external package '{}' requires '{}'",
+                            item.package.id, dependency.id
+                        ));
+                    }
+                }
+                for conflict in &item.artifact.manifest.conflicts {
+                    if available.contains(&conflict.id) {
+                        return invalid(format!(
+                            "external package '{}' conflicts with '{}'",
+                            item.package.id, conflict.id
+                        ));
+                    }
+                }
+            }
+
+            let replaced = existing
+                .iter()
+                .filter(|old| {
+                    replace_all
+                        || packages.iter().any(|item| {
+                            item.package.id == old.id
+                                || item.package.source == old.source
+                                    && item.package.project_id == old.project_id
+                        })
+                })
+                .map(|package| package.id.clone())
+                .chain(packages.iter().map(|item| item.package.id.clone()))
+                .collect::<HashSet<_>>();
+            let mut backed_up = Vec::new();
+            for id in &replaced {
+                let current = content.join(id);
+                if current.exists() {
+                    if let Err(source) = fs::rename(&current, backup.join(id)) {
+                        for saved_id in &backed_up {
+                            let _ = fs::rename(backup.join(saved_id), content.join(saved_id));
+                        }
+                        return Err(io_error(&current, source));
+                    }
+                    backed_up.push(id.clone());
+                }
+            }
+
+            let mut installed = Vec::new();
+            let install_result = (|| {
+                for item in &packages {
+                    let source = staging.join(&item.package.id);
+                    let destination = content.join(&item.package.id);
+                    fs::rename(&source, &destination)
+                        .map_err(|error| io_error(&destination, error))?;
+                    installed.push(item.package.id.clone());
+                }
+                let mut next = existing
+                    .into_iter()
+                    .filter(|old| !replaced.contains(&old.id))
+                    .collect::<Vec<_>>();
+                next.extend(packages.iter().map(|item| item.package.clone()));
+                next.sort_by(|left, right| left.title.cmp(&right.title));
+                self.write_external_packages(profile_id, &next)?;
+                Ok(next)
+            })();
+            match install_result {
+                Ok(next) => Ok(next),
+                Err(error) => {
+                    for id in installed {
+                        let path = content.join(id);
+                        if path.exists() {
+                            let _ = fs::remove_dir_all(path);
+                        }
+                    }
+                    for id in &backed_up {
+                        let saved = backup.join(id);
+                        if saved.exists() {
+                            let _ = fs::rename(&saved, content.join(id));
+                        }
+                    }
+                    Err(error)
+                }
+            }
+        })();
+        if staging.exists() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        if backup.exists() {
+            let _ = fs::remove_dir_all(&backup);
+        }
+        result
+    }
+
+    pub fn remove_external_package(
+        &self,
+        profile_id: Uuid,
+        id: &str,
+    ) -> Result<(), PackageProblem> {
+        let _operation_lock = self.lock_profile(profile_id)?;
+        let existing = self.read_external_packages(profile_id)?;
+        if !existing.iter().any(|package| package.id == id) {
+            return invalid("external package is not installed");
+        }
+        let profile_path = self.profile_path(profile_id);
+        for package in existing.iter().filter(|package| package.id != id) {
+            let manifest =
+                PackageManifest::read(profile_path.join("game/content").join(&package.id))?;
+            if manifest.dependencies.iter().any(|dependency| {
+                dependency.kind == DependencyKind::Required && dependency.id == id
+            }) {
+                return invalid(format!(
+                    "external package '{}' is required by '{}'",
+                    id, package.title
+                ));
+            }
+        }
+        let source = profile_path.join("game/content").join(id);
+        let temporary = profile_path.join(format!(".external-remove-{}", Uuid::new_v4()));
+        if source.exists() {
+            fs::rename(&source, &temporary).map_err(|error| io_error(&source, error))?;
+        }
+        let next = existing
+            .into_iter()
+            .filter(|package| package.id != id)
+            .collect::<Vec<_>>();
+        if let Err(error) = self.write_external_packages(profile_id, &next) {
+            if temporary.exists() {
+                let _ = fs::rename(&temporary, &source);
+            }
+            return Err(error);
+        }
+        if temporary.exists() {
+            fs::remove_dir_all(&temporary).map_err(|error| io_error(&temporary, error))?;
+        }
+        Ok(())
     }
 
     fn apply_with_metadata(
@@ -1260,29 +1564,52 @@ impl ProfileStore {
         output_folder: impl AsRef<Path>,
     ) -> Result<PreparedArtifact, PackageProblem> {
         let profile = self.profile(profile_id)?;
+        if profile.main_build.is_some() {
+            return invalid("a modpack cannot use a temporary main build");
+        }
+        if !profile.manual_packages.is_empty() {
+            return invalid("a modpack cannot include manually installed packages");
+        }
+        if profile
+            .external_packages
+            .iter()
+            .any(|package| package.artifact_size == 0)
+        {
+            return invalid("reinstall VoxelWorld packages before creating a modpack");
+        }
         let engine = profile
-            .voxelcore_version
-            .as_deref()
+            .main_build
+            .as_ref()
+            .and_then(|build| build.engine_version.as_deref())
+            .or(profile.voxelcore_version.as_deref())
             .ok_or_else(|| PackageProblem::Invalid("profile has no VoxelCore version".into()))?;
-        let installed = profile
+        let dependencies = profile
             .packages
             .iter()
-            .map(|package| (package.id.as_str(), package.version.as_str()))
-            .collect::<HashMap<_, _>>();
-        let dependencies = profile
-            .roots
-            .iter()
-            .map(|root| {
-                let selected = installed.get(root.as_str()).ok_or_else(|| {
-                    PackageProblem::Invalid(format!("root package '{root}' is not installed"))
-                })?;
-                Ok(serde_json::json!({
-                    "id": root,
-                    "requirement": format!("={selected}"),
+            .filter(|package| package.id != slug)
+            .map(|package| {
+                serde_json::json!({
+                    "id": package.id,
+                    "requirement": format!("={}", package.version),
                     "kind": "required"
-                }))
+                })
             })
-            .collect::<Result<Vec<_>, PackageProblem>>()?;
+            .collect::<Vec<_>>();
+        let external_packages = profile
+            .external_packages
+            .iter()
+            .map(|package| crate::ExternalPackageLock {
+                source: package.source.clone(),
+                id: package.id.clone(),
+                title: package.title.clone(),
+                project_id: package.project_id,
+                slug: package.slug.clone(),
+                version_id: package.version_id,
+                version: package.version.clone(),
+                artifact_sha256: package.artifact_sha256.clone(),
+                artifact_size: package.artifact_size,
+            })
+            .collect::<Vec<_>>();
         let output_folder = output_folder.as_ref();
         fs::create_dir_all(output_folder).map_err(|source| io_error(output_folder, source))?;
         let source = output_folder.join(format!(".modpack-source-{}", Uuid::new_v4()));
@@ -1299,6 +1626,7 @@ impl ProfileStore {
                 "license": license,
                 "voxelcore": format!("={engine}"),
                 "dependencies": dependencies,
+                "external_packages": external_packages,
                 "capabilities": [],
                 "environments": ["client"]
             });
@@ -2222,6 +2550,50 @@ impl ProfileStore {
         self.root.join("profiles").join(folder)
     }
 
+    fn read_external_packages(
+        &self,
+        profile_id: Uuid,
+    ) -> Result<Vec<ExternalPackage>, PackageProblem> {
+        let path = self.profile_path(profile_id).join("external-packages.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = fs::read(&path).map_err(|source| io_error(&path, source))?;
+        if bytes.len() > 1024 * 1024 {
+            return invalid("external package metadata is too large");
+        }
+        let packages: Vec<ExternalPackage> = serde_json::from_slice(&bytes).map_err(|error| {
+            PackageProblem::Invalid(format!("invalid external package metadata: {error}"))
+        })?;
+        let mut ids = HashSet::new();
+        if packages.iter().any(|package| {
+            package.source != "voxelworld"
+                || package.slug.is_empty()
+                || package.version.is_empty()
+                || package.artifact_sha256.len() != 64
+                || !package
+                    .artifact_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || !ids.insert(package.id.clone())
+                || safe_relative(Path::new(&package.id)).is_err()
+        }) {
+            return invalid("invalid external package metadata");
+        }
+        Ok(packages)
+    }
+
+    fn write_external_packages(
+        &self,
+        profile_id: Uuid,
+        packages: &[ExternalPackage],
+    ) -> Result<(), PackageProblem> {
+        let path = self.profile_path(profile_id).join("external-packages.json");
+        let bytes = serde_json::to_vec_pretty(packages)
+            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
+        write_atomic(&path, &[bytes.as_slice(), b"\n"].concat())
+    }
+
     fn lock_profile(&self, id: Uuid) -> Result<fs::File, PackageProblem> {
         let path = self.profile_path(id).join(".operation.lock");
         let file = fs::OpenOptions::new()
@@ -2737,6 +3109,31 @@ mod tests {
         package_archive_for_environment(folder, version, false)
     }
 
+    fn external_artifact(folder: &Path, version: &str) -> PreparedArtifact {
+        let source = folder.join(format!("external-source-{version}"));
+        fs::create_dir_all(source.join("scripts")).unwrap();
+        fs::create_dir_all(source.join(".git")).unwrap();
+        fs::write(source.join("scripts/main.lua"), "return true").unwrap();
+        fs::write(source.join(".git/config"), "private metadata").unwrap();
+        fs::write(
+            source.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "id": "external_mod",
+                "type": "mod",
+                "title": "External",
+                "version": version,
+                "creators": ["Tester"],
+                "description": "External package",
+                "license": "MIT",
+                "voxelcore": ">=0.31.0"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        prepare_package(&source, folder.join("prepared")).unwrap()
+    }
+
     fn package_archive_for_environment(
         folder: &Path,
         version: &str,
@@ -2839,6 +3236,7 @@ mod tests {
                 download_url: "https://registry.invalid/artifact".into(),
                 dependencies: Vec::new(),
             }],
+            external_packages: None,
         };
         let signing_key = SigningKey::from_bytes(&[7; 32]);
         let public_key = signing_key.verifying_key().to_bytes();
@@ -2898,6 +3296,118 @@ mod tests {
                 .ends_with("revision-two")
         );
         assert_eq!(store.rollback(profile.id).unwrap(), "revision-one");
+    }
+
+    #[test]
+    fn external_packages_are_tracked_preserved_and_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("External content").unwrap();
+        store.initialize_vanilla(profile.id, "0.31.4").unwrap();
+        let artifact = external_artifact(temp.path(), "1.0.0");
+        let record = ExternalPackage {
+            id: artifact.manifest.id.clone(),
+            source: "voxelworld".into(),
+            project_id: 10,
+            slug: "external-project".into(),
+            version_id: 20,
+            version: "1.0.0".into(),
+            title: "External project".into(),
+            artifact_sha256: artifact.sha256.clone(),
+            artifact_size: artifact.size,
+        };
+        store
+            .install_external_packages(
+                profile.id,
+                vec![ExternalInstallPackage {
+                    package: record,
+                    artifact,
+                }],
+            )
+            .unwrap();
+
+        let installed = store.list().unwrap().remove(0);
+        assert_eq!(installed.external_packages.len(), 1);
+        assert!(installed.manual_packages.is_empty());
+        let content = store
+            .game_directory(profile.id)
+            .unwrap()
+            .join("content/external_mod");
+        assert!(content.join("scripts/main.lua").is_file());
+        assert!(!content.join(".git").exists());
+
+        let updated_artifact = external_artifact(temp.path(), "2.0.0");
+        store
+            .install_external_packages(
+                profile.id,
+                vec![ExternalInstallPackage {
+                    package: ExternalPackage {
+                        id: updated_artifact.manifest.id.clone(),
+                        source: "voxelworld".into(),
+                        project_id: 10,
+                        slug: "external-project".into(),
+                        version_id: 21,
+                        version: "2.0.0".into(),
+                        title: "External project".into(),
+                        artifact_sha256: updated_artifact.sha256.clone(),
+                        artifact_size: updated_artifact.size,
+                    },
+                    artifact: updated_artifact,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            store.list().unwrap()[0].external_packages[0].version,
+            "2.0.0"
+        );
+
+        store.clear_profile(profile.id).unwrap();
+        assert!(content.join("scripts/main.lua").is_file());
+        store
+            .remove_external_package(profile.id, "external_mod")
+            .unwrap();
+        assert!(!content.exists());
+        assert!(store.list().unwrap()[0].external_packages.is_empty());
+    }
+
+    #[test]
+    fn an_empty_modpack_lock_removes_external_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("Strict build").unwrap();
+        store.initialize_vanilla(profile.id, "0.31.4").unwrap();
+        let artifact = external_artifact(temp.path(), "1.0.0");
+        store
+            .install_external_packages(
+                profile.id,
+                vec![ExternalInstallPackage {
+                    package: ExternalPackage {
+                        id: artifact.manifest.id.clone(),
+                        source: "voxelworld".into(),
+                        project_id: 10,
+                        slug: "external-project".into(),
+                        version_id: 20,
+                        version: artifact.manifest.version.clone(),
+                        title: "External project".into(),
+                        artifact_sha256: artifact.sha256.clone(),
+                        artifact_size: artifact.size,
+                    },
+                    artifact,
+                }],
+            )
+            .unwrap();
+        store
+            .replace_external_packages(profile.id, Vec::new())
+            .unwrap();
+        let installed = store.list().unwrap().remove(0);
+        assert!(installed.external_packages.is_empty());
+        assert!(
+            !store
+                .game_directory(profile.id)
+                .unwrap()
+                .join("content/external_mod")
+                .exists()
+        );
     }
 
     #[test]
@@ -3410,6 +3920,7 @@ mod tests {
                     roots: vec![],
                     root_requirements: HashMap::new(),
                     packages: vec![],
+                    external_packages: None,
                 },
             )
             .unwrap();
@@ -3483,6 +3994,26 @@ mod tests {
                 },
             )
             .unwrap();
+        let external_artifact = external_artifact(temp.path(), "1.0.0");
+        store
+            .install_external_packages(
+                profile.id,
+                vec![ExternalInstallPackage {
+                    package: ExternalPackage {
+                        id: external_artifact.manifest.id.clone(),
+                        source: "voxelworld".into(),
+                        project_id: 10,
+                        slug: "external-project".into(),
+                        version_id: 20,
+                        version: "1.0.0".into(),
+                        title: "External project".into(),
+                        artifact_sha256: external_artifact.sha256.clone(),
+                        artifact_size: external_artifact.size,
+                    },
+                    artifact: external_artifact,
+                }],
+            )
+            .unwrap();
         let config = store.profile_path(profile.id).join("game/config");
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("demo.json"), "custom").unwrap();
@@ -3501,6 +4032,9 @@ mod tests {
         assert_eq!(artifact.manifest.voxelcore, "=0.31.4");
         assert_eq!(artifact.manifest.dependencies[0].id, "demo_mod");
         assert_eq!(artifact.manifest.dependencies[0].requirement, "=1.0.0");
+        assert_eq!(artifact.manifest.external_packages.len(), 1);
+        assert_eq!(artifact.manifest.external_packages[0].source, "voxelworld");
+        assert_eq!(artifact.manifest.external_packages[0].version_id, 20);
     }
 
     #[test]

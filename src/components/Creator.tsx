@@ -1111,8 +1111,8 @@ export function Creator({
               <div className="package-preview">
                 <strong>Создать сборку из профиля</strong>
                 <span>
-                  Точные версии выбранных контент-паков и настройки из game/config
-                  войдут в архив.
+                  Сборка зафиксирует версию VoxelCore, установленные пакеты,
+                  карты и настройки из game/config.
                 </span>
                 <Select
                   aria-label="Профиль для сборки"

@@ -33,6 +33,7 @@ tauri-plugin-clipboard-manager = "2"
 discord-rich-presence = "1.1.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tempfile = "3"
+uuid = "1"
 
 [profile.release]
 codegen-units = 1

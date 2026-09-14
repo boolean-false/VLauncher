@@ -29,7 +29,7 @@ export type Project = {
   summary: string;
   license: string | null;
   downloads: number;
-  updated_at: string;
+  updated_at: string | null;
   latest_release: Release | null;
   cover_url?: string | null;
   categories?: string[];
@@ -76,6 +76,18 @@ export type ResolvedPackage = {
   dependencies: string[];
 };
 
+export type ExternalPackageLock = {
+  source: "voxelworld";
+  id: string;
+  title: string;
+  project_id: number;
+  slug: string;
+  version_id: number;
+  version: string;
+  artifact_sha256: string;
+  artifact_size: number;
+};
+
 export type SignedInstallPlan = {
   plan: {
     revision: string;
@@ -85,6 +97,7 @@ export type SignedInstallPlan = {
     roots: string[];
     root_requirements: Record<string, string>;
     packages: ResolvedPackage[];
+    external_packages: ExternalPackageLock[] | null;
   };
   algorithm: "Ed25519";
   key_id: string;
@@ -121,7 +134,7 @@ async function responseError(response: Response, fallback: string): Promise<Erro
     error?: { code?: string; message?: string };
   } | null;
   const code = data?.error?.code ?? "";
-  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), {status:response.status});
+  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), { status: response.status });
 }
 
 async function fetchRegistry<T>(
@@ -458,7 +471,7 @@ export const loadUpload = (token: string, id: string) =>
 
 export type CategoryOption = { id: string; name: string };
 export const loadCategories = (kind: string, signal?: AbortSignal) =>
-  registryRequest<CategoryOption[]>(`/categories?${new URLSearchParams({kind})}`, {signal});
+  registryRequest<CategoryOption[]>(`/categories?${new URLSearchParams({ kind })}`, { signal });
 
 export async function loadProjects(
   query = "",

@@ -402,6 +402,11 @@ input[type="range"]:focus-visible { outline: 1px solid var(--focus-ring); outlin
 .analytics-consent-actions { display: flex; flex-shrink: 0; gap: 8px; }
 .analytics-consent-toggle { flex-shrink: 0; white-space: nowrap; }
 @media (max-width: 900px) { .analytics-consent { flex-direction: column; } }
+.feature-introduction { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px; margin-bottom: 24px; background: var(--panel); border: 1px solid var(--accent); }
+.feature-introduction h2 { font-size: 18px; margin: 10px 0 8px; }
+.feature-introduction p { margin: 0; }
+.feature-introduction-actions { display: flex; flex-shrink: 0; gap: 8px; }
+@media (max-width: 1000px) { .feature-introduction { align-items: flex-start; flex-direction: column; } }
 .launcher-releases { display: grid; gap: 24px; }
 .launcher-release-filters { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 16px; }
 .launcher-release { border: 1px solid var(--line); padding: 24px; background: var(--panel); min-width: 0; }
