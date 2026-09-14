@@ -29,7 +29,7 @@ export type Project = {
   summary: string;
   license: string | null;
   downloads: number;
-  updated_at: string;
+  updated_at: string | null;
   latest_release: Release | null;
   cover_url?: string | null;
   categories?: string[];
@@ -121,7 +121,7 @@ async function responseError(response: Response, fallback: string): Promise<Erro
     error?: { code?: string; message?: string };
   } | null;
   const code = data?.error?.code ?? "";
-  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), {status:response.status});
+  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), { status: response.status });
 }
 
 async function fetchRegistry<T>(
@@ -458,7 +458,7 @@ export const loadUpload = (token: string, id: string) =>
 
 export type CategoryOption = { id: string; name: string };
 export const loadCategories = (kind: string, signal?: AbortSignal) =>
-  registryRequest<CategoryOption[]>(`/categories?${new URLSearchParams({kind})}`, {signal});
+  registryRequest<CategoryOption[]>(`/categories?${new URLSearchParams({ kind })}`, { signal });
 
 export async function loadProjects(
   query = "",

@@ -6,8 +6,9 @@ import { CategoryFilter } from "./CategoryFilter";
 import { Markdown } from "./Markdown";
 import { popupMenu, contextMenuPosition } from "../desktop";
 import { Select } from "./Select";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   type CategoryOption,
   createReport,
@@ -25,12 +26,36 @@ import {
   type RunTask,
 } from "../model";
 import { Empty, ErrorNotice, Icon, Modal } from "./ui";
+import { useJointCatalogEnabled } from "../experimental";
+import {
+  mergeModCategories,
+  useAllRegistryProjects,
+  useVoxelWorldMod,
+  useVoxelWorldMods,
+  useVoxelWorldTags,
+  voxelWorldTagForCategory,
+  voxelWorldTagName,
+  type VoxelWorldMod,
+} from "../voxelWorld";
 
 type Preview = {
   profile: LocalProfile;
   plan: SignedInstallPlan;
   title: string;
   coverUrl?: string;
+};
+type CatalogSource = "all" | "vspace" | "voxelworld";
+type CatalogItem = {
+  key: string;
+  source: "vspace" | "voxelworld";
+  slug: string;
+  title: string;
+  summary: string;
+  downloads: number;
+  updatedAt: string;
+  footer: string;
+  project?: Project;
+  voxelWorld?: VoxelWorldMod;
 };
 export function Catalog({
   active = true,
@@ -57,6 +82,9 @@ export function Catalog({
 }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("mod");
+  const jointCatalogEnabled = useJointCatalogEnabled();
+  const jointCatalog = jointCatalogEnabled && kind === "mod";
+  const [source, setSource] = useState<CatalogSource>("all");
   const [offset, setOffset] = useState(0);
   const [sort, setSort] = useState("updated");
   const [compatibleOnly, setCompatibleOnly] = useState(false);
@@ -65,22 +93,134 @@ export function Catalog({
   const [search, setSearch] = useState(query);
   useEffect(() => { const timer = setTimeout(() => setSearch(query), 200); return () => clearTimeout(timer); }, [query]);
   const catalogEngine = engineVersion(profiles.find(p => p.id === selected));
-  const params = new URLSearchParams({limit:"24",offset:String(offset),sort,kind});
-  if (search.trim()) params.set('q',search.trim());
-  for (const id of category) params.append('category',id);
-  if (compatibleOnly && catalogEngine) params.set('voxelcore_version',catalogEngine);
-  const result = useRegistryResource<{items:Project[];total:number}>(`/projects?${params}`, undefined, active);
-  const categoryResult = useRegistryResource<CategoryOption[]>(`/categories?${new URLSearchParams({kind})}`, undefined, active);
-  const categories = categoryResult.data ?? [];
-  const categoryError = categoryResult.error;
+  const params = new URLSearchParams({ limit: "24", offset: String(offset), sort, kind });
+  if (search.trim()) params.set("q", search.trim());
+  for (const id of category) params.append("category", id);
+  if (compatibleOnly && catalogEngine) params.set("voxelcore_version", catalogEngine);
+  const result = useRegistryResource<{ items: Project[]; total: number }>(`/projects?${params}`, undefined, active && !jointCatalog);
+  const categoryResult = useRegistryResource<CategoryOption[]>(`/categories?${new URLSearchParams({ kind })}`, undefined, active);
+  const voxelWorldTags = useVoxelWorldTags(active && jointCatalog);
+  const vspaceCategories = categoryResult.data ?? [];
+  const tags = voxelWorldTags.data ?? [];
+  const categories = useMemo(() => {
+    if (!jointCatalog || source === "vspace") return vspaceCategories;
+    if (source === "voxelworld") return mergeModCategories([], tags);
+    return mergeModCategories(vspaceCategories, tags);
+  }, [jointCatalog, source, vspaceCategories, tags]);
+  const vspaceHasCategories = category.every((id) =>
+    vspaceCategories.some((item) => item.id === id),
+  );
+  const voxelWorldSelectedTags = category.map((id) =>
+    voxelWorldTagForCategory(id, tags),
+  );
+  const voxelWorldHasCategories = voxelWorldSelectedTags.every(Boolean);
+  const includeVSpace =
+    active &&
+    jointCatalog &&
+    source !== "voxelworld" &&
+    vspaceHasCategories;
+  const includeVoxelWorld =
+    active &&
+    jointCatalog &&
+    source !== "vspace" &&
+    !compatibleOnly &&
+    voxelWorldHasCategories;
+  const allVSpaceParams = new URLSearchParams({ sort, kind: "mod" });
+  if (search.trim()) allVSpaceParams.set("q", search.trim());
+  for (const id of category) allVSpaceParams.append("category", id);
+  if (compatibleOnly && catalogEngine)
+    allVSpaceParams.set("voxelcore_version", catalogEngine);
+  const voxelWorldParams = new URLSearchParams({
+    sort: sort === "updated" ? "4" : "1",
+    sortOrder: sort === "title" ? "asc" : "desc",
+  });
+  if (search.trim()) voxelWorldParams.set("title", search.trim());
+  for (const tag of voxelWorldSelectedTags)
+    if (tag) voxelWorldParams.append("tag_id[]", String(tag.id));
+  const allVSpace = useAllRegistryProjects(allVSpaceParams, includeVSpace);
+  const allVoxelWorld = useVoxelWorldMods(voxelWorldParams, includeVoxelWorld);
+  const categoryError = categoryResult.error || voxelWorldTags.error;
   const previous = useRef<typeof result.data>(undefined);
   if (result.data) previous.current = result.data;
-  const page = result.data ?? previous.current ?? {items:[],total:0};
-  const loading = result.loading && !previous.current;
-  const updating = result.fetching || search !== query;
-  const error = result.error;
-  const setRetry = (_: unknown) => { result.refresh(); categoryResult.refresh(); };
-  useEffect(() => { if (deepLink && active) setDetail(deepLink); }, [deepLink,active]);
+  const regularPage = result.data ?? previous.current ?? { items: [], total: 0 };
+  const jointItems = useMemo(() => {
+    const items: CatalogItem[] = [];
+    for (const project of includeVSpace ? allVSpace.data?.items ?? [] : [])
+      items.push({
+        key: `vspace:${project.slug}`,
+        source: "vspace",
+        slug: project.slug,
+        title: project.title,
+        summary: project.summary,
+        downloads: project.downloads,
+        updatedAt: project.updated_at ?? "",
+        footer: project.latest_release ? `v${project.latest_release.version}` : "Нет релизов",
+        project,
+      });
+    for (const project of includeVoxelWorld ? allVoxelWorld.data?.items ?? [] : [])
+      items.push({
+        key: `voxelworld:${project.id}`,
+        source: "voxelworld",
+        slug: project.slug,
+        title: project.title,
+        summary: project.description,
+        downloads: project.downloads,
+        updatedAt: project.last_update_date ?? "",
+        footer: project.author.name,
+        voxelWorld: project,
+      });
+    items.sort((left, right) =>
+      sort === "title"
+        ? left.title.localeCompare(right.title, "ru", { sensitivity: "base" })
+        : sort === "downloads"
+          ? right.downloads - left.downloads ||
+          (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "")
+          : (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""),
+    );
+    return items;
+  }, [allVSpace.data, allVoxelWorld.data, includeVSpace, includeVoxelWorld, sort]);
+  const regularItems: CatalogItem[] = regularPage.items.map((project) => ({
+    key: `vspace:${project.slug}`,
+    source: "vspace",
+    slug: project.slug,
+    title: project.title,
+    summary: project.summary,
+    downloads: project.downloads,
+    updatedAt: project.updated_at ?? "",
+    footer: project.latest_release ? `v${project.latest_release.version}` : "Нет релизов",
+    project,
+  }));
+  const page = jointCatalog
+    ? { items: jointItems.slice(offset, offset + 24), total: jointItems.length }
+    : { items: regularItems, total: regularPage.total };
+  const requestedSources = Number(includeVSpace) + Number(includeVoxelWorld);
+  const loadedSources =
+    Number(includeVSpace && !!allVSpace.data) +
+    Number(includeVoxelWorld && !!allVoxelWorld.data);
+  const loading = jointCatalog
+    ? requestedSources > 0 && loadedSources === 0 && (allVSpace.loading || allVoxelWorld.loading)
+    : result.loading && !previous.current;
+  const updating = jointCatalog
+    ? allVSpace.fetching || allVoxelWorld.fetching || search !== query
+    : result.fetching || search !== query;
+  const error = jointCatalog
+    ? loadedSources === 0
+      ? (includeVSpace ? allVSpace.error : "") ||
+      (includeVoxelWorld ? allVoxelWorld.error : "")
+      : ""
+    : result.error;
+  const partialError = jointCatalog && loadedSources > 0
+    ? (includeVSpace ? allVSpace.error : "") ||
+    (includeVoxelWorld ? allVoxelWorld.error : "")
+    : "";
+  const refresh = () => {
+    if (jointCatalog) {
+      allVSpace.refresh();
+      allVoxelWorld.refresh();
+    } else result.refresh();
+  };
+  const setRetry = (_: unknown) => { refresh(); categoryResult.refresh(); voxelWorldTags.refresh(); };
+  useEffect(() => { if (deepLink && active) setDetail(deepLink); }, [deepLink, active]);
   useEffect(() => { if (!active) setDetail(""); }, [active]);
   return (
     <>
@@ -150,6 +290,33 @@ export function Catalog({
           </Select>
         </label>
       </div>
+      {jointCatalog && (
+        <div className="catalog-source-row">
+          <span className="supporting-label">Источник</span>
+          <div className="filter-row" aria-label="Источник каталога">
+            {[
+              ["all", "Все"],
+              ["vspace", "VSpace"],
+              ["voxelworld", "VoxelWorld"],
+            ].map(([id, name]) => (
+              <button
+                key={id}
+                aria-pressed={source === id}
+                className={source === id ? "active" : ""}
+                onClick={() => {
+                  setSource(id as CatalogSource);
+                  setCategory([]);
+                  setCompatibleOnly(false);
+                  setOffset(0);
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <span className="experimental-badge">Экспериментально</span>
+        </div>
+      )}
       <div className="catalog-categories" aria-label="Категории">
         {profiles.find(p => p.id === selected)?.main_build && <p>В профиле выбрана сборка main. Фильтр смотрит только на версию движка, поэтому некоторые пакеты могут не работать.</p>}
         <label className="checkbox-row">
@@ -160,17 +327,21 @@ export function Catalog({
           {catalogEngine ? `Только совместимые с VoxelCore ${catalogEngine}` : "Для проверки совместимости выберите профиль с версией VoxelCore"}
         </label>
         <span className="catalog-filter-label supporting-label">Категории</span>
-        <CategoryFilter items={categories} value={category} onChange={next=>{setCategory(next);setOffset(0);}} />
+        <CategoryFilter items={categories} value={category} onChange={next => { setCategory(next); setOffset(0); }} />
         {categoryError && (
           <span className="category-error">
             Не удалось загрузить категории.
             <button onClick={() => setRetry(null)}>Повторить</button>
           </span>
         )}
+        {jointCatalog && compatibleOnly && source !== "vspace" && (
+          <p className="muted">У VoxelWorld нет данных о совместимости с выбранной версией, поэтому показаны только проекты VSpace.</p>
+        )}
       </div>
-      {error && previous.current && <ErrorNotice retry={result.refresh}>Не удалось обновить каталог. Показаны ранее загруженные данные.</ErrorNotice>}
+      {partialError && <ErrorNotice retry={refresh}>Один из источников недоступен. Показаны результаты второго.</ErrorNotice>}
+      {error && !jointCatalog && previous.current && <ErrorNotice retry={refresh}>Не удалось обновить каталог. Показаны ранее загруженные данные.</ErrorNotice>}
       <p className="catalog-refresh-status" role="status">{updating && !loading ? "Обновляем результаты…" : ""}</p>
-      {error && !previous.current ? (
+      {error && (jointCatalog || !previous.current) ? (
         <ErrorNotice retry={() => setRetry(null)}>
           <strong>Каталог недоступен</strong>
           <p>Установленные игры остаются в библиотеке.</p>
@@ -192,8 +363,8 @@ export function Catalog({
             {compatibleOnly
               ? `Для VoxelCore ${catalogEngine} ничего не найдено. Можно выключить фильтр совместимости.`
               : query || category.length
-              ? "Попробуйте другое название или выберите все категории."
-              : "Здесь появятся опубликованные и проверенные проекты."}
+                ? "Попробуйте другое название или выберите все категории."
+                : "Здесь появятся опубликованные и проверенные проекты."}
           </p>
           {(compatibleOnly || query || category.length > 0) && (
             <button
@@ -214,31 +385,31 @@ export function Catalog({
             {page.items.map((project) => (
               <button
                 className="catalog-card"
-                disabled={updating || !result.data}
-                key={project.slug}
-                onClick={() => setDetail(project.slug)}
+                disabled={updating}
+                key={project.key}
+                onClick={() => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   void popupMenu([
-                    { text: "Открыть проект", action: () => setDetail(project.slug) },
-                    { text: "Версии и установка…", action: () => setDetail(project.slug) },
+                    { text: "Открыть проект", action: () => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug) },
+                    ...(project.source === "voxelworld"
+                      ? [{ text: "Открыть на VoxelWorld", action: () => void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(project.slug)}`) }]
+                      : [{ text: "Версии и установка…", action: () => setDetail(project.slug) }]),
                   ], contextMenuPosition(event));
                 }}
               >
                 <div className="catalog-card-top">
-                  <ProjectIcon project={project} />
+                  {project.project ? <ProjectIcon project={project.project} /> : <ExternalProjectIcon project={project.voxelWorld!} />}
                   <div>
-                    <span className="eyebrow supporting-label">{kinds[project.type]}</span>
+                    <span className="eyebrow supporting-label">
+                      Контент-пак{jointCatalog ? ` · ${project.source === "vspace" ? "VSpace" : "VoxelWorld"}` : ""}
+                    </span>
                     <h2>{project.title}</h2>
                   </div>
                 </div>
                 <p>{project.summary || "Автор пока не добавил описание."}</p>
                 <footer>
-                  <span>
-                    {project.latest_release
-                      ? `v${project.latest_release.version}`
-                      : "Нет релизов"}
-                  </span>
+                  <span>{project.footer}</span>
                   <span>
                     <Icon name="download" size={14} />
                     {project.downloads.toLocaleString("ru")}
@@ -269,21 +440,42 @@ export function Catalog({
         </>
       )}
       {detail && (
-        <ProjectView
-          key={detail}
-          slug={detail}
-          profiles={profiles}
-          selected={selected}
-          select={select}
-          busy={busy}
-          running={running}
-          run={run}
-          preview={preview}
-          close={() => setDetail("")}
-          create={create}
-        />
+        detail.startsWith("voxelworld:") ? (
+          <VoxelWorldProjectView
+            key={detail}
+            slug={detail.slice("voxelworld:".length)}
+            close={() => setDetail("")}
+          />
+        ) : (
+          <ProjectView
+            key={detail}
+            slug={detail}
+            profiles={profiles}
+            selected={selected}
+            select={select}
+            busy={busy}
+            running={running}
+            run={run}
+            preview={preview}
+            close={() => setDetail("")}
+            create={create}
+          />
+        )
       )}
     </>
+  );
+}
+function ExternalProjectIcon({ project }: { project: VoxelWorldMod }) {
+  const [failed, setFailed] = useState(false);
+  return project.logo_url && !failed ? (
+    <img
+      className="project-icon"
+      src={project.logo_url}
+      alt=""
+      onError={() => setFailed(true)}
+    />
+  ) : (
+    <span className="project-icon"><Icon name="package" size={26} /></span>
   );
 }
 function ProjectIcon({ project }: { project: Project }) {
@@ -299,6 +491,67 @@ function ProjectIcon({ project }: { project: Project }) {
     <span className={`project-icon ${project.type}`}>
       <Icon name={project.type === "world" ? "world" : "package"} size={26} />
     </span>
+  );
+}
+function VoxelWorldProjectView({
+  slug,
+  close,
+}: {
+  slug: string;
+  close: () => void;
+}) {
+  const result = useVoxelWorldMod(slug);
+  const project = result.data;
+  const openProject = () =>
+    void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(slug)}`);
+  return (
+    <Modal title={project?.title ?? "Проект VoxelWorld"} close={close} busy={false}>
+      {result.error && !project ? (
+        <ErrorNotice retry={result.refresh}>{result.error}</ErrorNotice>
+      ) : !project ? (
+        <div className="loading">Загружаем описание…</div>
+      ) : (
+        <>
+          {result.error && <ErrorNotice retry={result.refresh}>Не удалось обновить данные. Показана сохранённая карточка.</ErrorNotice>}
+          <div className="project-detail-title">
+            <ExternalProjectIcon project={project} />
+            <div>
+              <span>Контент-пак · VoxelWorld · {project.author.name}</span>
+              <p>{project.description}</p>
+            </div>
+          </div>
+          <div className="project-description selectable">
+            <Markdown text={project.detail_description || project.description || "Автор пока не добавил подробное описание."} />
+          </div>
+          {!!project.tags.length && (
+            <div className="external-project-tags" aria-label="Категории проекта">
+              {project.tags.map((tag) => (
+                <span key={tag.id}>{voxelWorldTagName(tag.title)}</span>
+              ))}
+            </div>
+          )}
+          <dl className="metadata">
+            <div>
+              <dt>Загрузки</dt>
+              <dd>{project.downloads.toLocaleString("ru")}</dd>
+            </div>
+            <div>
+              <dt>Обновлён</dt>
+              <dd>
+                {project.last_update_date
+                  ? new Date(project.last_update_date).toLocaleDateString("ru")
+                  : "Не указано"}
+              </dd>
+            </div>
+          </dl>
+          <p className="notice">Просмотр работает в экспериментальном режиме. Установка из VoxelWorld появится отдельно.</p>
+          <div className="modal-actions">
+            <button onClick={close}>Закрыть</button>
+            <button className="primary" onClick={openProject}>Открыть на VoxelWorld</button>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 export function ProjectView({
@@ -338,10 +591,10 @@ export function ProjectView({
   useEffect(() => {
     void invoke<string | null>("load_access_token")
       .then((value) => setReportToken(value ?? ""))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
   useEffect(() => {
-    if (releasesResult.data) setVersion(current => releasesResult.data!.some(r=>r.version === current) ? current : (releasesResult.data!.find(r=>r.channel === 'stable' && !r.deprecated)?.version ?? releasesResult.data![0]?.version ?? ""));
+    if (releasesResult.data) setVersion(current => releasesResult.data!.some(r => r.version === current) ? current : (releasesResult.data!.find(r => r.channel === 'stable' && !r.deprecated)?.version ?? releasesResult.data![0]?.version ?? ""));
   }, [releasesResult.data]);
   const release = releases.find((r) => r.version === version);
   const profile = profiles.find((p) => p.id === selected);
@@ -481,13 +734,13 @@ export function ProjectView({
               )}
               {!!release?.attestation?.assertion?.manifest?.capabilities
                 ?.length && (
-                <div className="notice">
-                  Разрешения пакета:{" "}
-                  {release.attestation.assertion!.manifest.capabilities.join(
-                    ", ",
-                  )}
-                </div>
-              )}
+                  <div className="notice">
+                    Разрешения пакета:{" "}
+                    {release.attestation.assertion!.manifest.capabilities.join(
+                      ", ",
+                    )}
+                  </div>
+                )}
               {installed && (
                 <p className="muted">
                   В выбранном профиле установлена версия {installed.version}.
@@ -613,7 +866,7 @@ export function InstallPreview({
   const changed =
     changes.some((c) => c.status !== "Без изменений") ||
     JSON.stringify([...profile.roots].sort()) !==
-      JSON.stringify([...plan.plan.roots].sort());
+    JSON.stringify([...plan.plan.roots].sort());
   return (
     <Modal title={title} close={close} busy={busy}>
       {profile.main_build && <p>Выбрана сборка main · {profile.main_build.sha.slice(0, 7)}. Некоторые пакеты могут с ней не работать.</p>}
@@ -665,11 +918,11 @@ export function InstallPreview({
       {changes.some(
         (c) => c.status === "Удалить" || c.status === "Изменить",
       ) && (
-        <div className="notice">
-          Существующие миры могут зависеть от этих версий пакетов. Перед
-          изменением сохраните копию папки миров.
-        </div>
-      )}
+          <div className="notice">
+            Существующие миры могут зависеть от этих версий пакетов. Перед
+            изменением сохраните копию папки миров.
+          </div>
+        )}
       {!changed && (
         <div className="notice success">Состав профиля уже актуален.</div>
       )}
