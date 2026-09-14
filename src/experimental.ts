@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 const jointCatalogKey = "vlauncher.experimental.joint-catalog";
 const jointCatalogEvent = "vlauncher-joint-catalog-changed";
+const jointCatalogIntroductionKey =
+  "vlauncher.experimental.joint-catalog-introduction.v1";
 
 export function readJointCatalogEnabled() {
   return localStorage.getItem(jointCatalogKey) === "true";
@@ -21,4 +23,15 @@ export function useJointCatalogEnabled() {
     return () => window.removeEventListener(jointCatalogEvent, changed);
   }, []);
   return enabled;
+}
+
+export function shouldIntroduceJointCatalog() {
+  return (
+    !readJointCatalogEnabled() &&
+    localStorage.getItem(jointCatalogIntroductionKey) !== "seen"
+  );
+}
+
+export function markJointCatalogIntroduced() {
+  localStorage.setItem(jointCatalogIntroductionKey, "seen");
 }

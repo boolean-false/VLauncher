@@ -1,4 +1,5 @@
 import { AnalyticsConsent } from "./components/AnalyticsConsent";
+import { VoxelWorldIntroduction } from "./components/VoxelWorldIntroduction";
 import { recordActivity, recordContent } from "./telemetry";
 import { useLocalResource, invalidateLocalResources } from "./useLocalResource";
 import { AppUpdates } from "./components/AppUpdates";
@@ -607,7 +608,8 @@ export default function App() {
       <div className="workspace">
         <main id="main-content" ref={mainElement}>
           <AnalyticsConsent />
-        <AppUpdates channel={updateChannel} running={running.size > 0} busy={busy} run={run} />
+          <VoxelWorldIntroduction openCatalog={() => setScreen("catalog")} />
+          <AppUpdates channel={updateChannel} running={running.size > 0} busy={busy} run={run} />
           {gameFailure && (
             <div className="notice error" role="alert">
               <div className="notice-copy">
