@@ -1111,7 +1111,7 @@ export function Creator({
               <div className="package-preview">
                 <strong>Создать сборку из профиля</strong>
                 <span>
-                  Сборка зафиксирует VoxelCore, весь состав VSpace и VoxelWorld,
+                  Сборка зафиксирует версию VoxelCore, установленные пакеты,
                   карты и настройки из game/config.
                 </span>
                 <Select
