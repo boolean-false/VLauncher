@@ -12,6 +12,7 @@ export function ProfileContentPicker({
   preview,
   close,
   refreshProfiles,
+  openProfile,
 }: {
   profile: LocalProfile;
   active: boolean;
@@ -25,6 +26,7 @@ export function ProfileContentPicker({
   }) => void;
   close: () => void;
   refreshProfiles: () => Promise<void>;
+  openProfile: (id: string) => void;
 }) {
   return (
     <Catalog
@@ -41,6 +43,7 @@ export function ProfileContentPicker({
       create={close}
       refreshProfiles={refreshProfiles}
       profileContext={{ close }}
+      openProfile={openProfile}
     />
   );
 }

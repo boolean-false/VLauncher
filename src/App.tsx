@@ -13,15 +13,18 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import {
   resolveProject,
+  loadReleases,
   type RuntimeRelease,
   type SignedInstallPlan,
 } from "./api";
 import {
   engineVersion,
+  exactVoxelCoreVersion,
   mainRuntimeId,
   profileRuntimeId,
   mainBuildLabel,
   profileEngineLabel,
+  profileModpack,
   type MainBuild,
   requireEngineVersion,
   type LocalProfile,
@@ -153,6 +156,7 @@ export default function App() {
     setScreen("catalog");
   }, []);
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
+  const installedModpack = profileModpack(profile);
   const currentTask = tasks[0];
   useEffect(() => {
     localStorage.setItem("vlauncher.tasks", JSON.stringify(tasks.slice(0, 100)));
@@ -405,18 +409,40 @@ export default function App() {
       });
     } else
       void run("Проверка зависимостей", async () => {
-        const requirements = preserveRequirements
+        let requirements = preserveRequirements
           ? Object.fromEntries(
               roots
                 .filter((root) => profile.root_requirements?.[root])
                 .map((root) => [root, profile.root_requirements![root]]),
             )
           : {};
+        let targetEngine = engineVersion(profile);
+        let channels = ["stable", "beta", "alpha"];
+        const modpack = profileModpack(profile);
+        if (!preserveRequirements && modpack && roots.includes(modpack.id)) {
+          const releases = await loadReleases(modpack.id);
+          const current = releases.find((release) => release.version === modpack.version);
+          channels = current?.channel === "stable"
+            ? ["stable"]
+            : current?.channel
+              ? ["stable", current.channel]
+              : ["stable"];
+          const target = releases.find(
+            (release) =>
+              channels.includes(release.channel) &&
+              !release.deprecated &&
+              !!release.download_url &&
+              !!exactVoxelCoreVersion(release.voxelcore),
+          );
+          if (!target) throw new Error("У сборки нет доступной версии с закреплённым VoxelCore.");
+          targetEngine = exactVoxelCoreVersion(target.voxelcore);
+          requirements = { ...requirements, [modpack.id]: `=${target.version}` };
+        }
         const plan = await resolveProject(
           roots,
-          engineVersion(profile),
+          targetEngine,
           requirements,
-          ["stable", "beta", "alpha"],
+          channels,
         );
         setPendingPlan({ profile, plan, title, allowVersionSkips });
       });
@@ -724,6 +750,14 @@ export default function App() {
                         <span className="eyebrow supporting-label">VoxelCore {profileEngineLabel(profile) || "· версия не выбрана"}</span>
                         {profile.main_build && <p>Экспериментальная сборка. Совместимость модов не подтверждена.</p>}
                         <h2>{profile.name}</h2>
+                        {installedModpack && (
+                          <button
+                            className="profile-modpack-link"
+                            onClick={() => inspect({ source: "vspace", slug: installedModpack.id, title: installedModpack.title || installedModpack.id, version: installedModpack.version, parent: profile.name, engine: engineVersion(profile) })}
+                          >
+                            Сборка {installedModpack.title || installedModpack.id} · {installedModpack.version}
+                          </button>
+                        )}
                         <p>
                           <span
                             className={`status-dot ${running.has(profile.id) ? "live" : ""}`}
@@ -862,7 +896,7 @@ export default function App() {
                                     )
                                   }
                                 >
-                                  Проверить обновления
+                                  {installedModpack ? "Проверить обновление сборки" : "Проверить обновления"}
                                 </button>
                               )}
                               <button
@@ -874,7 +908,7 @@ export default function App() {
                               </button>
                             </div>
                           </div>
-                          {!profile.packages.length && !profile.external_packages?.length && !profile.manual_packages?.length ? (
+                          {!profile.packages.some((pkg) => pkg.kind !== "modpack") && !profile.external_packages?.length && !profile.manual_packages?.length ? (
                             <Empty title="Чистая игра">
                               <p>
                                 Контент-паков пока нет. Можно играть сразу
@@ -894,6 +928,7 @@ export default function App() {
                                 <span />
                               </div>
                               {[...profile.packages]
+                                .filter((pkg) => pkg.kind !== "modpack")
                                 .sort(
                                   (a, b) =>
                                     Number(profile.roots.includes(b.id)) -
@@ -1038,6 +1073,7 @@ export default function App() {
             <ProfileContentPicker key={pickerProfileId} profile={profiles.find(item => item.id === pickerProfileId)!}
               active={screen === "content-picker"} refreshProfiles={refresh}
               busy={busy} running={running.has(pickerProfileId)} run={run} preview={setPendingPlan}
+              openProfile={(id) => { setSelected(id); setScreen("library"); }}
               close={() => { setSelected(pickerProfileId); setScreen("library"); }} />
           </div>}
           {visited.current.has("catalog") && (
@@ -1053,6 +1089,7 @@ export default function App() {
               deepLink={deepLink}
               resetDetail={catalogReset}
               create={() => setNewProfile(true)}
+              openProfile={(id) => { setSelected(id); setScreen("library"); }}
               refreshProfiles={refresh}
             /></div>
           )}
@@ -1493,6 +1530,7 @@ function ProfileSettings({
     snapshot_count: number;
   };
   const [name, setName] = useState(profile.name);
+  const modpack = profileModpack(profile);
   const { status: mainlineStatus } = useMainlineStatus();
   const mainBuilds = runtimes.flatMap((runtime) => runtime.main_build ? [runtime.main_build] : []);
   const [runtimeVersion, setRuntimeVersion] = useState(profileRuntimeId(profile));
@@ -1508,9 +1546,15 @@ function ProfileSettings({
       <section className="setting-row">
         <div>
           <h3>Версия VoxelCore</h3>
-          <p>Перед сменой лаунчер проверит совместимость всех выбранных контент-паков.</p>
+          <p>{modpack ? `Определяется сборкой ${modpack.title || modpack.id} ${modpack.version}. Меняется вместе с версией сборки.` : "Перед сменой лаунчер проверит совместимость всех выбранных контент-паков."}</p>
         </div>
-        <form
+        {modpack ? (
+          <div className="profile-managed-value">
+            <span>VoxelCore</span>
+            <strong>{engineVersion(profile)}</strong>
+            <small>Управляется сборкой</small>
+          </div>
+        ) : <form
           className="actions"
           onSubmit={(event) => {
             event.preventDefault();
@@ -1547,7 +1591,7 @@ function ProfileSettings({
           <button disabled={busy || !runtimeVersion || runtimeVersion === profileRuntimeId(profile) || (!!selectedMain && !acceptedMainRisk)}>
             Применить
           </button>
-        </form>
+        </form>}
       </section>
       <section className="setting-row">
         <div>

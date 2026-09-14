@@ -114,12 +114,15 @@ const translatedErrors: Record<string, string> = {
   no_compatible_release: "Для выбранной версии VoxelCore нет совместимого набора пакетов.",
   dependency_cycle: "В зависимостях проекта найден замкнутый цикл.",
   package_conflict: "Выбранные пакеты конфликтуют друг с другом.",
+  multiple_modpacks: "В одном профиле не может быть несколько сборок.",
+  modpack_must_be_root: "Сборка должна определять отдельный профиль.",
   artifact_unavailable: "Архив выбранной версии временно недоступен.",
   authentication_required: "Сначала войдите в аккаунт.",
   github_oauth_not_configured: "Вход через GitHub пока не настроен на сервере.",
   release_exists: "Версия с таким номером уже существует.",
   project_slug_reserved: "Этот идентификатор зарезервирован после удаления проекта. Для нового проекта выберите другой идентификатор.",
   project_slug_taken: "Этот идентификатор проекта уже занят.",
+  project_identifier_pending: "Дождитесь проверки первой версии контент-пака.",
   invalid_image: "Файл не удалось распознать как подходящее изображение.",
   image_too_large: "Изображение превышает ограничение 10 МБ.",
   session_expired: "Сессия завершена. Войдите снова.",
@@ -205,6 +208,7 @@ export type CreatorProject = {
   can_delete?: boolean;
   can_manage_lifecycle?: boolean;
   archived_at?: string | null;
+  identifier_pending?: boolean;
   downloads?: number;
   id: string;
   slug: string;
@@ -297,7 +301,10 @@ export const loadCreatorProjects = (token: string) =>
   registryRequest<CreatorProject[]>("/creator/projects", undefined, token);
 export const createCreatorProject = (
   token: string,
-  project: Omit<CreatorProject, "id" | "status">,
+  project: Omit<
+    Pick<CreatorProject, "type" | "title" | "summary" | "description" | "license" | "categories">,
+    "type"
+  > & { type: Exclude<Project["type"], "runtime"> },
 ) =>
   registryRequest<CreatorProject>(
     "/creator/projects",

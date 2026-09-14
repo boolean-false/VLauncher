@@ -7,7 +7,12 @@ export type LocalProfile = {
   voxelcore_version: string | null;
   roots: string[];
   root_requirements?: Record<string, string>;
-  packages: { id: string; version: string; title?: string | null }[];
+  packages: {
+    id: string;
+    kind: "mod" | "library" | "modpack" | "world" | "runtime";
+    version: string;
+    title?: string | null;
+  }[];
   external_packages?: {
     id: string;
     source: "voxelworld";
@@ -66,6 +71,14 @@ export type RunTask = (
 export const engineVersion = (profile?: LocalProfile) =>
   profile?.main_build?.engine_version?.trim() || profile?.voxelcore_version?.trim() || "";
 
+export const profileModpack = (profile?: LocalProfile) =>
+  profile?.packages.find((pkg) => pkg.kind === "modpack");
+
+export const exactVoxelCoreVersion = (requirement: string) => {
+  const match = requirement.trim().match(/^=?\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/);
+  return match?.[1] ?? "";
+};
+
 export function requireEngineVersion(version: string): string {
   if (!version.trim()) {
     throw new Error("Выберите версию VoxelCore в разделе «Управление» профиля.");
@@ -92,6 +105,9 @@ export const friendlyError = (value: unknown) => {
     ["a modpack cannot use a temporary main build", "Сборку нельзя создать из временной версии main. Выберите стабильный выпуск VoxelCore."],
     ["a modpack cannot include manually installed packages", "В профиле есть пакеты, добавленные вручную. Удалите или опубликуйте их перед созданием сборки."],
     ["reinstall VoxelWorld packages before creating a modpack", "Переустановите пакеты VoxelWorld, чтобы зафиксировать их размер и контрольную сумму."],
+    ["a profile cannot contain multiple modpacks", "В одном профиле не может быть несколько сборок."],
+    ["a modpack must be a profile root", "Сборка должна определять профиль целиком."],
+    ["a modpack must be installed as a separate profile", "Сборка устанавливается как отдельный профиль, а не как контент существующего профиля."],
   ];
   return translations.find(([fragment]) => text.includes(fragment))?.[1] ?? text;
 };

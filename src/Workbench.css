@@ -138,6 +138,29 @@
   color: var(--muted);
   flex-wrap: wrap;
 }
+.library-page .profile-modpack-link {
+  display: block;
+  width: fit-content;
+  min-height: 0;
+  margin: -4px 0 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+}
+.library-page .profile-modpack-link:hover { color: var(--text); }
+.library-page .profile-managed-value {
+  display: grid;
+  min-width: 190px;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+.library-page .profile-managed-value span,
+.library-page .profile-managed-value small { color: var(--muted); }
 .library-page .launch-area { margin: 0; max-width: 240px; }
 .library-page .launch-area button {
   min-width: 172px;

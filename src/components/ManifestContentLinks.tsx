@@ -1,14 +1,18 @@
+import { useState } from "react";
 import { useContentInspector } from "./ContentInspector";
 
 // Accepts local and moderation manifests without assuming that the project is published.
 export function ManifestContentLinks({
   manifest,
   parent,
+  compact = false,
 }: {
   manifest: unknown;
   parent: string;
+  compact?: boolean;
 }) {
   const inspect = useContentInspector();
+  const [query, setQuery] = useState("");
   if (!manifest || typeof manifest !== "object") return null;
   const data = manifest as Record<string, unknown>;
   const rows = ["dependencies", "conflicts", "external_packages"].flatMap(
@@ -47,10 +51,19 @@ export function ManifestContentLinks({
     },
   );
   if (!rows.length) return null;
-  return (
-    <div className="manifest-content-links">
-      <h3>Состав и связи пакета</h3>
-      {rows.map((ref, index) => (
+
+  const normalizedQuery = query.trim().toLocaleLowerCase("ru");
+  const visibleRows = normalizedQuery
+    ? rows.filter((row) =>
+        [row.title, row.slug, row.source, row.version, row.requirement]
+          .filter(Boolean)
+          .some((value) => value!.toLocaleLowerCase("ru").includes(normalizedQuery)),
+      )
+    : rows;
+
+  const list = (
+    <div className={compact ? "manifest-content-scroll" : undefined}>
+      {visibleRows.map((ref, index) => (
         <button
           key={`${ref.source}:${ref.slug}:${index}`}
           className="inspector-dependency"
@@ -64,6 +77,37 @@ export function ManifestContentLinks({
           </small>
         </button>
       ))}
+      {!visibleRows.length && (
+        <p className="manifest-content-empty">Ничего не найдено</p>
+      )}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <details className="manifest-content-links manifest-content-compact">
+        <summary>
+          <span>Состав сборки</span>
+          <small>{rows.length} пакетов</small>
+        </summary>
+        {rows.length > 10 && (
+          <input
+            aria-label="Поиск по составу сборки"
+            type="search"
+            placeholder="Найти пакет…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        )}
+        {list}
+      </details>
+    );
+  }
+
+  return (
+    <div className="manifest-content-links">
+      <h3>Состав и связи пакета</h3>
+      {list}
     </div>
   );
 }

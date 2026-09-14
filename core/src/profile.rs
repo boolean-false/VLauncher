@@ -51,6 +51,7 @@ pub struct Profile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstalledPackage {
     pub id: String,
+    pub kind: PackageKind,
     pub version: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -895,6 +896,7 @@ impl ProfileStore {
                         });
                     InstalledPackage {
                         id: package.id,
+                        kind: package.kind,
                         version: package.version,
                         title,
                     }

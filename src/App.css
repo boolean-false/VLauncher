@@ -1277,6 +1277,16 @@ main>div[hidden] {
   gap: 12px;
 }
 
+.modpack-profile-notice {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+}
+
+.modpack-profile-notice span {
+  color: var(--muted);
+}
+
 .catalog-project-page .project-install-panel .release-info {
   gap: 8px;
   margin: 14px 0 12px;
@@ -2047,9 +2057,9 @@ main>div[hidden] {
     grid-template-columns: 1fr;
   }
 
-  .creator-kind-guidance {
+  .release-source-fields,
+  .release-metadata-fields {
     grid-template-columns: 1fr;
-    gap: 4px;
   }
 
   .vlauncher-settings {
@@ -2625,18 +2635,95 @@ select {
   line-height: 1.35;
 }
 
-.creator-kind-guidance {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
+.release-composer-heading {
+  display: flex;
+  align-items: flex-start;
   gap: 12px;
-  padding: 13px 0;
-  border-block: 1px solid var(--line);
-  font-size: 12px;
-  line-height: 1.55;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
 }
 
-.creator-kind-guidance span {
+.release-composer-heading h2 {
+  margin: 2px 0 5px;
+}
+
+.release-composer-heading p {
+  margin: 0;
   color: var(--muted);
+}
+
+.release-source-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.manifest-content-compact {
+  margin: 4px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.manifest-content-compact > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.manifest-content-compact > summary small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.manifest-content-compact > input {
+  width: 100%;
+  margin: 2px 0 8px;
+}
+
+.manifest-content-scroll {
+  max-height: 288px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.manifest-content-scroll .inspector-dependency {
+  margin: 0 0 5px;
+}
+
+.manifest-content-empty {
+  margin: 10px 0 14px;
+  color: var(--muted);
+}
+
+.release-source-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.release-source-card > div:first-child span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.release-source-fields,
+.release-metadata-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.release-metadata-fields > label:last-child {
+  grid-column: 1 / -1;
+}
+
+.release-ready-card {
+  border-color: var(--accent);
 }
 
 .review-list {

@@ -21,9 +21,11 @@ import {
 } from "../api";
 import {
   engineVersion,
+  exactVoxelCoreVersion,
   formatBytes,
   friendlyError,
   kinds,
+  profileModpack,
   type LocalProfile,
   type RunTask,
 } from "../model";
@@ -48,6 +50,7 @@ type Preview = {
   plan: SignedInstallPlan;
   title: string;
   coverUrl?: string;
+  newProfileName?: string;
 };
 type CatalogSource = "all" | "vspace" | "voxelworld";
 type CatalogItem = {
@@ -86,6 +89,7 @@ export function Catalog({
   create,
   refreshProfiles,
   profileContext,
+  openProfile,
 }: {
   active?: boolean;
   profiles: LocalProfile[];
@@ -100,6 +104,7 @@ export function Catalog({
   create: () => void;
   refreshProfiles: () => Promise<void>;
   profileContext?: { close: () => void };
+  openProfile: (id: string) => void;
 }) {
   const inspect = useContentInspector();
   const [query, setQuery] = useState("");
@@ -342,6 +347,7 @@ export function Catalog({
         preview={preview}
         close={closeDetail}
         create={create}
+        openProfile={openProfile}
       />
     );
   }
@@ -998,6 +1004,7 @@ export function ProjectView({
   preview,
   close,
   create,
+  openProfile,
 }: {
   slug: string;
   profiles: LocalProfile[];
@@ -1009,6 +1016,7 @@ export function ProjectView({
   preview: (value: Preview) => void;
   close: () => void;
   create: () => void;
+  openProfile: (id: string) => void;
 }) {
   const inspect = useContentInspector();
   const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
@@ -1032,26 +1040,66 @@ export function ProjectView({
   }, [releasesResult.data]);
   const release = releases.find((r) => r.version === version);
   const profile = profiles.find((p) => p.id === selected);
+  const installedModpackProfile = project?.type === "modpack"
+    ? profiles.find((item) => profileModpack(item)?.id === slug)
+    : undefined;
+  const installedModpack = profileModpack(installedModpackProfile);
+  const selectedModpackIsInstalled = installedModpack?.version === version;
   const installed = profile?.packages.find((p) => p.id === slug);
   const manualCollision = profile?.manual_packages?.includes(slug) ?? false;
   const install = () => {
-    if (!profile || !release || !project) return;
+    if (!release || !project) return;
     void run(`Проверка · ${project.title}`, async () => {
+      const modpackEngine = project.type === "modpack"
+        ? exactVoxelCoreVersion(release.voxelcore)
+        : "";
+      if (project.type === "modpack" && !modpackEngine) {
+        throw new Error("Сборка не закрепляет точную версию VoxelCore. Автору нужно выпустить исправленную версию.");
+      }
+      if (project.type !== "modpack" && !profile) return;
+      const targetProfile = project.type === "modpack" ? installedModpackProfile : profile;
       const roots =
         project.type === "modpack"
-          ? [slug]
-          : [...new Set([...profile.roots, slug])];
+          ? targetProfile
+            ? [...new Set([...targetProfile.roots, slug])]
+            : [slug]
+          : [...new Set([...profile!.roots, slug])];
       const requirements =
         project.type === "modpack"
-          ? { [slug]: `=${version}` }
-          : { ...(profile.root_requirements ?? {}), [slug]: `=${version}` };
+          ? { ...(targetProfile?.root_requirements ?? {}), [slug]: `=${version}` }
+          : { ...(profile!.root_requirements ?? {}), [slug]: `=${version}` };
       const plan = await resolveProject(
         roots,
-        engineVersion(profile),
+        project.type === "modpack" ? modpackEngine : engineVersion(profile),
         requirements,
         release.channel === "stable" ? ["stable"] : ["stable", release.channel],
       );
-      preview({ profile, plan, title: `Установка ${project.title}`, coverUrl: project.type === "modpack" ? project.cover_url ?? undefined : undefined });
+      preview({
+        profile: project.type === "modpack" && !targetProfile
+          ? {
+              id: "pending-modpack",
+              name: project.title,
+              icon: null,
+              active_revision: null,
+              voxelcore_version: modpackEngine,
+              roots: [],
+              root_requirements: {},
+              packages: [],
+              external_packages: [],
+              manual_packages: [],
+            }
+          : targetProfile!,
+        plan,
+        title: project.type === "modpack"
+          ? targetProfile
+            ? `${project.title} · ${installedModpack?.version} → ${version}`
+            : `Новый профиль · ${project.title}`
+          : `Установка ${project.title}`,
+        coverUrl: project.type === "modpack" && !targetProfile
+          ? project.cover_url ?? release.preview_url ?? undefined
+          : undefined,
+        newProfileName: project.type === "modpack" && !targetProfile ? project.title : undefined,
+      });
       close();
     }).then((ok) => setFailed(!ok));
   };
@@ -1113,7 +1161,7 @@ export function ProjectView({
               <h2>Установка</h2>
           {releases.length ? (
             <>
-              <div className="form-columns">
+              <div className={project.type === "modpack" ? "form-columns single" : "form-columns"}>
                 <label>
                   Версия проекта
                   <Select
@@ -1129,7 +1177,7 @@ export function ProjectView({
                     ))}
                   </Select>
                 </label>
-                <label>
+                {project.type !== "modpack" && <label>
                   Установить в профиль
                   <Select
                     value={selected}
@@ -1145,8 +1193,19 @@ export function ProjectView({
                       </option>
                     ))}
                   </Select>
-                </label>
+                </label>}
               </div>
+              {project.type === "modpack" && (
+                <div className="notice modpack-profile-notice">
+                  <strong>{installedModpackProfile ? `Сборка управляет профилем «${installedModpackProfile.name}»` : "Сборка создаст отдельный профиль"}</strong>
+                  <span>{installedModpackProfile ? "Выбранная версия VoxelCore и весь состав сборки обновятся одной операцией. Пользовательские дополнения сохранятся, если они совместимы." : "VoxelCore, контент и зависимости установятся автоматически. Существующие профили не изменятся."}</span>
+                </div>
+              )}
+              {installedModpackProfile && (
+                <p className="muted">
+                  Профиль <strong>{installedModpackProfile.name}</strong> использует версию {installedModpack?.version}.
+                </p>
+              )}
               <div className="release-info">
                 <span>VoxelCore {release?.voxelcore}</span>
                 <span>
@@ -1155,7 +1214,7 @@ export function ProjectView({
                     : "Размер не указан"}
                 </span>
               </div>
-              {profile && !engineVersion(profile) && (
+              {project.type !== "modpack" && profile && !engineVersion(profile) && (
                 <p role="status">Перед установкой выберите версию VoxelCore в разделе «Управление» профиля.</p>
               )}
               {release?.deprecated && (
@@ -1197,20 +1256,23 @@ export function ProjectView({
                     )}
                   </div>
                 )}
-              {installed && (
+              {project.type !== "modpack" && installed && (
                 <p className="muted">
                   В выбранном профиле установлена версия {installed.version}.
                 </p>
               )}
-              {manualCollision && (
+              {project.type !== "modpack" && manualCollision && (
                 <ErrorNotice>
                   В папке уже есть добавленный вручную пакет <strong>{slug}</strong>. Переместите или переименуйте его и повторите установку.
                 </ErrorNotice>
               )}
-              {profile && running.has(profile.id) && (
+              {project.type !== "modpack" && profile && running.has(profile.id) && (
                 <div className="notice">
                   Завершите игру, чтобы изменить её контент.
                 </div>
+              )}
+              {project.type === "modpack" && installedModpackProfile && running.has(installedModpackProfile.id) && (
+                <div className="notice">Завершите игру в профиле «{installedModpackProfile.name}», чтобы обновить сборку.</div>
               )}
               {failed && (
                 <ErrorNotice>
@@ -1245,7 +1307,14 @@ export function ProjectView({
                 </details>
               )}
               <div className="modal-actions">
-                {!profiles.length ? (
+                {installedModpackProfile && selectedModpackIsInstalled ? (
+                  <button
+                    className="primary"
+                    onClick={() => openProfile(installedModpackProfile.id)}
+                  >
+                    Открыть профиль · {installedModpackProfile.name}
+                  </button>
+                ) : project.type !== "modpack" && !profiles.length ? (
                   <button
                     className="primary"
                     onClick={() => {
@@ -1260,15 +1329,16 @@ export function ProjectView({
                     className="primary"
                     disabled={
                       busy ||
-                      !profile ||
-                      !engineVersion(profile) ||
-                      manualCollision ||
-                      running.has(profile.id) ||
+                      (project.type !== "modpack" && (!profile || !engineVersion(profile))) ||
+                      (project.type === "modpack" && !exactVoxelCoreVersion(release?.voxelcore ?? "")) ||
+                      (project.type === "modpack" && !!installedModpackProfile && running.has(installedModpackProfile.id)) ||
+                      (project.type !== "modpack" && manualCollision) ||
+                      (project.type !== "modpack" && !!profile && running.has(profile.id)) ||
                       !release?.download_url
                     }
                     onClick={install}
                   >
-                    {busy ? "Проверяем…" : "Посмотреть состав установки"}
+                    {busy ? "Проверяем…" : project.type === "modpack" ? "Посмотреть состав профиля" : "Посмотреть состав установки"}
                   </button>
                 )}
               </div>
@@ -1287,6 +1357,7 @@ export function InstallPreview({
   profile,
   plan,
   title,
+  newProfileName,
   busy,
   close,
   apply,
@@ -1347,7 +1418,7 @@ export function InstallPreview({
     <Modal title={title} close={close} busy={busy}>
       {profile.main_build && <p>Выбрана сборка main · {profile.main_build.sha.slice(0, 7)}. Некоторые пакеты могут с ней не работать.</p>}
       <p>
-        Профиль <strong>{profile.name}</strong> · VoxelCore{" "}
+        {newProfileName ? "Будет создан профиль" : "Профиль"} <strong>{newProfileName || profile.name}</strong> · VoxelCore{" "}
         {plan.plan.voxelcore_version}
       </p>
       <div className="install-changes">
@@ -1440,7 +1511,7 @@ export function InstallPreview({
             disabled={busy}
             onClick={() => void apply().then((ok) => setFailed(!ok))}
           >
-            {busy ? "Устанавливаем…" : "Применить изменения"}
+            {busy ? "Устанавливаем…" : newProfileName ? "Создать профиль" : "Применить изменения"}
           </button>
         )}
       </div>

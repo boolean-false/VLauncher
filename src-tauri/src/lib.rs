@@ -22,8 +22,8 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use vlauncher_core::{
-    CacheStatus, DeliveryManifest, InstallPlan, InstalledRuntime, PackageManifest,
-    PreparedArtifact, Profile, ProfileDefinition, ProfileStorage, ProfileStore,
+    CacheStatus, DeliveryManifest, InstallPlan, InstalledRuntime, PackageKind, PackageManifest,
+    PreparedArtifact, Profile, ProfileDefinition, ProfileStorage, ProfileStore, RemoteInstallPlan,
     SignedRemoteInstallPlan, UploadReceipt, prepare_package, upload_package_with_progress,
 };
 
@@ -48,6 +48,51 @@ struct TransferEvent {
     total: u64,
     bytes_per_second: u64,
     eta_seconds: u64,
+}
+
+fn plan_modpack(plan: &RemoteInstallPlan) -> Result<Option<&str>, String> {
+    let mut modpacks = plan
+        .packages
+        .iter()
+        .filter(|package| package.kind == PackageKind::Modpack);
+    let first = modpacks.next().map(|package| package.id.as_str());
+    if modpacks.next().is_some() {
+        return Err("a profile cannot contain multiple modpacks".into());
+    }
+    if let Some(id) = first
+        && !plan.roots.iter().any(|root| root == id)
+    {
+        return Err("a modpack must be a profile root".into());
+    }
+    Ok(first)
+}
+
+fn ensure_profile_modpack_unchanged(
+    store: &ProfileStore,
+    profile_id: uuid::Uuid,
+    plan: &RemoteInstallPlan,
+) -> Result<(), String> {
+    let next = plan_modpack(plan)?;
+    let profile = store
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "profile does not exist".to_owned())?;
+    let current = profile
+        .packages
+        .iter()
+        .find(|package| package.kind == PackageKind::Modpack)
+        .map(|package| package.id.as_str());
+    ensure_modpack_transition(current, next)
+}
+
+fn ensure_modpack_transition(current: Option<&str>, next: Option<&str>) -> Result<(), String> {
+    if current == next || (current.is_none() && next.is_none()) {
+        Ok(())
+    } else {
+        Err("a modpack must be installed as a separate profile".into())
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -544,6 +589,7 @@ async fn create_profile_from_plan(
                     .as_secs() as i64,
             )
             .map_err(|error| error.to_string())?;
+        plan_modpack(&verified)?;
         let profile = store.create(&name).map_err(|error| error.to_string())?;
         let result = (|| {
             store
@@ -1367,7 +1413,19 @@ fn finished_game_event(
 mod tests {
     #[cfg(target_os = "linux")]
     use super::system_interpreter_from_maps;
-    use super::{finished_game_event, load_fallback_token, package_icon_data, save_fallback_token};
+    use super::{
+        ensure_modpack_transition, finished_game_event, load_fallback_token, package_icon_data,
+        save_fallback_token,
+    };
+
+    #[test]
+    fn a_profile_can_only_update_its_own_modpack() {
+        assert!(ensure_modpack_transition(Some("pack"), Some("pack")).is_ok());
+        assert!(ensure_modpack_transition(None, None).is_ok());
+        assert!(ensure_modpack_transition(None, Some("pack")).is_err());
+        assert!(ensure_modpack_transition(Some("pack"), Some("other_pack")).is_err());
+        assert!(ensure_modpack_transition(Some("pack"), None).is_err());
+    }
 
     #[test]
     fn a_requested_stop_is_reported_as_success() {
@@ -1507,6 +1565,7 @@ async fn apply_remote_install_plan(
                 .as_secs() as i64,
         )
         .map_err(|error| error.to_string())?;
+    ensure_profile_modpack_unchanged(&store, id, &verified)?;
     let total = verified
         .packages
         .iter()

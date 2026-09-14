@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { engineVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileRuntimeId, type LocalProfile, type MainBuild } from "../src/model.ts";
+import { engineVersion, exactVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileModpack, profileRuntimeId, type LocalProfile, type MainBuild } from "../src/model.ts";
 
 test("сборка main хранит свою версию движка", () => {
   const build: MainBuild = {
@@ -28,4 +28,19 @@ test("операции требуют выбранную версию", () => {
   }
   assert.equal(requireEngineVersion("0.31.4"), "0.31.4");
   assert.equal(requireEngineVersion("1.2.3-beta.1"), "1.2.3-beta.1");
+});
+
+test("сборка определяет профиль и точную версию движка", () => {
+  assert.equal(exactVoxelCoreVersion("=0.31.4"), "0.31.4");
+  assert.equal(exactVoxelCoreVersion("0.31.4"), "0.31.4");
+  assert.equal(exactVoxelCoreVersion(">=0.31.4"), "");
+  const profile: LocalProfile = {
+    id: "test",
+    name: "Test",
+    active_revision: "test",
+    voxelcore_version: "0.31.4",
+    roots: ["starter_pack"],
+    packages: [{ id: "starter_pack", kind: "modpack", version: "2.0.0" }],
+  };
+  assert.equal(profileModpack(profile)?.version, "2.0.0");
 });
