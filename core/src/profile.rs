@@ -19,8 +19,7 @@ use walkdir::WalkDir;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    DependencyKind, PackageKind, PackageManifest, PackageProblem, PreparedArtifact,
-    prepare_package,
+    DependencyKind, PackageKind, PackageManifest, PackageProblem, PreparedArtifact, prepare_package,
 };
 
 const MAX_FILES: usize = 100_000;
@@ -961,12 +960,13 @@ impl ProfileStore {
         let result = (|| {
             let cloned_path = self.profile_path(cloned.id);
             self.set_icon(cloned.id, source.icon.as_deref())?;
-            let external_metadata = self
-                .profile_path(source.id)
-                .join("external-packages.json");
+            let external_metadata = self.profile_path(source.id).join("external-packages.json");
             if external_metadata.is_file() {
-                fs::copy(&external_metadata, cloned_path.join("external-packages.json"))
-                    .map_err(|error| io_error(&external_metadata, error))?;
+                fs::copy(
+                    &external_metadata,
+                    cloned_path.join("external-packages.json"),
+                )
+                .map_err(|error| io_error(&external_metadata, error))?;
             }
             if let Some(revision) = &source.active_revision {
                 let source_snapshot = self
@@ -1259,9 +1259,8 @@ impl ProfileStore {
         }
         let profile_path = self.profile_path(profile_id);
         for package in existing.iter().filter(|package| package.id != id) {
-            let manifest = PackageManifest::read(
-                profile_path.join("game/content").join(&package.id),
-            )?;
+            let manifest =
+                PackageManifest::read(profile_path.join("game/content").join(&package.id))?;
             if manifest.dependencies.iter().any(|dependency| {
                 dependency.kind == DependencyKind::Required && dependency.id == id
             }) {
@@ -2555,9 +2554,7 @@ impl ProfileStore {
         &self,
         profile_id: Uuid,
     ) -> Result<Vec<ExternalPackage>, PackageProblem> {
-        let path = self
-            .profile_path(profile_id)
-            .join("external-packages.json");
+        let path = self.profile_path(profile_id).join("external-packages.json");
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -2565,15 +2562,19 @@ impl ProfileStore {
         if bytes.len() > 1024 * 1024 {
             return invalid("external package metadata is too large");
         }
-        let packages: Vec<ExternalPackage> = serde_json::from_slice(&bytes)
-            .map_err(|error| PackageProblem::Invalid(format!("invalid external package metadata: {error}")))?;
+        let packages: Vec<ExternalPackage> = serde_json::from_slice(&bytes).map_err(|error| {
+            PackageProblem::Invalid(format!("invalid external package metadata: {error}"))
+        })?;
         let mut ids = HashSet::new();
         if packages.iter().any(|package| {
             package.source != "voxelworld"
                 || package.slug.is_empty()
                 || package.version.is_empty()
                 || package.artifact_sha256.len() != 64
-                || !package.artifact_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !package
+                    .artifact_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
                 || !ids.insert(package.id.clone())
                 || safe_relative(Path::new(&package.id)).is_err()
         }) {
@@ -2587,9 +2588,7 @@ impl ProfileStore {
         profile_id: Uuid,
         packages: &[ExternalPackage],
     ) -> Result<(), PackageProblem> {
-        let path = self
-            .profile_path(profile_id)
-            .join("external-packages.json");
+        let path = self.profile_path(profile_id).join("external-packages.json");
         let bytes = serde_json::to_vec_pretty(packages)
             .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
         write_atomic(&path, &[bytes.as_slice(), b"\n"].concat())
@@ -3330,7 +3329,10 @@ mod tests {
         let installed = store.list().unwrap().remove(0);
         assert_eq!(installed.external_packages.len(), 1);
         assert!(installed.manual_packages.is_empty());
-        let content = store.game_directory(profile.id).unwrap().join("content/external_mod");
+        let content = store
+            .game_directory(profile.id)
+            .unwrap()
+            .join("content/external_mod");
         assert!(content.join("scripts/main.lua").is_file());
         assert!(!content.join(".git").exists());
 
@@ -3354,7 +3356,10 @@ mod tests {
                 }],
             )
             .unwrap();
-        assert_eq!(store.list().unwrap()[0].external_packages[0].version, "2.0.0");
+        assert_eq!(
+            store.list().unwrap()[0].external_packages[0].version,
+            "2.0.0"
+        );
 
         store.clear_profile(profile.id).unwrap();
         assert!(content.join("scripts/main.lua").is_file());
@@ -3396,7 +3401,13 @@ mod tests {
             .unwrap();
         let installed = store.list().unwrap().remove(0);
         assert!(installed.external_packages.is_empty());
-        assert!(!store.game_directory(profile.id).unwrap().join("content/external_mod").exists());
+        assert!(
+            !store
+                .game_directory(profile.id)
+                .unwrap()
+                .join("content/external_mod")
+                .exists()
+        );
     }
 
     #[test]

@@ -231,8 +231,7 @@ fn transfer_error(error: reqwest::Error) -> PackageProblem {
         )
     } else if error.is_connect() {
         PackageProblem::Remote(
-            "Не удалось подключиться к VSpace. Проверьте соединение и повторите отправку."
-                .into(),
+            "Не удалось подключиться к VSpace. Проверьте соединение и повторите отправку.".into(),
         )
     } else {
         PackageProblem::Remote(format!(
