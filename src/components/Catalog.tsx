@@ -7,7 +7,7 @@ import { CategoryFilter } from "./CategoryFilter";
 import { Markdown } from "./Markdown";
 import { popupMenu, contextMenuPosition } from "../desktop";
 import { Select } from "./Select";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -115,6 +115,21 @@ export function Catalog({
   const [search, setSearch] = useState(query);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
+  const listScrollTop = useRef(0);
+  const restoreListScroll = useRef(false);
+  const openDetail = useCallback((value: string) => {
+    if (!detailRef.current) {
+      listScrollTop.current = document.querySelector<HTMLElement>("main")?.scrollTop ?? 0;
+    }
+    restoreListScroll.current = false;
+    setDetail(value);
+  }, []);
+  const closeDetail = useCallback(() => {
+    if (detailRef.current) restoreListScroll.current = true;
+    setDetail("");
+  }, []);
   useEffect(() => { const timer = setTimeout(() => setSearch(query), 200); return () => clearTimeout(timer); }, [query]);
   const catalogEngine = engineVersion(profiles.find(p => p.id === selected));
   const targetProfile = profileContext ? profiles.find(p => p.id === selected) : undefined;
@@ -266,25 +281,38 @@ export function Catalog({
     } else result.refresh();
   };
   const setRetry = (_: unknown) => { refresh(); categoryResult.refresh(); voxelWorldTags.refresh(); };
-  useEffect(() => { if (active) setDetail(deepLink); }, [deepLink, active]);
+  useEffect(() => {
+    if (!active) return;
+    if (deepLink) openDetail(deepLink);
+    else if (detailRef.current) closeDetail();
+  }, [active, closeDetail, deepLink, openDetail]);
   useEffect(() => {
     if (resetSeen.current === resetDetail) return;
     resetSeen.current = resetDetail;
-    setDetail("");
-  }, [resetDetail]);
-  useEffect(() => {
-    if (!detail) return;
-    const scroller = document.querySelector("main");
+    closeDetail();
+  }, [closeDetail, resetDetail]);
+  useLayoutEffect(() => {
+    if (!active) return;
+    const scroller = document.querySelector<HTMLElement>("main");
     if (!scroller) return;
-    const listScrollTop = scroller.scrollTop;
-    scroller.scrollTop = 0;
-    return () => {
-      if (activeRef.current) scroller.scrollTop = listScrollTop;
-    };
-  }, [detail]);
+    if (detail) {
+      scroller.scrollTop = 0;
+      return;
+    }
+    if (!restoreListScroll.current) return;
+    restoreListScroll.current = false;
+    const target = listScrollTop.current;
+    scroller.scrollTop = target;
+    // App also restores the active screen during navigation. Re-apply the
+    // catalog position after both layout effects have completed.
+    const frame = requestAnimationFrame(() => {
+      if (activeRef.current && !detailRef.current) scroller.scrollTop = target;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, detail]);
   if (detail) {
     if (detail.startsWith("voxelworld:") && !jointCatalogEnabled) {
-      return <ProjectSurface title="Источник недоступен" close={() => setDetail("")}>
+      return <ProjectSurface title="Источник недоступен" close={closeDetail}>
         <p className="notice">Интеграция VoxelWorld выключена в настройках.</p>
       </ProjectSurface>;
     }
@@ -299,7 +327,7 @@ export function Catalog({
         running={running}
         run={run}
         refreshProfiles={refreshProfiles}
-        close={() => setDetail("")}
+        close={closeDetail}
       />
     ) : (
       <ProjectView
@@ -312,7 +340,7 @@ export function Catalog({
         running={running}
         run={run}
         preview={preview}
-        close={() => setDetail("")}
+        close={closeDetail}
         create={create}
       />
     );
@@ -486,12 +514,12 @@ export function Catalog({
                 disabled={updating}
                 onClick={() => profileContext
                   ? inspect({ source: project.source, slug: project.slug, title: project.title, parent: targetProfile?.name, engine: catalogEngine })
-                  : setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}
+                  : openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   void popupMenu([
                     { text: "Быстрый просмотр", action: () => inspect({ source: project.source, slug: project.slug, title: project.title }) },
-                    { text: "Открыть страницу", action: () => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug) },
+                    { text: "Открыть страницу", action: () => openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug) },
                     ...(project.source === "voxelworld"
                       ? [{ text: "Открыть на VoxelWorld", action: () => void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(project.slug)}`) }]
                       : []),
@@ -525,7 +553,7 @@ export function Catalog({
                 {project.source === "vspace" && project.kind !== "modpack" ? <button
                   disabled={busy || updating || !catalogEngine || running.has(targetProfile.id) || targetProfile.packages.some(pkg => pkg.id === project.slug) || targetProfile.manual_packages?.includes(project.slug) || !project.project?.latest_release}
                   onClick={() => quickAdd(project)}><Icon name="plus" size={14} />Добавить</button>
-                  : <button onClick={() => setDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}>Версии и установка</button>}
+                  : <button onClick={() => openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}>Версии и установка</button>}
               </div>}
               </div>
             ))}
