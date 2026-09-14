@@ -209,11 +209,11 @@ export function useAllRegistryProjects(params: URLSearchParams, enabled: boolean
   return useRequest(key, () => loadAllRegistryProjects(params), enabled);
 }
 
-export function useVoxelWorldMod(slug: string) {
+export function useVoxelWorldMod(slug: string, enabled = true) {
   return useRequest(
     `voxelworld:mod:${slug}`,
     async () => (await request<{ data: VoxelWorldMod }>(`mods/${slug}`)).data,
-    !!slug,
+    enabled && !!slug,
   );
 }
 

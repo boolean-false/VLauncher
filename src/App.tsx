@@ -40,7 +40,11 @@ import {
   type IconName,
 } from "./components/ui";
 import { Catalog, InstallPreview } from "./components/Catalog";
-import { InstalledPackage } from "./components/InstalledPackage";
+import {
+  InstalledContentIcon,
+  InstalledPackage,
+  InstalledVoxelWorldIcon,
+} from "./components/InstalledPackage";
 import { useContentInspector, useInspectorNavigation } from "./components/ContentInspector";
 import { ProfileContentPicker } from "./components/ProfileContentPicker";
 import { Creator } from "./components/Creator";
@@ -897,7 +901,7 @@ export default function App() {
                                 )
                                 .map((pkg) => (
                                   <div className="content-row" key={pkg.id}>
-                                    <InstalledPackage pkg={pkg} root={profile.roots.includes(pkg.id)} open={() => {
+                                    <InstalledPackage profileId={profile.id} pkg={pkg} root={profile.roots.includes(pkg.id)} open={() => {
                                       inspect({ source: "vspace", slug: pkg.id, title: pkg.title || pkg.id, version: pkg.version, parent: profile.name, engine: engineVersion(profile) });
                                     }} />
                                     <code>{pkg.version}</code>
@@ -927,7 +931,11 @@ export default function App() {
                               {profile.external_packages?.map((pkg) => (
                                 <div className="content-row" key={`voxelworld-${pkg.project_id}`}>
                                   <span className="package-symbol">
-                                    <Icon name="package" />
+                                    <InstalledVoxelWorldIcon
+                                      profileId={profile.id}
+                                      packageId={pkg.id}
+                                      slug={pkg.slug}
+                                    />
                                   </span>
                                   <div className="grow">
                                     <button className="dependency-project-link" onClick={() => inspect({ source: pkg.source, slug: pkg.slug, title: pkg.title, version: pkg.version, versionId: pkg.version_id, parent: profile.name })}>{pkg.title}</button>
@@ -955,7 +963,11 @@ export default function App() {
                               {profile.manual_packages?.map((id) => (
                                 <div className="content-row" key={`manual-${id}`}>
                                   <span className="package-symbol">
-                                    <Icon name="folder" />
+                                    <InstalledContentIcon
+                                      profileId={profile.id}
+                                      packageId={id}
+                                      fallbackIcon="folder"
+                                    />
                                   </span>
                                   <div className="grow">
                                     <button className="dependency-project-link" onClick={() => inspect({ source: "local", slug: id, parent: profile.name })}>{id}</button>

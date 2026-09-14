@@ -12,6 +12,7 @@ use std::os::windows::process::CommandExt;
 use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
+    path::{Component, Path},
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -642,6 +643,67 @@ async fn open_profile_folder(
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+fn package_icon_data(package: &Path) -> Option<String> {
+    let (path, mime) = [
+        ("icon.png", "image/png"),
+        ("icon.webp", "image/webp"),
+        ("icon.jpg", "image/jpeg"),
+        ("icon.jpeg", "image/jpeg"),
+    ]
+    .into_iter()
+    .map(|(name, mime)| (package.join(name), mime))
+    .find(|(candidate, _)| {
+        std::fs::symlink_metadata(candidate).is_ok_and(|metadata| {
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.len() <= 2 * 1024 * 1024
+        })
+    })?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+}
+
+#[tauri::command]
+fn read_content_icon(
+    app: tauri::AppHandle,
+    profile_id: String,
+    package_id: String,
+) -> Result<Option<String>, String> {
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    let mut components = Path::new(&package_id).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err("invalid package id".into());
+    }
+    let store = profile_store(&app)?;
+    let profile = store
+        .list()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or_else(|| "profile does not exist".to_owned())?;
+    let installed = profile
+        .packages
+        .iter()
+        .any(|package| package.id == package_id)
+        || profile
+            .external_packages
+            .iter()
+            .any(|package| package.id == package_id)
+        || profile
+            .manual_packages
+            .iter()
+            .any(|package| package == &package_id);
+    if !installed {
+        return Err("package is not installed".into());
+    }
+    let package = store
+        .game_directory(id)
+        .map_err(|error| error.to_string())?
+        .join("content")
+        .join(package_id);
+    Ok(package_icon_data(&package))
 }
 
 #[derive(Serialize)]
@@ -1305,7 +1367,7 @@ fn finished_game_event(
 mod tests {
     #[cfg(target_os = "linux")]
     use super::system_interpreter_from_maps;
-    use super::{finished_game_event, load_fallback_token, save_fallback_token};
+    use super::{finished_game_event, load_fallback_token, package_icon_data, save_fallback_token};
 
     #[test]
     fn a_requested_stop_is_reported_as_success() {
@@ -1378,6 +1440,22 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn package_icon_prefers_png_and_returns_a_data_url() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("icon.jpg"), b"jpeg").unwrap();
+        assert_eq!(
+            package_icon_data(directory.path()).as_deref(),
+            Some("data:image/jpeg;base64,anBlZw==")
+        );
+
+        std::fs::write(directory.path().join("icon.png"), b"png").unwrap();
+        assert_eq!(
+            package_icon_data(directory.path()).as_deref(),
+            Some("data:image/png;base64,cG5n")
+        );
     }
 }
 
@@ -1589,6 +1667,7 @@ pub fn run() {
             rename_profile,
             set_profile_icon,
             open_profile_folder,
+            read_content_icon,
             list_worlds,
             import_world,
             export_world,
