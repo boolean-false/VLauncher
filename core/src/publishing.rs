@@ -213,7 +213,7 @@ fn prepare_zip_package(source: &Path, output: &Path) -> Result<PreparedArtifact,
 fn response_error(response: reqwest::blocking::Response) -> PackageProblem {
     let status = response.status();
     let body = response.text().unwrap_or_default();
-    problem(format!("registry returned {status}: {body}"))
+    PackageProblem::Remote(format!("registry returned {status}: {body}"))
 }
 
 fn transfer_error(error: reqwest::Error) -> PackageProblem {
@@ -225,11 +225,17 @@ fn transfer_error(error: reqwest::Error) -> PackageProblem {
         source = cause.source();
     }
     if error.is_timeout() {
-        problem("Сервер не ответил вовремя. Повторите отправку: принятые части архива сохранены.")
+        PackageProblem::Remote(
+            "Сервер не ответил вовремя. Повторите отправку: принятые части архива сохранены."
+                .into(),
+        )
     } else if error.is_connect() {
-        problem("Не удалось подключиться к VSpace. Проверьте соединение и повторите отправку.")
+        PackageProblem::Remote(
+            "Не удалось подключиться к VSpace. Проверьте соединение и повторите отправку."
+                .into(),
+        )
     } else {
-        problem(format!(
+        PackageProblem::Remote(format!(
             "Не удалось передать архив: {error}. Можно повторить отправку."
         ))
     }

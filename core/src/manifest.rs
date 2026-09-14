@@ -30,6 +30,8 @@ pub enum PackageProblem {
     },
     #[error("invalid package manifest: {0}")]
     Invalid(String),
+    #[error("{0}")]
+    Remote(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
