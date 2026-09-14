@@ -8,7 +8,7 @@ import { ImageEditor } from "./ImageEditor";
 import { MarkdownEditor } from "./Markdown";
 import { ManifestContentLinks } from "./ManifestContentLinks";
 import { PrivateImage } from "./PrivateImage";
-import { Modal, ErrorNotice } from "./ui";
+import { Icon, Modal, ErrorNotice, type IconName } from "./ui";
 import { ProjectAnalytics } from "./ProjectAnalytics";
 import { PlatformAdmin } from "./PlatformAdmin";
 import { CategoryPicker } from "./CategoryPicker";
@@ -682,6 +682,8 @@ export function Creator({
       </>
     );
   const current = projects.find((item) => item.slug === selectedProject);
+  const draftKind = projectKindInfo(draft.type);
+  const currentKind = current ? projectKindInfo(current.type) : null;
   return (
     <>
       {editingImage && (
@@ -878,11 +880,16 @@ export function Creator({
             ‹ Все проекты
           </button>
           <div className="section-heading">
-            <div>
-              <p className="eyebrow supporting-label">
-                {projectKind(current.type)} · {current.slug}
-              </p>
-              <h2>{current.title}</h2>
+            <div className="workshop-project-identity">
+              <span className={`workshop-kind-mark ${current.type}`}>
+                <Icon name={currentKind!.icon} size={24} />
+              </span>
+              <div>
+                <p className="eyebrow supporting-label">
+                  {currentKind!.name} · {current.slug}
+                </p>
+                <h2>{current.title}</h2>
+              </div>
             </div>
             <div className="form-row">
             <span className={"publication-status " + current.status}>
@@ -933,44 +940,65 @@ export function Creator({
             >
               ‹ Мои проекты
             </button>
-            <h2>Новый проект</h2>
-            <p>
-              Оформите карточку, затем добавьте изображения и первую версию.
-            </p>
+            <div className={`creator-kind-heading ${draft.type}`}>
+              <span className="workshop-kind-mark">
+                <Icon name={draftKind.icon} size={28} />
+              </span>
+              <div>
+                <span className="supporting-label">Новый проект</span>
+                <h2>{draftKind.newTitle}</h2>
+                <p>{draftKind.description}</p>
+              </div>
+            </div>
+            <fieldset className="creator-kind-picker">
+              <legend>Что вы создаёте?</legend>
+              <p>Тип определяет раздел каталога и способ подготовки версий.</p>
+              <div>
+                {(["mod", "modpack", "world"] as Project["type"][]).map((kind) => {
+                  const info = projectKindInfo(kind);
+                  return (
+                    <button
+                      type="button"
+                      key={kind}
+                      className={draft.type === kind ? "active" : ""}
+                      aria-pressed={draft.type === kind}
+                      onClick={() =>
+                        setDraft({ ...draft, type: kind, categories: [] })
+                      }
+                    >
+                      <span className={`workshop-kind-mark ${kind}`}>
+                        <Icon name={info.icon} size={22} />
+                      </span>
+                      <span>
+                        <strong>{info.name}</strong>
+                        <small>{info.choiceDescription}</small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+            <div className="creator-kind-guidance">
+              <strong>Первая версия</strong>
+              <span>{draftKind.firstRelease}</span>
+            </div>
             <label>
               Идентификатор проекта
               <input
                 aria-label="Идентификатор проекта"
-                placeholder="Например, test_mod - постоянный адрес проекта. Должен совпадать с идентификатором контент-пака в package.json"
+                placeholder={draftKind.slugPlaceholder}
                 value={draft.slug}
                 onChange={(event) =>
                   setDraft({ ...draft, slug: event.target.value })
                 }
               />
+              <small>{draftKind.slugHelp}</small>
             </label>
             <label>
-              Тип контента
-              <Select
-                aria-label="Тип проекта"
-                value={draft.type}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    type: event.target.value as Project["type"],
-                    categories: [],
-                  })
-                }
-              >
-                <option value="mod">Контент-пак</option>
-                <option value="modpack">Сборка</option>
-                <option value="world">Карта</option>
-              </Select>
-            </label>
-            <label>
-              Название проекта
+              {draftKind.titleLabel}
               <input
                 aria-label="Название проекта"
-                placeholder="Название"
+                placeholder={draftKind.titlePlaceholder}
                 value={draft.title}
                 onChange={(event) =>
                   setDraft({ ...draft, title: event.target.value })
@@ -978,10 +1006,10 @@ export function Creator({
               />
             </label>
             <label>
-              Краткое описание проекта
+              {draftKind.summaryLabel}
               <input
                 aria-label="Краткое описание проекта"
-                placeholder="Краткое описание"
+                placeholder={draftKind.summaryPlaceholder}
                 value={draft.summary}
                 onChange={(event) =>
                   setDraft({ ...draft, summary: event.target.value })
@@ -989,7 +1017,7 @@ export function Creator({
               />
             </label>
             <MarkdownEditor
-              label="Полное описание проекта"
+              label={draftKind.descriptionLabel}
               value={draft.description}
               onChange={(description) => setDraft({ ...draft, description })}
               token={token}
@@ -1023,7 +1051,7 @@ export function Creator({
               }
               onClick={() => void perform(createProject)}
             >
-              Создать
+              {draftKind.createLabel}
             </button>
           </section>
           <section hidden={section !== "release"} className="form-card">
@@ -1721,14 +1749,91 @@ function publicationStatus(status: string) {
     )[status] ?? status
   );
 }
+type ProjectKindInfo = {
+  name: string;
+  newTitle: string;
+  description: string;
+  choiceDescription: string;
+  firstRelease: string;
+  icon: IconName;
+  slugPlaceholder: string;
+  slugHelp: string;
+  titleLabel: string;
+  titlePlaceholder: string;
+  summaryLabel: string;
+  summaryPlaceholder: string;
+  descriptionLabel: string;
+  createLabel: string;
+};
+const projectKinds: Record<Project["type"], ProjectKindInfo> = {
+  mod: {
+    name: "Контент-пак",
+    newTitle: "Новый контент-пак",
+    description: "Отдельное расширение игры: механика, блоки, интерфейс или библиотека для других паков.",
+    choiceDescription: "Расширение или библиотека",
+    firstRelease: "Загрузите папку или ZIP с package.json. Идентификатор пакета должен совпадать с адресом проекта.",
+    icon: "package",
+    slugPlaceholder: "Например, interactive_commons",
+    slugHelp: "Постоянный адрес в каталоге. Должен совпадать с id в package.json.",
+    titleLabel: "Название контент-пака",
+    titlePlaceholder: "Как пак будет называться в каталоге",
+    summaryLabel: "Коротко о контент-паке",
+    summaryPlaceholder: "Что он добавляет или для чего нужен",
+    descriptionLabel: "Описание контент-пака",
+    createLabel: "Создать контент-пак",
+  },
+  modpack: {
+    name: "Сборка",
+    newTitle: "Новая сборка",
+    description: "Готовая конфигурация игры с выбранной версией VoxelCore, контентом и настройками.",
+    choiceDescription: "Готовый набор для игры",
+    firstRelease: "Выберите установленный профиль — VLauncher соберёт из него версию. Готовый ZIP тоже можно загрузить вручную.",
+    icon: "catalog",
+    slugPlaceholder: "Например, vanilla_plus",
+    slugHelp: "Постоянный адрес сборки в каталоге. После создания изменить его нельзя.",
+    titleLabel: "Название сборки",
+    titlePlaceholder: "Как сборка будет называться в каталоге",
+    summaryLabel: "Коротко о сборке",
+    summaryPlaceholder: "Какой игровой опыт она предлагает",
+    descriptionLabel: "Описание сборки",
+    createLabel: "Создать сборку",
+  },
+  world: {
+    name: "Карта",
+    newTitle: "Новая карта",
+    description: "Готовый игровой мир: приключение, демонстрация, мини-игра или заготовка для строительства.",
+    choiceDescription: "Опубликованный игровой мир",
+    firstRelease: "Выберите мир из профиля либо загрузите подготовленную папку или ZIP. Личные данные игрока будут исключены.",
+    icon: "world",
+    slugPlaceholder: "Например, sky_islands",
+    slugHelp: "Постоянный адрес карты в каталоге. После создания изменить его нельзя.",
+    titleLabel: "Название карты",
+    titlePlaceholder: "Как карта будет называться в каталоге",
+    summaryLabel: "Коротко о карте",
+    summaryPlaceholder: "Что ждёт игрока в этом мире",
+    descriptionLabel: "Описание карты",
+    createLabel: "Создать карту",
+  },
+  runtime: {
+    name: "Среда выполнения",
+    newTitle: "Новая среда выполнения",
+    description: "Системный компонент VLauncher.",
+    choiceDescription: "Системный компонент",
+    firstRelease: "Версии среды выполнения публикуются средствами платформы.",
+    icon: "terminal",
+    slugPlaceholder: "Идентификатор компонента",
+    slugHelp: "Постоянный адрес компонента.",
+    titleLabel: "Название компонента",
+    titlePlaceholder: "Название",
+    summaryLabel: "Коротко о компоненте",
+    summaryPlaceholder: "Назначение компонента",
+    descriptionLabel: "Описание компонента",
+    createLabel: "Создать компонент",
+  },
+};
+function projectKindInfo(kind: string): ProjectKindInfo {
+  return projectKinds[kind as Project["type"]] ?? projectKinds.mod;
+}
 function projectKind(kind: string) {
-  return (
-    (
-      {
-        mod: "Контент-пак",
-        modpack: "Сборка",
-        world: "Карта",
-      } as Record<string, string>
-    )[kind] ?? kind
-  );
+  return projectKindInfo(kind).name;
 }
