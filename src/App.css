@@ -1253,44 +1253,43 @@ main>div[hidden] {
   top: 0;
   max-height: calc(100dvh - 100px);
   overflow: auto;
-  padding: 20px;
+  padding: 18px;
   border: 1px solid var(--line);
   background: var(--panel);
 }
 
 .project-install-panel>h2 {
-  margin: 0 0 18px;
+  margin: 0 0 16px;
   font-size: 17px;
 }
 
 .catalog-project-page .project-install-panel .form-columns {
   grid-template-columns: 1fr;
-  gap: 14px;
+  gap: 12px;
 }
 
 .catalog-project-page .project-install-panel .release-info {
-  gap: 12px;
-  margin: 16px 0;
-  padding: 12px 0;
+  gap: 8px;
+  margin: 14px 0 12px;
+  padding: 10px 0;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
 
 .catalog-project-page .project-install-panel .release-dependencies {
-  padding: 14px 0 0;
-  border: 0;
-  border-top: 1px solid var(--line);
+  margin: 14px 0;
+  padding: 0;
+  border: 1px solid var(--line);
 }
 
-.dependency-explanation {
-  margin: 0 0 12px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.55;
+.catalog-project-page .project-install-panel .release-dependencies h3 {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .dependency-card {
-  padding: 12px 0;
+  padding: 10px 12px;
   border-top: 1px solid var(--line);
 }
 
@@ -1327,14 +1326,8 @@ main>div[hidden] {
   text-decoration-color: currentColor;
 }
 
-.dependency-card>p {
-  margin: 7px 0 10px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .dependency-card footer {
+  margin-top: 6px;
   color: var(--muted);
   font-size: 10px;
 }
@@ -1346,18 +1339,24 @@ main>div[hidden] {
 
 .catalog-project-page .project-install-panel .modal-actions {
   position: sticky;
-  bottom: -20px;
+  bottom: -18px;
   z-index: 2;
   display: grid;
   grid-template-columns: 1fr;
-  margin: 20px -20px -20px;
-  padding: 16px 20px 20px;
+  margin: 16px -18px -18px;
+  padding: 14px 18px 18px;
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
 
 .catalog-project-page .project-install-panel .modal-actions .primary {
   order: -1;
+}
+
+.catalog-project-page .project-install-panel>.external-source-warning {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  line-height: 1.5;
 }
 
 .catalog-project-page .report-project {

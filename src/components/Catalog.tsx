@@ -765,9 +765,6 @@ function VoxelWorldProjectView({
               {!!versionDetail?.dependencies?.length && (
                 <section className="release-dependencies">
                   <h3>Зависимости</h3>
-                  <p className="dependency-explanation">
-                    Эти пакеты нужны для работы {project.title}. VLauncher установит указанные версии автоматически.
-                  </p>
                   {versionDetail.dependencies.map((dependency) => (
                     <div className="dependency-card" key={`${dependency.project.id}-${dependency.id}`}>
                       <div className="dependency-card-heading">
@@ -776,7 +773,6 @@ function VoxelWorldProjectView({
                         </button>
                         <span>Обязательная</span>
                       </div>
-                      <p>Нужна проекту для работы и будет добавлена вместе с ним.</p>
                       <footer>
                         <span>VoxelWorld</span>
                         <code>{dependency.version_number}</code>
@@ -894,15 +890,6 @@ function dependencyKindLabel(kind: DependencyKind) {
       : kind === "conflict"
         ? "Конфликт"
         : "Порядок загрузки";
-}
-function dependencyKindDescription(kind: DependencyKind) {
-  return kind === "required"
-    ? "Нужна проекту для работы. VLauncher добавит совместимую версию автоматически."
-    : kind === "optional"
-      ? "Расширяет возможности проекта, но автоматически не устанавливается."
-      : kind === "conflict"
-        ? "Не может использоваться одновременно с выбранной версией проекта."
-        : "Учитывается при загрузке, но автоматически не устанавливается.";
 }
 export function ProjectView({
   slug,
@@ -1088,10 +1075,7 @@ export function ProjectView({
               )}
               {!!release?.dependencies?.length && (
                 <section className="release-dependencies">
-                  <h3>Зависимости и совместимость</h3>
-                  <p className="dependency-explanation">
-                    Здесь показано, как выбранная версия связана с другими пакетами.
-                  </p>
+                  <h3>Зависимости</h3>
                   {release.dependencies.map((dependency) => (
                     <div key={`${dependency.kind}-${dependency.id}`} className="dependency-card">
                       <div className="dependency-card-heading">
@@ -1100,7 +1084,6 @@ export function ProjectView({
                         </button>
                         <span>{dependencyKindLabel(dependency.kind)}</span>
                       </div>
-                      <p>{dependencyKindDescription(dependency.kind)}</p>
                       <footer>
                         <span>VSpace</span>
                         <code>{dependency.requirement}</code>
