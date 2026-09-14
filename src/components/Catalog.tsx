@@ -55,6 +55,8 @@ type Preview = {
 type CatalogSource = "all" | "vspace" | "voxelworld";
 type CatalogItem = {
   key: string;
+  id: string;
+  packageId?: string | null;
   source: "vspace" | "voxelworld";
   kind: Project["type"];
   slug: string;
@@ -139,11 +141,11 @@ export function Catalog({
   const catalogEngine = engineVersion(profiles.find(p => p.id === selected));
   const targetProfile = profileContext ? profiles.find(p => p.id === selected) : undefined;
   const quickAdd = (item: CatalogItem) => {
-    if (!targetProfile || !catalogEngine || item.source !== "vspace") return;
+    if (!targetProfile || !catalogEngine || item.source !== "vspace" || !item.packageId) return;
     void run(`Проверка · ${item.title}`, async () => {
-      const roots = [...new Set([...targetProfile.roots, item.slug])];
+      const roots = [...new Set([...targetProfile.roots, item.packageId!])];
       const requirements = { ...targetProfile.root_requirements };
-      delete requirements[item.slug];
+      delete requirements[item.packageId!];
       const plan = await resolveProject(roots, catalogEngine, requirements);
       preview({ profile: targetProfile, plan, title: `Добавить ${item.title} · ${targetProfile.name}` });
     });
@@ -206,7 +208,9 @@ export function Catalog({
     );
     for (const project of vspaceProjects)
       items.push({
-        key: `vspace:${project.slug}`,
+        key: `vspace:${project.id}`,
+        id: project.id,
+        packageId: project.package_id,
         source: "vspace",
         kind: project.type,
         slug: project.slug,
@@ -222,6 +226,7 @@ export function Catalog({
         continue;
       items.push({
         key: `voxelworld:${project.id}`,
+        id: String(project.id),
         source: "voxelworld",
         kind: "mod",
         slug: project.slug,
@@ -244,7 +249,9 @@ export function Catalog({
     return items;
   }, [allVSpace.data, allVoxelWorld.data, includeVSpace, includeVoxelWorld, sort]);
   const regularItems: CatalogItem[] = regularPage.items.map((project) => ({
-    key: `vspace:${project.slug}`,
+    key: `vspace:${project.id}`,
+    id: project.id,
+    packageId: project.package_id,
     source: "vspace",
     kind: project.type,
     slug: project.slug,
@@ -519,13 +526,13 @@ export function Catalog({
                 className="catalog-card"
                 disabled={updating}
                 onClick={() => profileContext
-                  ? inspect({ source: project.source, slug: project.slug, title: project.title, parent: targetProfile?.name, engine: catalogEngine })
-                  : openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}
+                  ? inspect({ source: project.source, slug: project.source === "vspace" ? project.id : project.slug, title: project.title, parent: targetProfile?.name, engine: catalogEngine })
+                  : openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   void popupMenu([
-                    { text: "Быстрый просмотр", action: () => inspect({ source: project.source, slug: project.slug, title: project.title }) },
-                    { text: "Открыть страницу", action: () => openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug) },
+                    { text: "Быстрый просмотр", action: () => inspect({ source: project.source, slug: project.source === "vspace" ? project.id : project.slug, title: project.title }) },
+                    { text: "Открыть страницу", action: () => openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.id) },
                     ...(project.source === "voxelworld"
                       ? [{ text: "Открыть на VoxelWorld", action: () => void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(project.slug)}`) }]
                       : []),
@@ -552,14 +559,14 @@ export function Catalog({
               </button>
               {targetProfile && <div className="catalog-profile-card-actions">
                 <span>{(project.source === "vspace"
-                  ? targetProfile.packages.find(pkg => pkg.id === project.slug)?.version
+                  ? targetProfile.packages.find(pkg => pkg.id === project.packageId)?.version
                   : targetProfile.external_packages?.find(pkg => pkg.slug === project.slug)?.version)
-                  ? `Установлен · ${project.source === "vspace" ? targetProfile.packages.find(pkg => pkg.id === project.slug)?.version : targetProfile.external_packages?.find(pkg => pkg.slug === project.slug)?.version}`
-                  : targetProfile.manual_packages?.includes(project.slug) ? "Добавлен вручную" : "Не установлен"}</span>
-                {project.source === "vspace" && project.kind !== "modpack" ? <button
-                  disabled={busy || updating || !catalogEngine || running.has(targetProfile.id) || targetProfile.packages.some(pkg => pkg.id === project.slug) || targetProfile.manual_packages?.includes(project.slug) || !project.project?.latest_release}
+                  ? `Установлен · ${project.source === "vspace" ? targetProfile.packages.find(pkg => pkg.id === project.packageId)?.version : targetProfile.external_packages?.find(pkg => pkg.slug === project.slug)?.version}`
+                  : project.packageId && targetProfile.manual_packages?.includes(project.packageId) ? "Добавлен вручную" : "Не установлен"}</span>
+                {project.source === "vspace" && project.kind === "mod" ? <button
+                  disabled={busy || updating || !catalogEngine || running.has(targetProfile.id) || !project.packageId || targetProfile.packages.some(pkg => pkg.id === project.packageId) || targetProfile.manual_packages?.includes(project.packageId ?? "") || !project.project?.latest_release}
                   onClick={() => quickAdd(project)}><Icon name="plus" size={14} />Добавить</button>
-                  : <button onClick={() => openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.slug)}>Версии и установка</button>}
+                  : <button onClick={() => openDetail(project.source === "voxelworld" ? `voxelworld:${project.slug}` : project.id)}>Версии и установка</button>}
               </div>}
               </div>
             ))}
@@ -612,8 +619,109 @@ function ProjectIcon({ project }: { project: Project }) {
     />
   ) : (
     <span className={`project-icon ${project.type}`}>
-      <Icon name={project.type === "world" ? "world" : "package"} size={26} />
+      <Icon
+        name={project.type === "world" ? "world" : project.type === "modpack" ? "catalog" : "package"}
+        size={26}
+      />
     </span>
+  );
+}
+
+function ModpackContents({
+  release,
+  projectTitle,
+}: {
+  release: Release;
+  projectTitle: string;
+}) {
+  const inspect = useContentInspector();
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const vspace = (release.dependencies ?? [])
+    .filter((item) => item.kind !== "conflict")
+    .map((item) => ({
+      key: `vspace:${item.id}`,
+      source: "VSpace",
+      title: item.id,
+      version: item.requirement,
+      open: () => inspect({
+        source: "vspace",
+        slug: item.id,
+        requirement: item.requirement,
+        relation: item.kind,
+        parent: projectTitle,
+        engine: exactVoxelCoreVersion(release.voxelcore),
+      }),
+    }));
+  const external = (release.attestation?.assertion?.manifest?.external_packages ?? [])
+    .map((item) => ({
+      key: `${item.source}:${item.id}`,
+      source: item.source === "voxelworld" ? "VoxelWorld" : item.source,
+      title: item.title || item.id,
+      version: item.version,
+      open: () => inspect({
+        source: "voxelworld",
+        slug: item.slug,
+        title: item.title,
+        version: item.version,
+        versionId: item.version_id,
+        relation: "required",
+        parent: projectTitle,
+      }),
+    }));
+  const packages = [...vspace, ...external];
+  const normalizedQuery = query.trim().toLocaleLowerCase("ru");
+  const matches = normalizedQuery
+    ? packages.filter((item) =>
+        [item.title, item.key, item.source, item.version]
+          .some((value) => value.toLocaleLowerCase("ru").includes(normalizedQuery)),
+      )
+    : packages;
+  const visible = normalizedQuery || expanded ? matches : matches.slice(0, 12);
+
+  return (
+    <section className="modpack-contents">
+      <header>
+        <div>
+          <h2>Состав сборки</h2>
+          <p>Контент, который будет установлен в отдельный профиль.</p>
+        </div>
+        <span>{packages.length} пакетов</span>
+      </header>
+      {packages.length ? (
+        <>
+          {packages.length > 12 && (
+            <input
+              type="search"
+              aria-label="Поиск по составу сборки"
+              placeholder="Найти пакет в сборке…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          )}
+          <div className={`modpack-content-grid${expanded || normalizedQuery ? " scrollable" : ""}`}>
+            {visible.map((item) => (
+              <button key={item.key} onClick={item.open}>
+                <Icon name="package" size={20} />
+                <span>
+                  <strong>{item.title}</strong>
+                  <small>{item.source}</small>
+                </span>
+                <code>{item.version}</code>
+              </button>
+            ))}
+          </div>
+          {!matches.length && <p className="modpack-content-empty">В составе ничего не найдено.</p>}
+          {!normalizedQuery && packages.length > 12 && (
+            <button className="modpack-content-toggle" onClick={() => setExpanded((value) => !value)}>
+              {expanded ? "Свернуть состав" : `Показать все пакеты · ${packages.length}`}
+            </button>
+          )}
+        </>
+      ) : (
+        <p className="modpack-content-empty">Для этой версии состав не указан.</p>
+      )}
+    </section>
   );
 }
 function ProjectSurface({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
@@ -1022,7 +1130,7 @@ export function ProjectView({
   const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
   const releasesResult = useRegistryResource<Release[]>(`/projects/${encodeURIComponent(slug)}/releases`);
   const project = projectResult.data;
-  useEffect(() => { if (project) recordContent(slug, "view"); }, [slug, !!project]);
+  useEffect(() => { if (project) recordContent(project.slug, "view"); }, [project?.slug]);
   const releases = releasesResult.data ?? [];
   const [version, setVersion] = useState("");
   const retryDetails = () => { projectResult.refresh(); releasesResult.refresh(); };
@@ -1041,12 +1149,14 @@ export function ProjectView({
   const release = releases.find((r) => r.version === version);
   const profile = profiles.find((p) => p.id === selected);
   const installedModpackProfile = project?.type === "modpack"
-    ? profiles.find((item) => profileModpack(item)?.id === slug)
+    ? profiles.find((item) => profileModpack(item)?.id === project.id)
     : undefined;
   const installedModpack = profileModpack(installedModpackProfile);
   const selectedModpackIsInstalled = installedModpack?.version === version;
-  const installed = profile?.packages.find((p) => p.id === slug);
-  const manualCollision = profile?.manual_packages?.includes(slug) ?? false;
+  const installIdentity = project?.type === "mod" ? project.package_id : project?.id;
+  const installed = profile?.packages.find((p) => p.id === installIdentity);
+  const manualCollision = project?.type === "mod" && !!project.package_id &&
+    (profile?.manual_packages?.includes(project.package_id) ?? false);
   const install = () => {
     if (!release || !project) return;
     void run(`Проверка · ${project.title}`, async () => {
@@ -1058,21 +1168,23 @@ export function ProjectView({
       }
       if (project.type !== "modpack" && !profile) return;
       const targetProfile = project.type === "modpack" ? installedModpackProfile : profile;
-      const roots =
-        project.type === "modpack"
-          ? targetProfile
-            ? [...new Set([...targetProfile.roots, slug])]
-            : [slug]
-          : [...new Set([...profile!.roots, slug])];
-      const requirements =
-        project.type === "modpack"
-          ? { ...(targetProfile?.root_requirements ?? {}), [slug]: `=${version}` }
-          : { ...(profile!.root_requirements ?? {}), [slug]: `=${version}` };
+      const directProject = project.type === "modpack" || project.type === "world";
+      if (!directProject && !project.package_id) {
+        throw new Error("Контент-пак ещё не получил идентификатор из package.json.");
+      }
+      const roots = directProject
+        ? (targetProfile?.roots ?? []).filter((root) => root !== project.id)
+        : [...new Set([...profile!.roots, project.package_id!])];
+      const requirements = { ...(targetProfile?.root_requirements ?? {}) };
+      delete requirements[project.id];
+      if (!directProject) requirements[project.package_id!] = `=${version}`;
       const plan = await resolveProject(
         roots,
         project.type === "modpack" ? modpackEngine : engineVersion(profile),
         requirements,
         release.channel === "stable" ? ["stable"] : ["stable", release.channel],
+        {},
+        directProject ? { id: project.id, version } : undefined,
       );
       preview({
         profile: project.type === "modpack" && !targetProfile
@@ -1126,7 +1238,7 @@ export function ProjectView({
             </div>
           </div>
           <section className="project-overview">
-            <h2>О проекте</h2>
+            <h2>{project.type === "modpack" ? "О сборке" : "О проекте"}</h2>
             <div className="project-description selectable">
               <Markdown text={project.description || "Автор пока не добавил подробное описание."} />
             </div>
@@ -1138,6 +1250,9 @@ export function ProjectView({
               </div>
             )}
           </section>
+          {project.type === "modpack" && release && (
+            <ModpackContents release={release} projectTitle={project.title} />
+          )}
           <dl className="metadata">
             <div>
               <dt>Загрузки</dt>
@@ -1151,14 +1266,16 @@ export function ProjectView({
               <dt>Лицензия</dt>
               <dd>{project.license || "Не указана"}</dd>
             </div>
-            <div>
-              <dt>Идентификатор</dt>
-              <dd>{project.slug}</dd>
-            </div>
+            {project.type === "mod" && (
+              <div>
+                <dt>Идентификатор</dt>
+                <dd>{project.package_id || "Не указан"}</dd>
+              </div>
+            )}
           </dl>
             </div>
             <aside className="project-install-panel">
-              <h2>Установка</h2>
+              <h2>{project.type === "modpack" ? (installedModpackProfile ? "Профиль сборки" : "Создать профиль") : "Установка"}</h2>
           {releases.length ? (
             <>
               <div className={project.type === "modpack" ? "form-columns single" : "form-columns"}>
@@ -1228,7 +1345,7 @@ export function ProjectView({
                   <p className="preserve-lines">{release.changelog}</p>
                 </details>
               )}
-              {!!release?.dependencies?.length && (
+              {project.type !== "modpack" && !!release?.dependencies?.length && (
                 <section className="release-dependencies">
                   <h3>Зависимости</h3>
                   {release.dependencies.map((dependency) => (
@@ -1263,7 +1380,7 @@ export function ProjectView({
               )}
               {project.type !== "modpack" && manualCollision && (
                 <ErrorNotice>
-                  В папке уже есть добавленный вручную пакет <strong>{slug}</strong>. Переместите или переименуйте его и повторите установку.
+                  В папке уже есть добавленный вручную пакет <strong>{project.package_id}</strong>. Переместите или переименуйте его и повторите установку.
                 </ErrorNotice>
               )}
               {project.type !== "modpack" && profile && running.has(profile.id) && (
@@ -1338,7 +1455,13 @@ export function ProjectView({
                     }
                     onClick={install}
                   >
-                    {busy ? "Проверяем…" : project.type === "modpack" ? "Посмотреть состав профиля" : "Посмотреть состав установки"}
+                    {busy
+                      ? "Проверяем…"
+                      : project.type === "modpack"
+                        ? installedModpackProfile
+                          ? `Обновить до ${version}`
+                          : "Установить сборку"
+                        : "Посмотреть состав установки"}
                   </button>
                 )}
               </div>

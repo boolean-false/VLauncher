@@ -2400,7 +2400,8 @@ impl ProfileStore {
                 fs::File::open(&cache_path).map_err(|source| io_error(&cache_path, source))?;
             extract_archive(archive, &destination)?;
             let manifest = PackageManifest::read(&destination)?;
-            if manifest.id != package.id
+            if (matches!(package.kind, PackageKind::Mod | PackageKind::Library)
+                && manifest.id != package.id)
                 || manifest.version != package.version
                 || manifest.kind != package.kind
             {

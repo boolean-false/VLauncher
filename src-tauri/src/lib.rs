@@ -410,7 +410,7 @@ async fn publish_release(
     app: tauri::AppHandle,
     control: tauri::State<'_, TransferControl>,
     token: String,
-    project_slug: String,
+    project_id: String,
     artifact: PreparedArtifact,
     channel: String,
     changelog: String,
@@ -422,7 +422,7 @@ async fn publish_release(
         upload_package_with_progress(
             registry_url(),
             &token,
-            &project_slug,
+            &project_id,
             &artifact,
             &channel,
             &changelog,

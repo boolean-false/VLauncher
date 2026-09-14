@@ -98,7 +98,7 @@ fn execute() -> Result<serde_json::Value, String> {
         }
         "publish" => {
             let registry = args.next().ok_or_else(usage)?;
-            let project_slug = args.next().ok_or_else(usage)?;
+            let project_id = args.next().ok_or_else(usage)?;
             let channel = args.next().unwrap_or_else(|| "stable".into());
             let token = env::var("VLAUNCHER_TOKEN")
                 .map_err(|_| "VLAUNCHER_TOKEN environment variable is required".to_owned())?;
@@ -107,7 +107,7 @@ fn execute() -> Result<serde_json::Value, String> {
             let receipt = upload_package(
                 &registry,
                 &token,
-                &project_slug,
+                &project_id,
                 &artifact,
                 &channel,
                 "Published with vlauncher-core",

@@ -513,20 +513,21 @@ export function Creator({
   };
   const publish = async () => {
     const project = projects.find((item) => item.slug === selectedProject);
-    if (!token || !project || !prepared || (!project.identifier_pending && prepared.manifest.id !== selectedProject)) return;
+    const identityMatches = project?.type !== "mod" || !project.package_id ||
+      prepared?.manifest.id === project.package_id;
+    if (!token || !project || !prepared || !identityMatches) return;
     setError("");
     setStatus("Загружаем проверенный архив…");
     setTransfer({ completed: 0, total: prepared.size, bytes_per_second: 0, eta_seconds: 0 });
     try {
       const receipt = await invoke<{ id: string }>("publish_release", {
         token,
-        projectSlug: selectedProject,
+        projectId: project.id,
         artifact: prepared,
         channel,
         changelog,
       });
       const deadline = Date.now() + 120_000;
-      let identifierBound = false;
       for (;;) {
         if (!alive.current) return;
         if (Date.now() > deadline) {
@@ -544,25 +545,19 @@ export function Creator({
         if (upload.status === "published") {
           invalidateRegistry(token);
           setStatus("Версия опубликована автоматически");
-          identifierBound = true;
           break;
         }
         if (upload.status === "awaiting_moderation") {
           setStatus("Релиз проверен и ожидает модерации");
-          identifierBound = true;
           break;
         }
         if (upload.status === "rejected")
           throw new Error(upload.error ?? "Архив отклонён");
         await delay(1000);
       }
-      const publishedSlug = current?.identifier_pending && identifierBound
-        ? prepared.manifest.id
-        : selectedProject;
       invalidateRegistry(token);
       await refresh(token);
-      setSelectedProject(publishedSlug);
-      setReleases(await loadCreatorReleases(token, publishedSlug));
+      setReleases(await loadCreatorReleases(token, selectedProject));
       setTransfer(null);
     } catch (reason) {
       setError(friendlyError(reason));
@@ -764,7 +759,7 @@ export function Creator({
     );
   const current = projects.find((item) => item.slug === selectedProject);
   const modpackProfiles = localProfiles.filter(
-    (profile) => !profileModpack(profile) || profileModpack(profile)?.id === current?.slug,
+    (profile) => !profileModpack(profile) || profileModpack(profile)?.id === current?.id,
   );
   const selectedModpackProfile = modpackProfiles.find((profile) => profile.id === modpackProfile);
   const draftKind = projectKindInfo(draft.type);
@@ -774,7 +769,7 @@ export function Creator({
     : prepared?.manifest.type;
   const preparedMatchesProject = !!prepared && !!current &&
     preparedKind === current.type &&
-    (current.identifier_pending || prepared.manifest.id === current.slug);
+    (current.type !== "mod" || !current.package_id || prepared.manifest.id === current.package_id);
   return (
     <>
       {editingImage && (

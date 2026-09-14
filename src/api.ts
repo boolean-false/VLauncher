@@ -3,6 +3,7 @@ import { connectPublicMetadata } from "./publicMetadataCache";
 import { clearImageSession } from "./imageCache";
 import { resources, consumerSignal } from "./resourceCache";
 export type Release = {
+  id: string;
   version: string;
   channel: "stable" | "beta" | "alpha";
   voxelcore: string;
@@ -18,12 +19,19 @@ export type Release = {
     kind: "required" | "optional" | "weak" | "conflict";
   }[];
   attestation?: {
-    assertion?: { manifest?: { capabilities?: string[] } };
+    assertion?: {
+      manifest?: {
+        capabilities?: string[];
+        external_packages?: ExternalPackageLock[];
+      };
+    };
   } | null;
 };
 
 export type Project = {
+  id: string;
   slug: string;
+  package_id: string | null;
   type: "mod" | "modpack" | "world" | "runtime";
   title: string;
   summary: string;
@@ -122,7 +130,7 @@ const translatedErrors: Record<string, string> = {
   release_exists: "Версия с таким номером уже существует.",
   project_slug_reserved: "Этот идентификатор зарезервирован после удаления проекта. Для нового проекта выберите другой идентификатор.",
   project_slug_taken: "Этот идентификатор проекта уже занят.",
-  project_identifier_pending: "Дождитесь проверки первой версии контент-пака.",
+  package_identifier_pending: "Дождитесь проверки первой версии контент-пака.",
   invalid_image: "Файл не удалось распознать как подходящее изображение.",
   image_too_large: "Изображение превышает ограничение 10 МБ.",
   session_expired: "Сессия завершена. Войдите снова.",
@@ -208,7 +216,7 @@ export type CreatorProject = {
   can_delete?: boolean;
   can_manage_lifecycle?: boolean;
   archived_at?: string | null;
-  identifier_pending?: boolean;
+  package_id: string | null;
   downloads?: number;
   id: string;
   slug: string;
@@ -513,16 +521,29 @@ export async function resolveProject(
   requirements: Record<string, string> = {},
   channels: string[] = ["stable"],
   locked: Record<string, string> = {},
+  directProject?: { id: string; version: string },
 ): Promise<SignedInstallPlan> {
   voxelcoreVersion = requireEngineVersion(voxelcoreVersion);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const direct = new Map<string, string>();
+  if (directProject) direct.set(directProject.id, directProject.version);
+  for (const id of slugs.filter((item) => uuid.test(item))) {
+    const requirement = requirements[id] ?? (locked[id] ? `=${locked[id]}` : "");
+    if (!requirement.startsWith("=") || !requirement.slice(1)) {
+      throw new Error(`Для проекта ${id} не зафиксирована точная версия.`);
+    }
+    direct.set(id, requirement.slice(1));
+  }
+  const packageRoots = slugs.filter((id) => !direct.has(id));
   const response = await fetch(`${registryUrl}/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       voxelcore_version: voxelcoreVersion,
-      roots: slugs.map((id) => ({ id, requirement: requirements[id] ?? "*" })),
+      roots: packageRoots.map((id) => ({ id, requirement: requirements[id] ?? "*" })),
       channels,
-      locked,
+      locked: Object.fromEntries(Object.entries(locked).filter(([id]) => !direct.has(id))),
+      projects: [...direct].map(([id, version]) => ({ id, version })),
     }),
     signal: AbortSignal.timeout(30_000),
   });

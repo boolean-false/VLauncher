@@ -1,6 +1,7 @@
 type CatalogProjectIdentity = {
   slug: string;
   title: string;
+  package_id?: string | null;
 };
 
 function identityPart(value: string) {
@@ -12,7 +13,10 @@ function identityPart(value: string) {
 
 export function catalogProjectKeys(project: CatalogProjectIdentity) {
   return new Set(
-    [identityPart(project.slug), identityPart(project.title)].filter(Boolean),
+    [project.package_id, project.slug, project.title]
+      .filter((value): value is string => !!value)
+      .map(identityPart)
+      .filter(Boolean),
   );
 }
 

@@ -49,7 +49,7 @@ struct UploadedPart {
 struct SavedUpload {
     id: String,
     registry_url: String,
-    project_slug: String,
+    project_id: String,
     artifact_sha256: String,
     part_size: usize,
 }
@@ -243,7 +243,7 @@ fn transfer_error(error: reqwest::Error) -> PackageProblem {
 pub fn upload_package(
     registry_url: &str,
     token: &str,
-    project_slug: &str,
+    project_id: &str,
     artifact: &PreparedArtifact,
     channel: &str,
     changelog: &str,
@@ -251,7 +251,7 @@ pub fn upload_package(
     upload_package_with_progress(
         registry_url,
         token,
-        project_slug,
+        project_id,
         artifact,
         channel,
         changelog,
@@ -278,7 +278,7 @@ impl<F: Fn(u64, u64) -> bool> Read for UploadReader<F> {
 pub fn upload_package_with_progress(
     registry_url: &str,
     token: &str,
-    project_slug: &str,
+    project_id: &str,
     artifact: &PreparedArtifact,
     channel: &str,
     changelog: &str,
@@ -304,14 +304,14 @@ pub fn upload_package_with_progress(
         .unwrap_or_else(|| Path::new("."))
         .join(format!(
             ".upload-{}-{}-{}.json",
-            project_slug, artifact.manifest.version, artifact.sha256
+            project_id, artifact.manifest.version, artifact.sha256
         ));
     let saved = fs::read(&state_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<SavedUpload>(&bytes).ok())
         .filter(|saved| {
             saved.registry_url == registry_url
-                && saved.project_slug == project_slug
+                && saved.project_id == project_id
                 && saved.artifact_sha256 == artifact.sha256
         });
     let mut session = if let Some(saved) = saved {
@@ -352,7 +352,7 @@ pub fn upload_package_with_progress(
                 .post(format!("{registry_url}/uploads"))
                 .bearer_auth(token)
                 .json(&serde_json::json!({
-                    "project_slug": project_slug,
+                    "project_id": project_id,
                     "version": artifact.manifest.version,
                     "channel": channel,
                     "changelog": changelog,
@@ -372,7 +372,7 @@ pub fn upload_package_with_progress(
                 serde_json::to_vec(&SavedUpload {
                     id: session.id.clone(),
                     registry_url: registry_url.into(),
-                    project_slug: project_slug.into(),
+                    project_id: project_id.into(),
                     artifact_sha256: artifact.sha256.clone(),
                     part_size: session.part_size,
                 })
