@@ -277,6 +277,26 @@ fn is_voxelworld_typings_link(name: &str) -> bool {
         .any(|part| part == "typings")
 }
 
+fn normalize_voxelworld_manifest(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut manifest: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| "Архив VoxelWorld содержит некорректный package.json".to_string())?;
+    let legacy = manifest.get("schema_version").is_none();
+    if let Some(version) = manifest.get_mut("version")
+        && version.as_str().is_some_and(|value| {
+            let normalized = if legacy && value.matches('.').count() == 1 {
+                format!("{value}.0")
+            } else {
+                value.to_owned()
+            };
+            semver::Version::parse(&normalized).is_err()
+        })
+    {
+        *version = serde_json::Value::String("0.0.0".into());
+    }
+    serde_json::to_vec(&manifest)
+        .map_err(|_| "Не удалось исправить package.json из VoxelWorld".to_string())
+}
+
 fn normalize_voxelworld_archive(source: &Path, target: &Path) -> Result<PathBuf, String> {
     const MAX_UNPACKED: u64 = 2 * 1024 * 1024 * 1024;
     let input = std::fs::File::open(source).map_err(|error| error.to_string())?;
@@ -285,6 +305,30 @@ fn normalize_voxelworld_archive(source: &Path, target: &Path) -> Result<PathBuf,
     if archive.len() > 100_000 {
         return Err("В архиве VoxelWorld слишком много файлов".into());
     }
+    let names = (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .map(|entry| entry.name().trim_end_matches('/').to_owned())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let manifest_name = names
+        .iter()
+        .find(|name| name.as_str() == "package.json")
+        .cloned()
+        .or_else(|| {
+            let candidates = names
+                .iter()
+                .filter(|name| {
+                    let mut parts = name.split('/');
+                    parts.next().is_some()
+                        && parts.next() == Some("package.json")
+                        && parts.next().is_none()
+                })
+                .collect::<Vec<_>>();
+            (candidates.len() == 1).then(|| candidates[0].clone())
+        });
     let output_path = target.join(format!("normalized-{}.zip", Uuid::new_v4()));
     let output = std::fs::File::create(&output_path).map_err(|error| error.to_string())?;
     let mut normalized = ZipWriter::new(output);
@@ -312,14 +356,30 @@ fn normalize_voxelworld_archive(source: &Path, target: &Path) -> Result<PathBuf,
         if entry.size() > MAX_UNPACKED.saturating_sub(total) {
             return Err("Распакованный архив VoxelWorld превышает 2 ГБ".into());
         }
+        let entry_name = entry.name().to_owned();
         normalized
-            .start_file(entry.name(), options)
+            .start_file(&entry_name, options)
             .map_err(|error| error.to_string())?;
-        let copied = std::io::copy(
-            &mut (&mut entry).take(MAX_UNPACKED.saturating_sub(total) + 1),
-            &mut normalized,
-        )
-        .map_err(|error| error.to_string())?;
+        let copied = if manifest_name.as_deref() == Some(entry_name.as_str()) {
+            if entry.size() > 1024 * 1024 {
+                return Err("package.json из VoxelWorld превышает 1 МБ".into());
+            }
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            let bytes = normalize_voxelworld_manifest(&bytes)?;
+            normalized
+                .write_all(&bytes)
+                .map_err(|error| error.to_string())?;
+            bytes.len() as u64
+        } else {
+            std::io::copy(
+                &mut (&mut entry).take(MAX_UNPACKED.saturating_sub(total) + 1),
+                &mut normalized,
+            )
+            .map_err(|error| error.to_string())?
+        };
         total = total.saturating_add(copied);
         if total > MAX_UNPACKED {
             return Err("Распакованный архив VoxelWorld превышает 2 ГБ".into());
@@ -575,7 +635,7 @@ pub(crate) fn remove_voxelworld_mod(
 mod tests {
     use super::{
         VoxelWorldEnvelope, VoxelWorldVersion, normalize_voxelworld_archive,
-        voxelworld_engine_supports,
+        normalize_voxelworld_manifest, voxelworld_engine_supports,
     };
     use std::io::Write;
     use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -644,5 +704,22 @@ mod tests {
                 .unwrap_err()
                 .contains("неподдерживаемую символическую ссылку")
         );
+    }
+
+    #[test]
+    fn voxelworld_adapter_replaces_only_invalid_manifest_versions() {
+        let invalid =
+            normalize_voxelworld_manifest(br#"{"id":"example","version":"0.0.0ALPHA"}"#).unwrap();
+        let invalid: serde_json::Value = serde_json::from_slice(&invalid).unwrap();
+        assert_eq!(invalid["version"], "0.0.0");
+
+        let valid = normalize_voxelworld_manifest(br#"{"id":"example","version":"1.2.3-alpha.1"}"#)
+            .unwrap();
+        let valid: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        assert_eq!(valid["version"], "1.2.3-alpha.1");
+
+        let legacy = normalize_voxelworld_manifest(br#"{"id":"example","version":"1.2"}"#).unwrap();
+        let legacy: serde_json::Value = serde_json::from_slice(&legacy).unwrap();
+        assert_eq!(legacy["version"], "1.2");
     }
 }
