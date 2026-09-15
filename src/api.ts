@@ -282,15 +282,6 @@ export type Report = {
   status: string;
 };
 
-export const startDeviceLogin = () =>
-  registryRequest<DeviceSession>("/auth/device", { method: "POST" });
-export const pollDeviceLogin = (id: string) =>
-  registryRequest<{
-    status: string;
-    interval?: number;
-    access_token?: string;
-    user?: Account;
-  }>(`/auth/device/${id}`, { method: "POST" });
 export const loadAccount = (token: string) =>
   registryRequest<Account>("/auth/me", undefined, token);
 export const revokeSession = (token: string) =>

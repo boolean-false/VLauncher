@@ -34,13 +34,11 @@ import {
   loadProjectMembers,
   loadSessions,
   loadUpload,
-  pollDeviceLogin,
   removeProjectMember,
   registryUrl,
   revokeSession,
   revokeSessionById,
   setProjectMember,
-  startDeviceLogin,
   updateCreatorProject,
   uploadProjectMedia,
   deleteProjectMedia,
@@ -49,6 +47,7 @@ import {
   type AccessSession,
   type CreatorProject,
   type CreatorRelease,
+  type DeviceSession,
   type Organization,
   type Project,
   type ProjectMedia,
@@ -371,12 +370,18 @@ export function Creator({
     setError("");
     setStatus("Запрашиваем код GitHub…");
     try {
-      const session = await startDeviceLogin();
+      const session = await invoke<DeviceSession>("registry_device_start");
       let interval = session.interval;
       setCodeCopied(false);
       setDeviceCode(session.user_code);
-      await openUrl(session.verification_uri);
-      setStatus("Ожидаем подтверждение в GitHub…");
+      const opened = await openUrl(session.verification_uri)
+        .then(() => true)
+        .catch(() => false);
+      setStatus(
+        opened
+          ? "Ожидаем подтверждение в GitHub…"
+          : "Откройте GitHub по ссылке ниже и введите код",
+      );
       const deadline = Date.now() + session.expires_in * 1000;
       while (
         alive.current &&
@@ -385,7 +390,11 @@ export function Creator({
       ) {
         await delay(interval * 1000);
         if (!alive.current || attempt !== loginAttempt.current) return;
-        const result = await pollDeviceLogin(session.request_id);
+        const result = await invoke<{
+          status: string;
+          interval?: number;
+          access_token?: string;
+        }>("registry_device_poll", { requestId: session.request_id });
         interval = result.interval ?? interval;
         if (result.status === "complete" && result.access_token) {
           setToken(result.access_token);
@@ -704,14 +713,30 @@ export function Creator({
             установки контента вход не нужен.
           </p>
           {deviceCode && (
-            <button
-              className={`device-code ${codeCopied ? "copied" : ""}`}
-              aria-label={`Скопировать код ${deviceCode}`}
-              onClick={() => void copyDeviceCode()}
-            >
-              <strong>{deviceCode}</strong>
-              <span>{codeCopied ? "Скопировано" : "Копировать"}</span>
-            </button>
+            <div className="creator-device-login" role="status">
+              <p>
+                Откройте{" "}
+                <button
+                  className="dependency-project-link"
+                  onClick={() =>
+                    void openUrl("https://github.com/login/device").catch(
+                      (reason) => setError(String(reason)),
+                    )
+                  }
+                >
+                  github.com/login/device
+                </button>{" "}
+                и введите код:
+              </p>
+              <button
+                className={`device-code ${codeCopied ? "copied" : ""}`}
+                aria-label={`Скопировать код ${deviceCode}`}
+                onClick={() => void copyDeviceCode()}
+              >
+                <strong>{deviceCode}</strong>
+                <span>{codeCopied ? "Скопировано" : "Копировать"}</span>
+              </button>
+            </div>
           )}
           <div className="creator-login-actions">
             <button

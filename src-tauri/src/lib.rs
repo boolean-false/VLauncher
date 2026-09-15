@@ -4,6 +4,7 @@ mod mainline;
 mod presence;
 #[cfg(unix)]
 mod presence_ipc;
+mod registry_auth;
 mod voxelworld;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
@@ -1702,6 +1703,8 @@ pub fn run() {
             mainline::install_mainline_build,
             mainline::select_mainline_build,
             mainline::resolve_mainline_version,
+            registry_auth::registry_device_start,
+            registry_auth::registry_device_poll,
             launcher_info,
             voxelworld::voxelworld_request,
             voxelworld::preview_voxelworld_install,

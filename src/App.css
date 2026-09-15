@@ -1956,6 +1956,18 @@ main>div[hidden] {
   margin-bottom: 25px;
 }
 
+.creator-device-login {
+  margin: 22px 0;
+}
+
+.creator-device-login>p {
+  margin-bottom: 8px;
+}
+
+.creator-device-login>.device-code {
+  margin-bottom: 0;
+}
+
 .device-code {
   display: flex;
   align-items: center;
