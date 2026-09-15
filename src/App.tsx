@@ -1859,15 +1859,32 @@ function Worlds({
                   {world.compatible === false && " · требуется другая версия движка"}
                 </small>
                 {!!world.dependencies.length && (
-                  <small>
-                    Пакеты: {world.dependencies.map(id => <button key={id} className="dependency-project-link" onClick={() => {
-                      const external = profile.external_packages?.find(pkg => pkg.id === id);
-                      inspect(external ? { source: external.source, slug: external.slug, title: external.title, version: external.version, versionId: external.version_id, parent: world.name }
-                        : { source: profile.manual_packages?.includes(id) ? "local" : "vspace", slug: id, version: profile.packages.find(pkg => pkg.id === id)?.version, parent: world.name });
-                    }}>{id} </button>)}
-                    {!!world.missing_dependencies.length &&
-                      ` · отсутствуют: ${world.missing_dependencies.join(", ")}`}
-                  </small>
+                  <details className={`world-packages${world.missing_dependencies.length ? " has-missing" : ""}`}>
+                    <summary>
+                      Пакеты мира: {world.dependencies.length}
+                      {world.missing_dependencies.length
+                        ? ` · не установлено: ${world.missing_dependencies.length}`
+                        : " · всё установлено"}
+                    </summary>
+                    <div className="world-package-list">
+                      {world.dependencies.map((id) => {
+                        const missing = world.missing_dependencies.includes(id);
+                        if (missing) {
+                          return <span className="world-package missing" key={id}><span>{id}</span><small>Не установлен</small></span>;
+                        }
+                        const external = profile.external_packages?.find(pkg => pkg.id === id);
+                        return (
+                          <span className="world-package" key={id}>
+                            <button className="dependency-project-link" onClick={() => {
+                              inspect(external ? { source: external.source, slug: external.slug, title: external.title, version: external.version, versionId: external.version_id, parent: world.name }
+                                : { source: profile.manual_packages?.includes(id) ? "local" : "vspace", slug: id, version: profile.packages.find(pkg => pkg.id === id)?.version, parent: world.name });
+                            }}>{id}</button>
+                            <small>Установлен</small>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </details>
                 )}
               </div>
               <small>

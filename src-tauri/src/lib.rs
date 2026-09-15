@@ -778,6 +778,12 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
         .packages
         .iter()
         .map(|package| package.id.clone())
+        .chain(
+            profile
+                .external_packages
+                .iter()
+                .map(|package| package.id.clone()),
+        )
         .chain(profile.manual_packages.iter().cloned())
         .chain(["base".to_owned()])
         .collect::<HashSet<_>>();
@@ -830,10 +836,12 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
         });
         let dependencies = std::fs::read_to_string(entry.path().join("packs.list"))
             .map(|contents| {
+                let mut seen = HashSet::new();
                 contents
                     .lines()
                     .map(str::trim)
                     .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .filter(|line| seen.insert((*line).to_owned()))
                     .map(str::to_owned)
                     .collect::<Vec<_>>()
             })
