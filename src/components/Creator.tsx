@@ -53,7 +53,7 @@ import {
   type ProjectMedia,
   type ProjectMember,
 } from "../api";
-import { friendlyError, profileModpack, type LocalProfile } from "../model";
+import { formatBytes, friendlyError, profileModpack, type LocalProfile } from "../model";
 const storedToken = () => invoke<string | null>("load_access_token");
 const draftStorageKey = (kind: "project" | "release") =>
   `vlauncher.creator.${kind}-draft:${registryUrl.replace(/\/$/, "")}`;
@@ -83,6 +83,26 @@ type LocalWorld = {
   modified: number;
   voxelcore_version?: string;
   compatible?: boolean;
+};
+type GithubReleaseAsset = {
+  id: number;
+  name: string;
+  size: number;
+  download_count: number;
+};
+type GithubRelease = {
+  id: number;
+  name: string;
+  tag_name: string;
+  body: string;
+  prerelease: boolean;
+  published_at: string;
+  assets: GithubReleaseAsset[];
+};
+type GithubReleasePage = {
+  repository: string;
+  releases: GithubRelease[];
+  has_more: boolean;
 };
 const delay = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -202,6 +222,8 @@ export function Creator({
     selectedProject: "",
     channel: "stable",
     changelog: "",
+    source: "local",
+    githubRepository: "",
   });
   const [folder, setFolder] = useState(releaseDraft.folder);
   const [selectedProject, setSelectedProject] = useState(
@@ -209,6 +231,19 @@ export function Creator({
   );
   const [channel, setChannel] = useState(releaseDraft.channel);
   const [changelog, setChangelog] = useState(releaseDraft.changelog);
+  const [releaseSource, setReleaseSource] = useState<"local" | "github">(
+    releaseDraft.source === "github" ? "github" : "local",
+  );
+  const [githubRepository, setGithubRepository] = useState(releaseDraft.githubRepository);
+  const [githubReleases, setGithubReleases] = useState<GithubRelease[]>([]);
+  const [githubPage, setGithubPage] = useState(0);
+  const [githubHasMore, setGithubHasMore] = useState(false);
+  const [githubTask, setGithubTask] = useState<"" | "releases" | "archive">("");
+  const [preparedSource, setPreparedSource] = useState<{
+    repository: string;
+    release: string;
+    archive: string;
+  } | null>(null);
   const [prepared, setPrepared] = useState<PreparedArtifact | null>(null);
   const [member, setMember] = useState("");
   const [memberRole, setMemberRole] = useState<"maintainer" | "member">(
@@ -235,6 +270,10 @@ export function Creator({
     bytes_per_second: number;
     eta_seconds: number;
   } | null>(null);
+
+  useEffect(() => {
+    if (selectedProjectType !== "mod") setPreparedSource(null);
+  }, [selectedProjectType]);
 
   useEffect(() => {
     if (worldPublish) {
@@ -345,9 +384,16 @@ export function Creator({
   useEffect(() => {
     localStorage.setItem(
       draftStorageKey("release"),
-      JSON.stringify({ folder, selectedProject, channel, changelog }),
+      JSON.stringify({
+        folder,
+        selectedProject,
+        channel,
+        changelog,
+        source: releaseSource,
+        githubRepository,
+      }),
     );
-  }, [folder, selectedProject, channel, changelog]);
+  }, [folder, selectedProject, channel, changelog, releaseSource, githubRepository]);
 
   const refresh = useCallback(async (value: string) => {
     lastRefresh.current = Date.now();
@@ -528,6 +574,7 @@ export function Creator({
     );
     setSelectedProject(slug);
     setPrepared(null);
+    setPreparedSource(null);
     setStatus("");
   };
   const selectProject = (slug: string) => {
@@ -549,12 +596,66 @@ export function Creator({
   const preview = async () => {
     setError("");
     setPrepared(null);
+    setPreparedSource(null);
     try {
       setPrepared(
         await invoke<PreparedArtifact>("prepare_release", { path: folder }),
       );
     } catch (reason) {
       setError(String(reason));
+    }
+  };
+  const loadGithubReleases = async (page = 1) => {
+    setError("");
+    setGithubTask("releases");
+    try {
+      const result = await invoke<GithubReleasePage>("list_github_releases", {
+        repository: githubRepository,
+        page,
+      });
+      setGithubRepository(result.repository);
+      setGithubReleases((items) => page === 1
+        ? result.releases
+        : [...items, ...result.releases.filter((release) =>
+            !items.some((item) => item.id === release.id))]);
+      setGithubPage(page);
+      setGithubHasMore(result.has_more);
+    } finally {
+      setGithubTask("");
+    }
+  };
+  const prepareGithubRelease = async (
+    release: GithubRelease,
+    archive: { assetId?: number; name: string; size?: number },
+  ) => {
+    setError("");
+    setPrepared(null);
+    setPreparedSource(null);
+    setGithubTask("archive");
+    setStatus(`Скачиваем ${archive.name} из GitHub…`);
+    if (archive.size) {
+      setTransfer({ completed: 0, total: archive.size, bytes_per_second: 0, eta_seconds: 0 });
+    }
+    try {
+      const artifact = await invoke<PreparedArtifact>("prepare_github_release", {
+        repository: githubRepository,
+        assetId: archive.assetId ?? null,
+        tag: archive.assetId ? null : release.tag_name,
+      });
+      setPrepared(artifact);
+      setPreparedSource({
+        repository: githubRepository,
+        release: release.tag_name,
+        archive: archive.name,
+      });
+      if (!changelog.trim() && release.body.trim()) setChangelog(release.body.trim());
+      setStatus("ZIP из GitHub скачан и проверен");
+    } catch (reason) {
+      setStatus("");
+      throw reason;
+    } finally {
+      setTransfer(null);
+      setGithubTask("");
     }
   };
   const publish = async () => {
@@ -1234,27 +1335,144 @@ export function Creator({
                   <strong>Файлы контент-пака</strong>
                   <span>Версия и совместимость будут прочитаны из package.json.</span>
                 </div>
-                <label>
-                  Папка или ZIP-архив
-                  <input
-                    aria-label="Папка или ZIP-архив"
-                    placeholder="Путь к папке проекта или .zip"
-                    value={folder}
-                    disabled={working}
-                    onChange={(event) => { setFolder(event.target.value); setPrepared(null); }}
-                  />
-                </label>
-                <div className="form-row">
-                  <button className="secondary" disabled={working} onClick={() => void perform(async () => {
-                    const path = await open({ directory: true, multiple: false });
-                    if (path) { setFolder(path); setPrepared(null); setStatus(""); }
-                  })}>Выбрать папку</button>
-                  <button className="secondary" disabled={working} onClick={() => void perform(async () => {
-                    const path = await open({ directory: false, multiple: false, filters: [{ name: "ZIP-архив", extensions: ["zip"] }] });
-                    if (path) { setFolder(path); setPrepared(null); setStatus(""); }
-                  })}>Выбрать ZIP</button>
-                  <button className="primary" disabled={working || !folder.trim()} onClick={() => void perform(preview)}>Проверить пакет</button>
+                <div className="form-row release-source-tabs" role="group" aria-label="Источник файлов">
+                  <button
+                    type="button"
+                    aria-pressed={releaseSource === "local"}
+                    onClick={() => { setReleaseSource("local"); setPrepared(null); setPreparedSource(null); setStatus(""); }}
+                  >
+                    Локальные файлы
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={releaseSource === "github"}
+                    onClick={() => { setReleaseSource("github"); setPrepared(null); setPreparedSource(null); setStatus(""); }}
+                  >
+                    GitHub
+                  </button>
                 </div>
+                {releaseSource === "local" ? (
+                  <>
+                    <label>
+                      Папка или ZIP-архив
+                      <input
+                        aria-label="Папка или ZIP-архив"
+                        placeholder="Путь к папке проекта или .zip"
+                        value={folder}
+                        disabled={working}
+                        onChange={(event) => { setFolder(event.target.value); setPrepared(null); setPreparedSource(null); }}
+                      />
+                    </label>
+                    <div className="form-row">
+                      <button className="secondary" disabled={working} onClick={() => void perform(async () => {
+                        const path = await open({ directory: true, multiple: false });
+                        if (path) { setFolder(path); setPrepared(null); setPreparedSource(null); setStatus(""); }
+                      })}>Выбрать папку</button>
+                      <button className="secondary" disabled={working} onClick={() => void perform(async () => {
+                        const path = await open({ directory: false, multiple: false, filters: [{ name: "ZIP-архив", extensions: ["zip"] }] });
+                        if (path) { setFolder(path); setPrepared(null); setPreparedSource(null); setStatus(""); }
+                      })}>Выбрать ZIP</button>
+                      <button className="primary" disabled={working || !folder.trim()} onClick={() => void perform(preview)}>Проверить пакет</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="github-release-source">
+                    <label>
+                      Публичный репозиторий GitHub
+                      <input
+                        aria-label="Публичный репозиторий GitHub"
+                        placeholder="owner/repository или ссылка"
+                        value={githubRepository}
+                        onChange={(event) => {
+                          setGithubRepository(event.target.value);
+                          setGithubReleases([]);
+                          setGithubPage(0);
+                          setGithubHasMore(false);
+                          setPrepared(null);
+                          setPreparedSource(null);
+                        }}
+                      />
+                    </label>
+                    <button
+                      className="secondary small github-load-releases"
+                      disabled={working || !githubRepository.trim()}
+                      onClick={() => void perform(() => loadGithubReleases())}
+                    >
+                      {githubTask === "releases" ? "Загружаем…" : "Найти релизы"}
+                    </button>
+                    {!!githubReleases.length && (
+                      <div className="github-release-list" aria-label="Релизы GitHub">
+                        {githubReleases.map((release) => (
+                          <article className="github-release-card" key={release.id}>
+                            <header>
+                              <div>
+                                <strong>{release.name}</strong>
+                                <span>
+                                  {release.tag_name} · {new Date(release.published_at).toLocaleDateString("ru")}
+                                </span>
+                              </div>
+                              <span className="publication-status published">
+                                {release.prerelease ? "Предрелиз" : "Стабильный"}
+                              </span>
+                            </header>
+                            <div className="github-release-assets">
+                              {release.assets.map((asset) => (
+                                <div className="github-release-asset" key={asset.id}>
+                                  <span>
+                                    <strong>{asset.name}</strong>
+                                    <small>{formatBytes(asset.size)}</small>
+                                  </span>
+                                  <button
+                                    className="secondary small"
+                                    disabled={working}
+                                    onClick={() => void perform(() => prepareGithubRelease(release, {
+                                      assetId: asset.id,
+                                      name: asset.name,
+                                      size: asset.size,
+                                    }))}
+                                  >
+                                    Скачать и проверить
+                                  </button>
+                                </div>
+                              ))}
+                              <div className="github-release-asset source-archive">
+                                <span>
+                                  <strong>Исходный код · ZIP</strong>
+                                  <small>Автоматический архив GitHub для тега {release.tag_name}</small>
+                                </span>
+                                <button
+                                  className="secondary small"
+                                  disabled={working}
+                                  onClick={() => void perform(() => prepareGithubRelease(release, {
+                                    name: `Исходный код ${release.tag_name}.zip`,
+                                  }))}
+                                >
+                                  Скачать и проверить
+                                </button>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                    {!working && githubReleases.length === 0 && (
+                      <p className="muted">
+                        {githubPage > 0
+                          ? "В репозитории нет опубликованных релизов."
+                          : "Укажите репозиторий и загрузите список публичных релизов."}
+                      </p>
+                    )}
+                    {githubHasMore && (
+                      <button
+                        className="text-button github-more-releases"
+                        disabled={working}
+                        onClick={() => void perform(() => loadGithubReleases(githubPage + 1))}
+                      >
+                        Показать ещё
+                      </button>
+                    )}
+                  </div>
+                )}
               </section>
             )}
             {current?.type === "modpack" && (
@@ -1384,6 +1602,11 @@ export function Creator({
                   {(prepared.size / 1024 / 1024).toFixed(2)} MiB ·{" "}
                   {prepared.sha256.slice(0, 12)}…
                 </span>
+                {preparedSource && (
+                  <span>
+                    GitHub · {preparedSource.repository} · {preparedSource.release} · {preparedSource.archive}
+                  </span>
+                )}
                 {!!prepared.manifest.components?.length && (
                   <span>Стартовые карты: {prepared.manifest.components.map((item) => item.title).join(", ")}</span>
                 )}

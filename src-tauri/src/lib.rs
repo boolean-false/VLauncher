@@ -1,3 +1,4 @@
+mod github_releases;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
 mod mainline;
@@ -1791,6 +1792,8 @@ pub fn run() {
             mainline::install_mainline_build,
             mainline::select_mainline_build,
             mainline::resolve_mainline_version,
+            github_releases::list_github_releases,
+            github_releases::prepare_github_release,
             registry_auth::registry_device_start,
             registry_auth::registry_device_poll,
             launcher_info,

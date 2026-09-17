@@ -3020,6 +3020,89 @@ select {
   font-size: 12px;
 }
 
+.release-source-tabs button[aria-pressed="true"] {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.github-release-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.github-load-releases {
+  margin-bottom: 1px;
+}
+
+.github-release-list,
+.github-release-assets {
+  display: grid;
+  gap: 10px;
+}
+
+.github-release-list,
+.github-release-source > .muted,
+.github-more-releases {
+  grid-column: 1 / -1;
+}
+
+.github-release-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+
+.github-release-card > header,
+.github-release-asset {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.github-release-card > header > div,
+.github-release-asset > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.github-release-card > header > div > span,
+.github-release-asset small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.github-release-asset {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.github-release-asset strong {
+  overflow-wrap: anywhere;
+}
+
+.github-release-asset.source-archive {
+  opacity: 0.88;
+}
+
+@media (max-width: 720px) {
+  .github-release-source {
+    grid-template-columns: 1fr;
+  }
+
+  .github-release-card > header,
+  .github-release-asset {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .release-source-fields,
 .release-metadata-fields {
   display: grid;
