@@ -14,7 +14,7 @@ use std::os::windows::process::CommandExt;
 use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -230,6 +230,67 @@ fn application_config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, 
         .config_dir()
         .map_err(|error| format!("could not locate application config: {error}"))?
         .join("vlauncher"))
+}
+
+fn library_pointer_path(config_dir: &Path) -> PathBuf {
+    // На винде и макоси данные и настройки могут лежать в одной папке.
+    // Храним путь отдельно, чтобы не удалить его при переносе библиотеки.
+    config_dir.join("space.vlauncher").join("library-location")
+}
+
+fn legacy_library_pointer_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("vlauncher").join("library-location")
+}
+
+fn read_library_pointer(primary: &Path, legacy: &Path) -> Result<Option<(PathBuf, bool)>, String> {
+    for (path, is_legacy) in [(primary, false), (legacy, true)] {
+        match std::fs::read_to_string(path) {
+            Ok(value) => {
+                let configured = value.trim();
+                if configured.is_empty() {
+                    return Err(format!("Пустой путь библиотеки: {}", path.display()));
+                }
+                return Ok(Some((PathBuf::from(configured), is_legacy)));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Не удалось прочитать расположение библиотеки {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn write_library_pointer(pointer: &Path, destination: &Path) -> Result<(), String> {
+    let config = pointer
+        .parent()
+        .ok_or_else(|| "library location has no parent directory".to_owned())?;
+    std::fs::create_dir_all(config).map_err(|error| error.to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = config.join(format!("library-location-{nonce}.tmp"));
+    let previous = config.join(format!("library-location-{nonce}.previous"));
+    std::fs::write(&temporary, destination.to_string_lossy().as_bytes())
+        .map_err(|error| error.to_string())?;
+    if pointer.exists() {
+        std::fs::rename(pointer, &previous).map_err(|error| error.to_string())?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, pointer) {
+        if previous.exists() {
+            let _ = std::fs::rename(&previous, pointer);
+        }
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    if previous.exists() {
+        let _ = std::fs::remove_file(previous);
+    }
+    Ok(())
 }
 
 fn application_cache_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -471,21 +532,30 @@ fn exit_launcher(app: tauri::AppHandle) {
 
 fn profile_store(app: &tauri::AppHandle) -> Result<ProfileStore, String> {
     let default_path = application_data_dir(app)?;
-    let pointer = application_config_dir(app)?.join("library-location");
-    let path = match std::fs::read_to_string(&pointer) {
-        Ok(value) => {
-            let configured = std::path::PathBuf::from(value.trim());
-            if !configured.is_dir() {
-                return Err(format!(
-                    "Настроенная библиотека недоступна: {}",
-                    configured.display()
-                ));
-            }
-            configured
+    let config_dir = app
+        .path()
+        .config_dir()
+        .map_err(|error| format!("could not locate application config: {error}"))?;
+    let pointer = library_pointer_path(&config_dir);
+    let legacy_pointer = legacy_library_pointer_path(&config_dir);
+    let configured = read_library_pointer(&pointer, &legacy_pointer)?;
+    let path = configured
+        .as_ref()
+        .map(|(path, _)| path.clone())
+        .unwrap_or(default_path);
+    if configured.is_some() && !path.is_dir() {
+        return Err(format!(
+            "Настроенная библиотека недоступна: {}",
+            path.display()
+        ));
+    }
+    if configured.is_some_and(|(_, is_legacy)| is_legacy) {
+        // Переносим старую настройку после обновления с 1.3.0
+        // При ошибке старый путь продолжит работать.
+        if write_library_pointer(&pointer, &path).is_ok() {
+            let _ = std::fs::remove_file(&legacy_pointer);
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => default_path,
-        Err(error) => return Err(format!("could not read library location: {error}")),
-    };
+    }
     ProfileStore::open(path).map_err(|error| error.to_string())
 }
 
@@ -514,37 +584,48 @@ fn move_library(
     let store = profile_store(&app)?;
     let source = store.root_path().to_owned();
     let destination = std::path::PathBuf::from(parent).join("VLauncherLibrary");
-    store
-        .copy_library_to(&destination)
-        .map_err(|error| error.to_string())?;
-    let config = application_config_dir(&app)?;
-    std::fs::create_dir_all(&config).map_err(|error| error.to_string())?;
-    let pointer = config.join("library-location");
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary = config.join(format!("library-location-{nonce}.tmp"));
-    let previous = config.join(format!("library-location-{nonce}.previous"));
-    std::fs::write(&temporary, destination.to_string_lossy().as_bytes())
-        .map_err(|error| error.to_string())?;
-    if pointer.exists() {
-        std::fs::rename(&pointer, &previous).map_err(|error| error.to_string())?;
-    }
-    if let Err(error) = std::fs::rename(&temporary, &pointer) {
-        if previous.exists() {
-            let _ = std::fs::rename(&previous, &pointer);
-        }
-        let _ = std::fs::remove_dir_all(&destination);
-        return Err(error.to_string());
-    }
-    if previous.exists() {
-        let _ = std::fs::remove_file(previous);
-    }
-    if source != destination {
-        let _ = std::fs::remove_dir_all(source);
+    let config_dir = app
+        .path()
+        .config_dir()
+        .map_err(|error| format!("could not locate application config: {error}"))?;
+    let pointer = library_pointer_path(&config_dir);
+    relocate_library(&store, &source, &destination, &pointer)?;
+    let legacy_pointer = legacy_library_pointer_path(&config_dir);
+    if legacy_pointer != pointer {
+        let _ = std::fs::remove_file(legacy_pointer);
     }
     Ok(destination.to_string_lossy().into_owned())
+}
+
+fn relocate_library(
+    store: &ProfileStore,
+    source: &Path,
+    destination: &Path,
+    pointer: &Path,
+) -> Result<(), String> {
+    let source = std::fs::canonicalize(source).map_err(|error| error.to_string())?;
+    if destination.exists() {
+        let destination = std::fs::canonicalize(destination).map_err(|error| error.to_string())?;
+        if destination == source {
+            write_library_pointer(pointer, &destination)?;
+            return Ok(());
+        }
+        return Err("В выбранной папке уже есть VLauncherLibrary. Выберите другую папку, чтобы не перезаписать существующие данные.".into());
+    }
+
+    store
+        .copy_library_to(destination)
+        .map_err(|error| error.to_string())?;
+    // Проверяем копию до переключения и удаления старой библиотеки.
+    let copied = ProfileStore::open(destination).map_err(|error| error.to_string())?;
+    copied.list().map_err(|error| error.to_string())?;
+    copied.list_runtimes().map_err(|error| error.to_string())?;
+    if let Err(error) = write_library_pointer(pointer, destination) {
+        let _ = std::fs::remove_dir_all(destination);
+        return Err(error);
+    }
+    let _ = std::fs::remove_dir_all(source);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1512,9 +1593,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::system_interpreter_from_maps;
     use super::{
-        ensure_modpack_transition, finished_game_event, load_fallback_token, package_icon_data,
-        save_fallback_token,
+        ensure_modpack_transition, finished_game_event, library_pointer_path, load_fallback_token,
+        package_icon_data, read_library_pointer, relocate_library, save_fallback_token,
     };
+    use vlauncher_core::ProfileStore;
 
     #[test]
     fn a_profile_can_only_update_its_own_modpack() {
@@ -1596,6 +1678,53 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn moving_a_library_keeps_its_pointer_outside_the_old_data_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        // Повторяем ситуацию Windows, где данные и настройки лежат рядом.
+        let roaming = directory.path().join("Roaming");
+        let source = roaming.join("vlauncher");
+        let pointer = library_pointer_path(&roaming);
+        assert!(!pointer.starts_with(&source));
+
+        let store = ProfileStore::open(&source).unwrap();
+        store.create_initialized("Portable", "0.31.4").unwrap();
+        let destination = directory.path().join("Games/VLauncherLibrary");
+        relocate_library(&store, &source, &destination, &pointer).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(
+            read_library_pointer(&pointer, &source.join("library-location"))
+                .unwrap()
+                .unwrap()
+                .0,
+            destination
+        );
+        assert_eq!(
+            ProfileStore::open(&destination).unwrap().list().unwrap()[0].name,
+            "Portable"
+        );
+    }
+
+    #[test]
+    fn the_new_pointer_takes_precedence_over_the_legacy_update_location() {
+        let directory = tempfile::tempdir().unwrap();
+        let roaming = directory.path().join("Roaming");
+        let primary = library_pointer_path(&roaming);
+        let legacy = roaming.join("vlauncher/library-location");
+        let old_library = directory.path().join("OldLibrary");
+        let new_library = directory.path().join("NewLibrary");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(primary.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, old_library.to_string_lossy().as_bytes()).unwrap();
+        std::fs::write(&primary, new_library.to_string_lossy().as_bytes()).unwrap();
+
+        assert_eq!(
+            read_library_pointer(&primary, &legacy).unwrap(),
+            Some((new_library, false))
+        );
     }
 
     #[test]
