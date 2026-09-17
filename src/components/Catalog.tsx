@@ -1165,6 +1165,7 @@ export function ProjectView({
     if (releasesResult.data) setVersion(current => releasesResult.data!.some(r => r.version === current) ? current : (releasesResult.data!.find(r => r.channel === 'stable' && !r.deprecated)?.version ?? releasesResult.data![0]?.version ?? ""));
   }, [releasesResult.data]);
   const release = releases.find((r) => r.version === version);
+  const releaseComponents = release?.attestation?.assertion?.manifest?.components ?? [];
   const profile = profiles.find((p) => p.id === selected);
   const installedModpackProfile = project?.type === "modpack"
     ? profiles.find((item) => profileModpack(item)?.id === project.id)
@@ -1345,7 +1346,7 @@ export function ProjectView({
                 <span>VoxelCore {release?.voxelcore}</span>
                 <span>
                   {release?.artifact_size != null
-                    ? formatBytes(release.artifact_size)
+                    ? formatBytes(release.artifact_size + releaseComponents.reduce((sum, item) => sum + item.artifact_size, 0))
                     : "Размер не указан"}
                 </span>
               </div>
@@ -1377,6 +1378,23 @@ export function ProjectView({
                       <footer>
                         <span>VSpace</span>
                         <code>{dependency.requirement}</code>
+                      </footer>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {project.type === "modpack" && !!releaseComponents.length && (
+                <section className="release-dependencies">
+                  <h3>Стартовые карты</h3>
+                  {releaseComponents.map((component) => (
+                    <div key={component.key} className="dependency-card">
+                      <div className="dependency-card-heading">
+                        <strong>{component.title}</strong>
+                        <span>{formatBytes(component.artifact_size)}</span>
+                      </div>
+                      <footer>
+                        <span>Копируется в новый профиль один раз</span>
+                        <span>{component.dependencies.length ? `${component.dependencies.length} зависимостей` : "Без дополнительных зависимостей"}</span>
                       </footer>
                     </div>
                   ))}
@@ -1521,6 +1539,7 @@ export function InstallPreview({
     const old = profile.packages.find((p) => p.id === pkg.id);
     return {
       id: pkg.id,
+      title: pkg.title || pkg.id,
       version:
         old && old.version !== pkg.version
           ? `${old.version} → ${pkg.version}`
@@ -1536,7 +1555,7 @@ export function InstallPreview({
   });
   for (const pkg of profile.packages.filter((pkg) => pkg.kind !== "modpack"))
     if (!contentPackages.some((p) => p.id === pkg.id))
-      changes.push({ ...pkg, status: "Удалить", dependency: false, oldVersion: pkg.version });
+      changes.push({ ...pkg, title: pkg.title || pkg.id, status: "Удалить", dependency: false, oldVersion: pkg.version });
   const externalChanges = (plan.plan.external_packages ?? []).map((pkg) => {
     const old = profile.external_packages?.find((item) => item.id === pkg.id);
     return {
@@ -1581,9 +1600,13 @@ export function InstallPreview({
           {changes.map((c) => (
           <div key={c.id}>
             <div>
-              <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: c.id, version: plan.plan.packages.find(pkg => pkg.id === c.id)?.version || c.oldVersion, parent: profile.name })}>{c.id}</button>
+              {c.id.startsWith("__world_") ? (
+                <strong>{c.title}</strong>
+              ) : (
+                <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: c.id, version: plan.plan.packages.find(pkg => pkg.id === c.id)?.version || c.oldVersion, parent: profile.name })}>{c.title}</button>
+              )}
               <small>
-                {c.dependency ? "Зависимость" : "Выбранный пакет"} · {c.version}
+                {c.id.startsWith("__world_") ? "Стартовая карта" : c.dependency ? "Зависимость" : "Выбранный пакет"} · {c.version}
               </small>
             </div>
             <div className="actions">

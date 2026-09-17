@@ -6,7 +6,8 @@ pub mod publishing;
 
 pub use manifest::{
     Capability, DeliveryFile, DeliveryManifest, Dependency, DependencyKind, ExternalPackageLock,
-    LockedPackage, Lockfile, PackageEnvironment, PackageKind, PackageManifest, PackageProblem,
+    LockedPackage, Lockfile, PackageComponent, PackageEnvironment, PackageKind, PackageManifest,
+    PackageProblem,
 };
 pub use profile::{
     CacheStatus, ExistingGameAnalysis, ExistingRuntimeKind, ExternalInstallPackage,

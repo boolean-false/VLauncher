@@ -2996,6 +2996,42 @@ select {
   gap: 12px;
 }
 
+.modpack-world-selection {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.modpack-world-selection > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.modpack-world-selection > div:first-child span,
+.modpack-world-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.modpack-world-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.modpack-world-list .checkbox-row {
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+
+.modpack-world-list .checkbox-row span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
 .release-metadata-fields > label:last-child {
   grid-column: 1 / -1;
 }

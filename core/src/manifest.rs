@@ -117,6 +117,26 @@ pub struct PackageManifest {
     pub environments: Vec<PackageEnvironment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_packages: Vec<ExternalPackageLock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<PackageComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PackageComponent {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub kind: PackageKind,
+    pub title: String,
+    pub strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<Dependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -257,6 +277,7 @@ impl PackageManifest {
             capabilities: Vec::new(),
             environments: default_environments(),
             external_packages: Vec::new(),
+            components: Vec::new(),
         })
     }
 
@@ -350,6 +371,53 @@ impl PackageManifest {
                 || !external_ids.insert(package.id.as_str())
             {
                 return invalid("invalid external package lock");
+            }
+        }
+        let mut component_keys = HashSet::new();
+        if self.components.len() > 64
+            || !self.components.is_empty() && self.kind != PackageKind::Modpack
+        {
+            return invalid("components are only valid in modpacks");
+        }
+        for component in &self.components {
+            validate_id(&component.key)?;
+            if component.kind != PackageKind::World
+                || component.strategy != "copy_once"
+                || component.title.trim().is_empty()
+                || component.title.chars().count() > 128
+                || !component_keys.insert(component.key.as_str())
+                || component.path.is_some() == component.artifact_sha256.is_some()
+                || component.artifact_sha256.is_some() != component.artifact_size.is_some()
+            {
+                return invalid("invalid modpack component");
+            }
+            if let Some(path) = &component.path {
+                let path = Path::new(path);
+                validate_relative_path(path)?;
+                if path != Path::new("components").join(format!("{}.zip", component.key)) {
+                    return invalid("component path does not match its key");
+                }
+            }
+            if let Some(sha256) = &component.artifact_sha256
+                && (sha256.len() != 64
+                    || !sha256.chars().all(|character| {
+                        character.is_ascii_digit() || matches!(character, 'a'..='f')
+                    })
+                    || component.artifact_size == Some(0))
+            {
+                return invalid("invalid component artifact");
+            }
+            for dependency in &component.dependencies {
+                validate_id(&dependency.id)?;
+                if dependency.kind != DependencyKind::Required {
+                    return invalid("component dependencies must be required");
+                }
+                VersionReq::parse(&dependency.requirement).map_err(|error| {
+                    PackageProblem::Invalid(format!(
+                        "invalid component requirement for '{}': {error}",
+                        dependency.id
+                    ))
+                })?;
             }
         }
         Ok(())

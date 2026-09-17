@@ -23,6 +23,15 @@ export type Release = {
       manifest?: {
         capabilities?: string[];
         external_packages?: ExternalPackageLock[];
+        components?: {
+          key: string;
+          type: "world";
+          title: string;
+          strategy: "copy_once";
+          artifact_sha256: string;
+          artifact_size: number;
+          dependencies: { id: string; requirement: string; kind: "required" }[];
+        }[];
       };
     };
   } | null;
@@ -75,6 +84,7 @@ export const loadRuntimeReleases = (platform: string, architecture: string) =>
 
 export type ResolvedPackage = {
   id: string;
+  title?: string | null;
   type: Project["type"];
   version: string;
   channel: "stable" | "beta" | "alpha";

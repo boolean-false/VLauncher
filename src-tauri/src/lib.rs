@@ -375,13 +375,16 @@ fn prepare_profile_modpack(
     version: String,
     creator: String,
     license: String,
+    worlds: Vec<String>,
 ) -> Result<PreparedArtifact, String> {
     let id = profile_id
         .parse()
         .map_err(|_| "invalid profile id".to_owned())?;
     let output = application_cache_dir(&app)?.join("prepared-uploads");
     profile_store(&app)?
-        .prepare_modpack(id, &slug, &title, &version, &creator, &license, output)
+        .prepare_modpack(
+            id, &slug, &title, &version, &creator, &license, &worlds, output,
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -768,6 +771,9 @@ fn read_content_icon(
 struct LocalWorld {
     folder: String,
     name: String,
+    origin_title: Option<String>,
+    origin_version: Option<String>,
+    bundled: bool,
     modified: u64,
     voxelcore_version: Option<String>,
     compatible: Option<bool>,
@@ -823,6 +829,24 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
             .and_then(|value| value.as_str())
             .map(str::to_owned)
             .unwrap_or_else(|| folder.clone());
+        let origin = std::fs::read(entry.path().join(".vlauncher-world.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let origin_title = origin
+            .as_ref()
+            .and_then(|value| value.get("title"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let origin_version = origin
+            .as_ref()
+            .and_then(|value| value.get("package_version"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let bundled = origin
+            .as_ref()
+            .and_then(|value| value.get("bundled"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
         let voxelcore_version = metadata
             .as_ref()
             .and_then(|value| value.get("version"))
@@ -905,6 +929,9 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
         worlds.push(LocalWorld {
             folder,
             name,
+            origin_title,
+            origin_version,
+            bundled,
             modified,
             voxelcore_version,
             compatible,

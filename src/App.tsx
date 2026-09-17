@@ -882,7 +882,7 @@ export default function App() {
                           {title}
                           {id === "content" && (
                             <span className="count">
-                              {profile.packages.length + (profile.external_packages?.length ?? 0)}
+                              {profile.packages.filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "world").length + (profile.external_packages?.length ?? 0)}
                             </span>
                           )}
                           {id === "logs" && logs.some((item) => item.profile_id === profile.id) && (
@@ -948,7 +948,7 @@ export default function App() {
                               </button>
                             </div>
                           </div>
-                          {!profile.packages.some((pkg) => pkg.kind !== "modpack") && !profile.external_packages?.length && !profile.manual_packages?.length ? (
+                          {!profile.packages.some((pkg) => pkg.kind !== "modpack" && pkg.kind !== "world") && !profile.external_packages?.length && !profile.manual_packages?.length ? (
                             <Empty title="Чистая игра">
                               <p>
                                 Контент-паков пока нет. Можно играть сразу
@@ -968,7 +968,7 @@ export default function App() {
                                 <span />
                               </div>
                               {[...profile.packages]
-                                .filter((pkg) => pkg.kind !== "modpack")
+                                .filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "world")
                                 .sort(
                                   (a, b) =>
                                     Number(profile.roots.includes(b.id)) -
@@ -2073,6 +2073,9 @@ function Worlds({
     {
       folder: string;
       name: string;
+      origin_title?: string;
+      origin_version?: string;
+      bundled: boolean;
       modified: number;
       voxelcore_version?: string;
       compatible?: boolean;
@@ -2137,6 +2140,13 @@ function Worlds({
                   {world.voxelcore_version && ` · VoxelCore ${world.voxelcore_version}`}
                   {world.compatible === false && " · требуется другая версия движка"}
                 </small>
+                {world.origin_title && (
+                  <small>
+                    {world.bundled ? "Стартовая карта сборки" : "Карта из каталога"}
+                    {` · ${world.origin_title}`}
+                    {world.origin_version && ` ${world.origin_version}`}
+                  </small>
+                )}
                 {!!world.dependencies.length && (
                   <details className={`world-packages${world.missing_dependencies.length ? " has-missing" : ""}`}>
                     <summary>

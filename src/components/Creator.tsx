@@ -71,11 +71,15 @@ type PreparedArtifact = {
     dependencies?: unknown[];
     conflicts?: unknown[];
     external_packages?: unknown[];
+    components?: { key: string; type: "world"; title: string }[];
   };
 };
 type LocalWorld = {
   folder: string;
   name: string;
+  origin_title?: string;
+  origin_version?: string;
+  bundled: boolean;
   modified: number;
   voxelcore_version?: string;
   compatible?: boolean;
@@ -214,6 +218,9 @@ export function Creator({
   const [media, setMedia] = useState<ProjectMedia[]>([]);
   const [localProfiles, setLocalProfiles] = useState<LocalProfile[]>([]);
   const [modpackProfile, setModpackProfile] = useState("");
+  const [modpackWorlds, setModpackWorlds] = useState<LocalWorld[]>([]);
+  const [selectedModpackWorlds, setSelectedModpackWorlds] = useState<string[]>([]);
+  const [modpackWorldsLoading, setModpackWorldsLoading] = useState(false);
   const [modpackVersion, setModpackVersion] = useState("1.0.0");
   const [worldVersion, setWorldVersion] = useState("1.0.0");
   const [worldProfile, setWorldProfile] = useState("");
@@ -262,6 +269,34 @@ export function Creator({
       })
       .catch(() => undefined);
   }, []);
+  useEffect(() => {
+    if (!modpackProfile) {
+      setModpackWorlds([]);
+      setSelectedModpackWorlds([]);
+      return;
+    }
+    let current = true;
+    setModpackWorldsLoading(true);
+    void invoke<LocalWorld[]>("list_worlds", { profileId: modpackProfile })
+      .then((items) => {
+        if (!current) return;
+        setModpackWorlds(items);
+        setSelectedModpackWorlds((selected) =>
+          selected.filter((folder) => items.some((world) => world.folder === folder)),
+        );
+      })
+      .catch((reason) => {
+        if (current) {
+          setModpackWorlds([]);
+          setSelectedModpackWorlds([]);
+          setError(friendlyError(reason));
+        }
+      })
+      .finally(() => {
+        if (current) setModpackWorldsLoading(false);
+      });
+    return () => { current = false; };
+  }, [modpackProfile]);
   useEffect(() => {
     if (selectedProjectType !== "world" && !worldSelectionPending) return;
     if (!worldProfile) {
@@ -1231,7 +1266,7 @@ export function Creator({
                 <div className="release-source-fields">
                   <label>
                     Профиль
-                    <Select aria-label="Профиль для сборки" value={selectedModpackProfile?.id || ""} onChange={(event) => { setModpackProfile(event.target.value); setPrepared(null); }}>
+                    <Select aria-label="Профиль для сборки" value={selectedModpackProfile?.id || ""} onChange={(event) => { setModpackProfile(event.target.value); setSelectedModpackWorlds([]); setPrepared(null); }}>
                       <option value="" disabled>Выберите профиль</option>
                       {modpackProfiles.map((profile) => (
                         <option value={profile.id} key={profile.id}>{profile.name}</option>
@@ -1243,11 +1278,41 @@ export function Creator({
                     <input aria-label="Версия новой сборки" value={modpackVersion} onChange={(event) => { setModpackVersion(event.target.value); setPrepared(null); }} />
                   </label>
                 </div>
+                <div className="modpack-world-selection">
+                  <div>
+                    <strong>Стартовые карты</strong>
+                    <span>Будут загружены отдельными артефактами и скопированы в новый профиль один раз.</span>
+                  </div>
+                  {modpackWorldsLoading ? (
+                    <span className="muted">Загружаем миры…</span>
+                  ) : modpackWorlds.length ? (
+                    <div className="modpack-world-list">
+                      {modpackWorlds.map((world) => (
+                        <label className="checkbox-row" key={world.folder}>
+                          <input
+                            type="checkbox"
+                            checked={selectedModpackWorlds.includes(world.folder)}
+                            onChange={(event) => {
+                              setSelectedModpackWorlds((selected) => event.target.checked
+                                ? [...selected, world.folder]
+                                : selected.filter((folder) => folder !== world.folder));
+                              setPrepared(null);
+                            }}
+                          />
+                          <span><strong>{world.name}</strong><small>{world.folder}</small></span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="muted">В профиле нет карт.</span>
+                  )}
+                </div>
                 <button className="primary small" disabled={working || !selectedModpackProfile || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(modpackVersion)} onClick={() => void perform(async () => {
                   if (!account) return;
                   setPrepared(await invoke<PreparedArtifact>("prepare_profile_modpack", {
                     profileId: modpackProfile, slug: current.slug, title: current.title,
                     version: modpackVersion, creator: account.username, license: current.license || "",
+                    worlds: selectedModpackWorlds,
                   }));
                 })}>Подготовить сборку</button>
               </section>
@@ -1319,6 +1384,9 @@ export function Creator({
                   {(prepared.size / 1024 / 1024).toFixed(2)} MiB ·{" "}
                   {prepared.sha256.slice(0, 12)}…
                 </span>
+                {!!prepared.manifest.components?.length && (
+                  <span>Стартовые карты: {prepared.manifest.components.map((item) => item.title).join(", ")}</span>
+                )}
                 <span>
                   {prepared.manifest.capabilities?.length
                     ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`

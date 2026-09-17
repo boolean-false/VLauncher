@@ -119,6 +119,8 @@ struct ProfileSnapshotMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteInstallPackage {
     pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(rename = "type")]
     pub kind: PackageKind,
     pub version: String,
@@ -327,6 +329,16 @@ pub fn trusted_signing_public_keys() -> Vec<&'static str> {
 pub struct ProfileStore {
     root: PathBuf,
     profile_folders: Mutex<HashMap<Uuid, String>>,
+}
+
+struct OperationLock(fs::File);
+
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        // Explicit unlock is required here: closing the handle alone can leave the
+        // lock visible briefly on CI filesystems and make the next operation flaky.
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
 }
 
 impl ProfileStore {
@@ -1655,6 +1667,7 @@ impl ProfileStore {
         version: &str,
         creator: &str,
         license: &str,
+        worlds: &[String],
         output_folder: impl AsRef<Path>,
     ) -> Result<PreparedArtifact, PackageProblem> {
         let profile = self.profile(profile_id)?;
@@ -1680,7 +1693,10 @@ impl ProfileStore {
         let dependencies = profile
             .packages
             .iter()
-            .filter(|package| package.id != slug)
+            .filter(|package| {
+                package.id != slug
+                    && matches!(package.kind, PackageKind::Mod | PackageKind::Library)
+            })
             .map(|package| {
                 serde_json::json!({
                     "id": package.id,
@@ -1709,6 +1725,125 @@ impl ProfileStore {
         let source = output_folder.join(format!(".modpack-source-{}", Uuid::new_v4()));
         fs::create_dir_all(&source).map_err(|error| io_error(&source, error))?;
         let result = (|| {
+            if worlds.len() > 64 {
+                return invalid("a modpack cannot contain more than 64 starter worlds");
+            }
+            let mut selected_worlds = worlds.to_vec();
+            selected_worlds.sort();
+            if selected_worlds.windows(2).any(|pair| pair[0] == pair[1]) {
+                return invalid("starter worlds must be unique");
+            }
+            let game = self.game_directory(profile_id)?;
+            let installed = profile
+                .packages
+                .iter()
+                .filter(|package| matches!(package.kind, PackageKind::Mod | PackageKind::Library))
+                .map(|package| (package.id.as_str(), package.version.as_str()))
+                .chain(
+                    profile
+                        .external_packages
+                        .iter()
+                        .map(|package| (package.id.as_str(), package.version.as_str())),
+                )
+                .collect::<HashMap<_, _>>();
+            let mut components = Vec::new();
+            let mut component_keys = HashSet::new();
+            for folder in &selected_worlds {
+                let relative = Path::new(folder);
+                safe_relative(relative)?;
+                if relative.components().count() != 1 {
+                    return invalid("world folder must be a single directory name");
+                }
+                let world = game.join("worlds").join(relative);
+                if !world.join("world.json").is_file() {
+                    return invalid(format!("world '{folder}' does not contain world.json"));
+                }
+                let mut component_dependencies = fs::read_to_string(world.join("packs.list"))
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.starts_with('#') && *line != "base")
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .map(|id| {
+                        let version = installed.get(id).ok_or_else(|| {
+                            PackageProblem::Invalid(format!(
+                                "world '{folder}' requires '{id}', which is not managed by this profile"
+                            ))
+                        })?;
+                        Ok(serde_json::json!({
+                            "id": id,
+                            "requirement": format!("={version}"),
+                            "kind": "required"
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, PackageProblem>>()?;
+                component_dependencies
+                    .sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+                let digest = Sha256::digest(format!("{slug}\0{folder}").as_bytes());
+                let key = format!("__world_{:x}", digest);
+                let key = key[..24].to_owned();
+                if !component_keys.insert(key.clone()) {
+                    return invalid("starter world identifiers collide");
+                }
+                let world_data = fs::read(world.join("world.json"))
+                    .map_err(|error| io_error(&world.join("world.json"), error))?;
+                let world_title = serde_json::from_slice::<serde_json::Value>(&world_data)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .map(str::to_owned)
+                    })
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| folder.clone());
+                let component_source =
+                    output_folder.join(format!(".modpack-world-{}", Uuid::new_v4()));
+                let packaged_world = component_source.join("world");
+                fs::create_dir_all(&packaged_world)
+                    .map_err(|error| io_error(&packaged_world, error))?;
+                let prepared = (|| {
+                    copy_world_for_publication(&world, &packaged_world)?;
+                    let component_manifest = serde_json::json!({
+                        "schema_version": 1,
+                        "id": key,
+                        "type": "world",
+                        "title": world_title,
+                        "version": "0.0.0",
+                        "creators": [creator],
+                        "description": format!("Стартовая карта сборки {title}"),
+                        "license": license,
+                        "voxelcore": format!("={engine}"),
+                        "dependencies": [],
+                        "capabilities": [],
+                        "environments": ["client"]
+                    });
+                    fs::write(
+                        component_source.join("package.json"),
+                        serde_json::to_vec_pretty(&component_manifest)
+                            .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
+                    )
+                    .map_err(|error| io_error(&component_source, error))?;
+                    prepare_package(&component_source, source.join("components"))
+                })();
+                let _ = fs::remove_dir_all(&component_source);
+                let prepared = prepared?;
+                let component_path = PathBuf::from("components").join(format!("{key}.zip"));
+                let destination = source.join(&component_path);
+                fs::create_dir_all(destination.parent().expect("component directory"))
+                    .map_err(|error| io_error(&destination, error))?;
+                fs::rename(&prepared.path, &destination)
+                    .map_err(|error| io_error(&destination, error))?;
+                components.push(serde_json::json!({
+                    "key": key,
+                    "type": "world",
+                    "title": world_title,
+                    "strategy": "copy_once",
+                    "path": component_path.to_string_lossy().replace('\\', "/"),
+                    "dependencies": component_dependencies
+                }));
+            }
             let manifest = serde_json::json!({
                 "schema_version": 1,
                 "id": slug,
@@ -1721,6 +1856,7 @@ impl ProfileStore {
                 "voxelcore": format!("={engine}"),
                 "dependencies": dependencies,
                 "external_packages": external_packages,
+                "components": components,
                 "capabilities": [],
                 "environments": ["client"]
             });
@@ -2665,18 +2801,74 @@ impl ProfileStore {
             fs::create_dir_all(&worlds).map_err(|source| io_error(&worlds, source))?;
             for entry in fs::read_dir(&templates).map_err(|source| io_error(&templates, source))? {
                 let template = entry.map_err(|source| io_error(&templates, source))?;
-                let destination = worlds.join(template.file_name());
-                if !destination.exists() {
-                    let staging = worlds.join(format!(".world-staging-{}", Uuid::new_v4()));
-                    let copied = copy_tree(&template.path().join("world"), &staging);
-                    if let Err(error) = copied {
-                        let _ = fs::remove_dir_all(&staging);
-                        return Err(error);
-                    }
-                    if let Err(source) = fs::rename(&staging, &destination) {
-                        let _ = fs::remove_dir_all(&staging);
-                        return Err(io_error(&destination, source));
-                    }
+                let package_id = template.file_name().to_string_lossy().into_owned();
+                let manifest = PackageManifest::read(template.path())?;
+                let bundled = package_id.starts_with("__world_");
+                let already_installed = fs::read_dir(&worlds)
+                    .map_err(|source| io_error(&worlds, source))?
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .filter_map(|entry| fs::read(entry.path().join(".vlauncher-world.json")).ok())
+                    .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .any(|marker| {
+                        marker.get("package_id").and_then(|value| value.as_str())
+                            == Some(package_id.as_str())
+                            && (bundled
+                                || marker
+                                    .get("package_version")
+                                    .and_then(|value| value.as_str())
+                                    == Some(manifest.version.as_str()))
+                    });
+                if already_installed {
+                    continue;
+                }
+                let legacy_destination = worlds.join(&package_id);
+                if legacy_destination.exists() {
+                    let marker = serde_json::json!({
+                        "schema_version": 1,
+                        "package_id": package_id,
+                        "package_version": manifest.version,
+                        "title": manifest.title,
+                        "bundled": bundled
+                    });
+                    write_atomic(
+                        &legacy_destination.join(".vlauncher-world.json"),
+                        &serde_json::to_vec_pretty(&marker)
+                            .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
+                    )?;
+                    continue;
+                }
+                let base = world_folder_name(&manifest.title);
+                let mut destination = worlds.join(&base);
+                let mut suffix = 2;
+                while destination.exists() {
+                    destination = worlds.join(format!("{base}-{suffix}"));
+                    suffix += 1;
+                }
+                let staging = worlds.join(format!(".world-staging-{}", Uuid::new_v4()));
+                let copied = copy_tree(&template.path().join("world"), &staging);
+                if let Err(error) = copied {
+                    let _ = fs::remove_dir_all(&staging);
+                    return Err(error);
+                }
+                let world_marker = serde_json::json!({
+                    "schema_version": 1,
+                    "package_id": package_id,
+                    "package_version": manifest.version,
+                    "title": manifest.title,
+                    "bundled": bundled
+                });
+                if let Err(error) = write_atomic(
+                    &staging.join(".vlauncher-world.json"),
+                    &serde_json::to_vec_pretty(&world_marker)
+                        .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
+                ) {
+                    let _ = fs::remove_dir_all(&staging);
+                    return Err(error);
+                }
+                if let Err(source) = fs::rename(&staging, &destination) {
+                    let _ = fs::remove_dir_all(&staging);
+                    return Err(io_error(&destination, source));
                 }
             }
         }
@@ -2921,7 +3113,7 @@ impl ProfileStore {
         write_atomic(&path, &[bytes.as_slice(), b"\n"].concat())
     }
 
-    fn lock_profile(&self, id: Uuid) -> Result<fs::File, PackageProblem> {
+    fn lock_profile(&self, id: Uuid) -> Result<OperationLock, PackageProblem> {
         let path = self.profile_path(id).join(".operation.lock");
         let file = fs::OpenOptions::new()
             .create(true)
@@ -2933,10 +3125,10 @@ impl ProfileStore {
         file.try_lock_exclusive().map_err(|_| {
             PackageProblem::Invalid("another profile operation is in progress".into())
         })?;
-        Ok(file)
+        Ok(OperationLock(file))
     }
 
-    fn lock_runtime_store(&self) -> Result<fs::File, PackageProblem> {
+    fn lock_runtime_store(&self) -> Result<OperationLock, PackageProblem> {
         let folder = self.root.join("runtimes");
         fs::create_dir_all(&folder).map_err(|source| io_error(&folder, source))?;
         let path = folder.join(".operation.lock");
@@ -2950,7 +3142,7 @@ impl ProfileStore {
         file.try_lock_exclusive().map_err(|_| {
             PackageProblem::Invalid("another VoxelCore operation is in progress".into())
         })?;
-        Ok(file)
+        Ok(OperationLock(file))
     }
 
     fn profile_metadata(
@@ -3398,6 +3590,26 @@ fn copy_world_for_publication(source: &Path, destination: &Path) -> Result<(), P
     Ok(())
 }
 
+fn world_folder_name(title: &str) -> String {
+    let value = title
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let value = value.trim_matches('-');
+    if value.is_empty() {
+        "world".into()
+    } else {
+        value.chars().take(64).collect()
+    }
+}
+
 fn tree_size(path: &Path) -> Result<u64, PackageProblem> {
     if !path.exists() {
         return Ok(0);
@@ -3699,7 +3911,11 @@ mod tests {
     }
 
     fn world_archive(folder: &Path) -> InstallPackage {
-        let path = folder.join("demo-world.zip");
+        world_archive_version(folder, "demo_world", "1.0.0")
+    }
+
+    fn world_archive_version(folder: &Path, id: &str, version: &str) -> InstallPackage {
+        let path = folder.join(format!("{id}-{version}.zip"));
         let file = fs::File::create(&path).unwrap();
         let mut archive = zip::ZipWriter::new(file);
         archive
@@ -3708,8 +3924,8 @@ mod tests {
         archive
             .write_all(
                 serde_json::to_string(&serde_json::json!({
-                    "schema_version": 1, "id": "demo_world", "type": "world",
-                    "title": "Demo world", "version": "1.0.0", "creators": ["Dagger"],
+                    "schema_version": 1, "id": id, "type": "world",
+                    "title": "Demo world", "version": version, "creators": ["Dagger"],
                     "description": "World", "license": "MIT", "voxelcore": ">=0.31.4"
                 }))
                 .unwrap()
@@ -3727,9 +3943,9 @@ mod tests {
         archive.finish().unwrap();
         let bytes = fs::read(&path).unwrap();
         InstallPackage {
-            id: "demo_world".into(),
+            id: id.into(),
             kind: PackageKind::World,
-            version: "1.0.0".into(),
+            version: version.into(),
             artifact_sha256: hex::encode(Sha256::digest(&bytes)),
             artifact_size: bytes.len() as u64,
             archive_path: path,
@@ -3747,6 +3963,7 @@ mod tests {
             root_requirements: HashMap::from([("demo_mod".into(), "=1.0.0".into())]),
             packages: vec![RemoteInstallPackage {
                 id: "demo_mod".into(),
+                title: None,
                 kind: PackageKind::Mod,
                 version: "1.0.0".into(),
                 artifact_sha256: "a".repeat(64),
@@ -4537,6 +4754,10 @@ mod tests {
         let config = store.profile_path(profile.id).join("game/config");
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("demo.json"), "custom").unwrap();
+        let world = store.profile_path(profile.id).join("game/worlds/starter");
+        fs::create_dir_all(&world).unwrap();
+        fs::write(world.join("world.json"), br#"{"name":"Starter world"}"#).unwrap();
+        fs::write(world.join("packs.list"), "demo_mod\n").unwrap();
         let artifact = store
             .prepare_modpack(
                 profile.id,
@@ -4545,6 +4766,7 @@ mod tests {
                 "2.0.0",
                 "Tester",
                 "MIT",
+                &["starter".into()],
                 temp.path().join("output"),
             )
             .unwrap();
@@ -4555,8 +4777,22 @@ mod tests {
         assert_eq!(artifact.manifest.external_packages.len(), 1);
         assert_eq!(artifact.manifest.external_packages[0].source, "voxelworld");
         assert_eq!(artifact.manifest.external_packages[0].version_id, 20);
+        assert_eq!(artifact.manifest.components.len(), 1);
+        let component = &artifact.manifest.components[0];
+        assert_eq!(component.title, "Starter world");
+        assert_eq!(component.strategy, "copy_once");
+        assert_eq!(component.dependencies[0].id, "demo_mod");
         let mut archive = ZipArchive::new(fs::File::open(artifact.path).unwrap()).unwrap();
         assert!(archive.by_name("icon.png").is_ok());
+        let mut component_bytes = Vec::new();
+        archive
+            .by_name(component.path.as_deref().unwrap())
+            .unwrap()
+            .read_to_end(&mut component_bytes)
+            .unwrap();
+        let mut component_archive = ZipArchive::new(std::io::Cursor::new(component_bytes)).unwrap();
+        assert!(component_archive.by_name("world/world.json").is_ok());
+        assert!(component_archive.by_name("world/packs.list").is_ok());
     }
 
     #[test]
@@ -4720,6 +4956,7 @@ mod tests {
         let store = ProfileStore::open(temp.path().join("state")).unwrap();
         let package = RemoteInstallPackage {
             id: "demo_mod".into(),
+            title: None,
             kind: PackageKind::Mod,
             version: "1.0.0".into(),
             artifact_sha256: digest,
@@ -4823,12 +5060,64 @@ mod tests {
         let game = store
             .materialize_game_folder(profile.id, "world-one")
             .unwrap();
-        let region = game.join("worlds/demo_world/regions/0_0.bin");
+        let world = game.join("worlds/Demo-world");
+        let region = world.join("regions/0_0.bin");
+        let marker: serde_json::Value =
+            serde_json::from_slice(&fs::read(world.join(".vlauncher-world.json")).unwrap())
+                .unwrap();
+        assert_eq!(marker["package_id"], "demo_world");
+        assert_eq!(marker["package_version"], "1.0.0");
+        assert_eq!(marker["bundled"], false);
         fs::write(&region, b"player changes").unwrap();
         store
-            .materialize_game_folder(profile.id, "world-one")
+            .apply(
+                profile.id,
+                &InstallPlan {
+                    revision: "world-two".into(),
+                    packages: vec![world_archive(temp.path())],
+                },
+            )
+            .unwrap();
+        store
+            .materialize_game_folder(profile.id, "world-two")
             .unwrap();
         assert_eq!(fs::read(region).unwrap(), b"player changes");
+        assert_eq!(fs::read_dir(game.join("worlds")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn installs_a_new_public_world_version_as_a_separate_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("World profile").unwrap();
+        store
+            .apply(
+                profile.id,
+                &InstallPlan {
+                    revision: "world-one".into(),
+                    packages: vec![world_archive_version(temp.path(), "demo_world", "1.0.0")],
+                },
+            )
+            .unwrap();
+        let game = store
+            .materialize_game_folder(profile.id, "world-one")
+            .unwrap();
+        let first = game.join("worlds/Demo-world/regions/0_0.bin");
+        fs::write(&first, b"player changes").unwrap();
+        store
+            .apply(
+                profile.id,
+                &InstallPlan {
+                    revision: "world-two".into(),
+                    packages: vec![world_archive_version(temp.path(), "demo_world", "1.1.0")],
+                },
+            )
+            .unwrap();
+        store
+            .materialize_game_folder(profile.id, "world-two")
+            .unwrap();
+        assert_eq!(fs::read(first).unwrap(), b"player changes");
+        assert!(game.join("worlds/Demo-world-2/regions/0_0.bin").is_file());
     }
 
     #[test]
@@ -4863,6 +5152,7 @@ mod tests {
         fs::write(source.join("worlds/home/world.json"), b"{}").unwrap();
         fs::create_dir_all(source.join("config")).unwrap();
         fs::write(source.join("config/settings.toml"), b"volume = 0.5").unwrap();
+        let canonical_source = fs::canonicalize(&source).unwrap();
 
         let analysis = store.analyze_existing_game(&source).unwrap();
         assert_eq!(analysis.suggested_name, "My existing game");
@@ -4876,17 +5166,20 @@ mod tests {
             .attach_existing_game(&source, "Imported", "0.31.4")
             .unwrap();
         let game = store.game_directory(profile.id).unwrap();
-        assert_eq!(game, fs::canonicalize(&source).unwrap());
+        assert_eq!(game, canonical_source);
         assert!(game.join("content/local_mod/package.json").is_file());
         assert!(game.join("worlds/home/world.json").is_file());
         assert!(game.join("config/settings.toml").is_file());
         assert!(source.join("content/local_mod/package.json").is_file());
 
         assert!(store.list_runtimes().unwrap().is_empty());
-        assert_eq!(profile.external_runtime.unwrap().path, source);
+        assert_eq!(profile.external_runtime.unwrap().path, canonical_source);
         let launch = store.launch_spec(profile.id, "0.31.4").unwrap();
-        assert_eq!(launch.executable, source.join("VoxelCore"));
-        assert_eq!(launch.arguments.last().map(String::as_str), source.to_str());
+        assert_eq!(launch.executable, canonical_source.join("VoxelCore"));
+        assert_eq!(
+            launch.arguments.last().map(String::as_str),
+            canonical_source.to_str()
+        );
         assert_eq!(
             store.profile(profile.id).unwrap().manual_packages,
             ["local_mod"]
@@ -4910,7 +5203,10 @@ mod tests {
             reconnected.external_game_path,
             Some(fs::canonicalize(&moved).unwrap())
         );
-        assert_eq!(reconnected.external_runtime.unwrap().path, moved);
+        assert_eq!(
+            reconnected.external_runtime.unwrap().path,
+            fs::canonicalize(&moved).unwrap()
+        );
         store.delete_profile(profile.id).unwrap();
         assert!(moved.join("worlds/home/world.json").is_file());
     }
