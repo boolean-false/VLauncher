@@ -70,7 +70,11 @@ type CatalogItem = {
   voxelWorld?: VoxelWorldMod;
 };
 type VoxelWorldInstallPreview = {
-  package_count: number;
+  packages: {
+    title: string;
+    version: string;
+    selected: boolean;
+  }[];
   incompatibilities: {
     title: string;
     version: string;
@@ -800,7 +804,6 @@ function VoxelWorldProjectView({
     void openUrl(`https://voxelworld.ru/mods/${encodeURIComponent(slug)}`);
   const applyInstall = (allowIncompatible: boolean) => {
     if (!project || !profile || !selectedVersion || !versionDetail) return;
-    setCompatibilityWarning(undefined);
     void run(`Установка ${project.title}`, async (stage) => {
       stage("Загружаем и проверяем архивы VoxelWorld…");
       await invoke("install_voxelworld_mod", {
@@ -829,8 +832,7 @@ function VoxelWorldProjectView({
           versionId: selectedVersion.id,
         },
       );
-      if (preview.incompatibilities.length) setCompatibilityWarning(preview);
-      else applyInstall(false);
+      setCompatibilityWarning(preview);
     } catch (error) {
       setCompatibilityError(friendlyError(error));
     } finally {
@@ -1016,30 +1018,45 @@ function VoxelWorldProjectView({
     </ProjectSurface>
     {compatibilityWarning && profile && project && (
       <Modal
-        title="Несовместимые зависимости"
+        title={`Установка ${project.title}`}
         close={() => setCompatibilityWarning(undefined)}
         busy={busy}
       >
         <p>
-          Для установки <strong>{project.title}</strong> автоматически выбран набор из{" "}
-          {compatibilityWarning.package_count} пакетов. Некоторые версии не заявляют поддержку VoxelCore {profileEngine}.
+          Профиль <strong>{profile.name}</strong> · VoxelCore {profileEngine}
         </p>
-        <div className="compatibility-issues">
-          {compatibilityWarning.incompatibilities.map((issue) => (
-            <div key={`${issue.chain.join(":")}:${issue.version}`}>
-              <strong>{issue.title} · {issue.version}</strong>
-              <small>{issue.chain.join(" → ")}</small>
-              <span>Поддерживает VoxelCore: {issue.supported_voxelcore.join(", ")}</span>
+        <div className="install-changes">
+          {compatibilityWarning.packages.map((item, index) => (
+            <div key={`${item.title}:${item.version}:${index}`}>
+              <div>
+                <strong>{item.title}</strong>
+                <small>{item.selected ? "Выбранный пакет" : "Зависимость"} · {item.version}</small>
+              </div>
+              <span className="muted">Добавить</span>
             </div>
           ))}
         </div>
-        <div className="notice">
-          Профиль пока не изменён. При продолжении эти версии могут не запуститься или повредить данные мира.
-        </div>
+        {!!compatibilityWarning.incompatibilities.length && (
+          <>
+            <div className="compatibility-issues">
+              {compatibilityWarning.incompatibilities.map((issue) => (
+                <div key={`${issue.chain.join(":")}:${issue.version}`}>
+                  <strong>{issue.title} · {issue.version}</strong>
+                  <small>{issue.chain.join(" → ")}</small>
+                  <span>Поддерживает VoxelCore: {issue.supported_voxelcore.join(", ")}</span>
+                </div>
+              ))}
+            </div>
+            <div className="notice">
+              Некоторые версии не заявляют поддержку выбранного VoxelCore. Они могут не запуститься или повредить данные мира.
+            </div>
+          </>
+        )}
+        {busy && <div className="notice">Загружаем и проверяем архивы VoxelWorld… Профиль изменится только после успешной проверки всего набора.</div>}
         <div className="modal-actions">
           <button disabled={busy} onClick={() => setCompatibilityWarning(undefined)}>Отмена</button>
-          <button className="primary" disabled={busy} onClick={() => applyInstall(true)}>
-            Установить всё равно
+          <button className="primary" disabled={busy} onClick={() => applyInstall(compatibilityWarning.incompatibilities.length > 0)}>
+            {busy ? "Устанавливаем…" : compatibilityWarning.incompatibilities.length ? "Установить всё равно" : "Установить"}
           </button>
         </div>
       </Modal>
@@ -1640,6 +1657,11 @@ export function InstallPreview({
           Установка не завершена. Подробности в журнале. Можно повторить
           попытку.
         </ErrorNotice>
+      )}
+      {busy && (
+        <div className="notice">
+          Загружаем и проверяем архивы… Профиль изменится только после успешной проверки всего набора.
+        </div>
       )}
       <div className="modal-actions">
         <button disabled={busy} onClick={close}>

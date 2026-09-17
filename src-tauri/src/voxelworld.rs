@@ -109,8 +109,15 @@ pub(crate) struct VoxelWorldCompatibilityIssue {
 }
 
 #[derive(Serialize)]
+pub(crate) struct VoxelWorldInstallPreviewItem {
+    title: String,
+    version: String,
+    selected: bool,
+}
+
+#[derive(Serialize)]
 pub(crate) struct VoxelWorldInstallPreview {
-    package_count: usize,
+    packages: Vec<VoxelWorldInstallPreviewItem>,
     incompatibilities: Vec<VoxelWorldCompatibilityIssue>,
 }
 
@@ -559,8 +566,17 @@ pub(crate) async fn preview_voxelworld_install(
             return Err("VoxelWorld вернул другую версию проекта".to_string());
         }
         let plan = collect_install_plan(&client, root, slug, &engine)?;
+        let packages = plan
+            .versions
+            .iter()
+            .map(|(version, _)| VoxelWorldInstallPreviewItem {
+                title: version.project.title.clone(),
+                version: version.version_number.clone(),
+                selected: version.project.id == project_id && version.id == version_id,
+            })
+            .collect();
         Ok(VoxelWorldInstallPreview {
-            package_count: plan.versions.len(),
+            packages,
             incompatibilities: plan.incompatibilities,
         })
     })

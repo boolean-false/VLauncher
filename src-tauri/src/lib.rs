@@ -673,9 +673,19 @@ async fn open_profile_folder(
     #[cfg(not(target_os = "linux"))]
     use tauri_plugin_opener::OpenerExt;
     let id = profile_id.parse().map_err(|_| "invalid profile id")?;
-    let mut path = profile_store(&app)?
-        .game_directory(id)
-        .map_err(|e| e.to_string())?;
+    let store = profile_store(&app)?;
+    let external = store
+        .list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or("profile does not exist")?
+        .external_game_path
+        .is_some();
+    let mut path = store.game_directory(id).map_err(|e| e.to_string())?;
+    if external && !path.is_dir() {
+        return Err("Подключённая папка игры недоступна. Выберите её новое расположение в управлении профилем.".into());
+    }
     match section.as_str() {
         "game" => {}
         "worlds" => path.push("worlds"),
@@ -1153,6 +1163,24 @@ async fn attach_existing_game(
     tauri::async_runtime::spawn_blocking(move || {
         store
             .attach_existing_game(path, &name, &version)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn reconnect_existing_game(
+    app: tauri::AppHandle,
+    profile_id: String,
+    path: String,
+) -> Result<Profile, String> {
+    ensure_stopped(&app, &profile_id)?;
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .reconnect_existing_game(id, path)
             .map_err(|error| error.to_string())
     })
     .await
@@ -1791,6 +1819,7 @@ pub fn run() {
             import_runtime,
             analyze_existing_game,
             attach_existing_game,
+            reconnect_existing_game,
             remove_runtime,
             cache_status,
             clear_cache,

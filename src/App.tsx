@@ -848,8 +848,13 @@ export default function App() {
                     </section>
                     {profile.problem && (
                       <ErrorNotice>
-                        <strong>Профиль требует восстановления</strong>
-                        <p>Его lockfile повреждён или отсутствует. Остальные профили доступны.</p>
+                        <strong>{profile.external_game_path && profile.problem === "Подключённая папка игры недоступна" ? "Подключённая папка недоступна" : "Профиль требует восстановления"}</strong>
+                        <p>{profile.external_game_path && profile.problem === "Подключённая папка игры недоступна"
+                          ? "Игра могла быть перемещена или диск сейчас не подключён. Укажите новое расположение в управлении профилем."
+                          : "Данные профиля повреждены или отсутствуют. Остальные профили доступны."}</p>
+                        {profile.external_game_path && profile.problem === "Подключённая папка игры недоступна" && (
+                          <button onClick={() => setTab("manage")}>Изменить путь…</button>
+                        )}
                         <details>
                           <summary>Технические подробности</summary>
                           {profile.problem}
@@ -1831,6 +1836,38 @@ function ProfileSettings({
           </button>
         </form>}
       </section>
+      {profile.external_game_path && (
+        <section className="setting-row">
+          <div className="connected-folder-details">
+            <h3>Подключённая папка</h3>
+            <p className="selectable" title={profile.external_game_path}>{profile.external_game_path}</p>
+            <small className={profile.problem === "Подключённая папка игры недоступна" ? "danger-text" : "muted"}>
+              {profile.problem === "Подключённая папка игры недоступна" ? "Папка недоступна" : "Подключена напрямую · данные не копируются"}
+            </small>
+          </div>
+          <div className="actions">
+            <button
+              disabled={busy || profile.problem === "Подключённая папка игры недоступна"}
+              onClick={() => void run("Открытие папки", async () => invoke("open_profile_folder", { profileId: profile.id, section: "game" }))}
+            >
+              Открыть
+            </button>
+            <button
+              disabled={busy}
+              onClick={() => void (async () => {
+                const path = await open({ directory: true, multiple: false, title: "Выберите папку игры" });
+                if (typeof path !== "string") return;
+                await run("Переподключение папки", async () => {
+                  await invoke("reconnect_existing_game", { profileId: profile.id, path });
+                  await refresh();
+                });
+              })()}
+            >
+              Изменить путь…
+            </button>
+          </div>
+        </section>
+      )}
       <section className="setting-row">
         <div>
           <h3>Место на диске</h3>

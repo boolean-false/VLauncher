@@ -490,6 +490,20 @@ main>div[hidden] {
   flex-wrap: nowrap;
 }
 
+.connected-folder-details {
+  min-width: 0;
+}
+
+.connected-folder-details p {
+  max-width: 520px;
+  overflow-wrap: anywhere;
+}
+
+.connected-folder-details small {
+  display: block;
+  margin-top: 7px;
+}
+
 .vlauncher-settings {
   align-items: flex-start;
 }

@@ -2036,6 +2036,7 @@ impl ProfileStore {
         let data_root = existing_game_data_root(&source);
         let data_root =
             fs::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
+        ensure_directory_writable(&data_root)?;
         let duplicate = self.with_database(|database| {
             database.query_row(
                 "SELECT EXISTS(SELECT 1 FROM profiles WHERE external_game_path = ?1)",
@@ -2114,6 +2115,75 @@ impl ProfileStore {
             }
         }
         self.profile(profile.id)
+    }
+
+    pub fn reconnect_existing_game(
+        &self,
+        profile_id: Uuid,
+        source: impl AsRef<Path>,
+    ) -> Result<Profile, PackageProblem> {
+        let profile = self.profile(profile_id)?;
+        if profile.external_game_path.is_none() {
+            return invalid("profile is not connected to an external game directory");
+        }
+        let source =
+            fs::canonicalize(source.as_ref()).map_err(|error| io_error(source.as_ref(), error))?;
+        let analysis = analyze_existing_game_directory(&source)?;
+        if analysis.runtime_kind == ExistingRuntimeKind::None
+            && analysis.content_count == 0
+            && analysis.world_count == 0
+            && !analysis.has_config
+        {
+            return invalid("directory does not contain VoxelCore or profile data");
+        }
+        let version = profile
+            .voxelcore_version
+            .as_deref()
+            .ok_or_else(|| PackageProblem::Invalid("profile has no VoxelCore version".into()))?;
+        if analysis
+            .runtime_version
+            .as_deref()
+            .is_some_and(|detected| detected != version)
+        {
+            return invalid("selected VoxelCore version does not match the profile");
+        }
+        let data_root = existing_game_data_root(&source);
+        let data_root =
+            fs::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
+        ensure_directory_writable(&data_root)?;
+        let duplicate = self.with_database(|database| {
+            database.query_row(
+                "SELECT EXISTS(SELECT 1 FROM profiles WHERE external_game_path = ?1 AND id != ?2)",
+                params![data_root.to_string_lossy().as_ref(), profile_id.to_string()],
+                |row| row.get::<_, bool>(0),
+            )
+        })?;
+        if duplicate {
+            return invalid("this game directory is already attached to another profile");
+        }
+
+        let external_runtime = if profile.external_runtime.is_some() {
+            Some(external_runtime_for(&source, &analysis)?)
+        } else {
+            None
+        };
+        let runtime_json = external_runtime
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
+        self.with_database(|database| {
+            database.execute(
+                "UPDATE profiles SET external_game_path = ?1, external_runtime_json = ?2 WHERE id = ?3",
+                params![
+                    data_root.to_string_lossy().as_ref(),
+                    runtime_json,
+                    profile_id.to_string()
+                ],
+            )?;
+            Ok(())
+        })?;
+        self.profile(profile_id)
     }
 
     pub fn import_runtime(
@@ -3121,6 +3191,52 @@ fn analyze_existing_game_directory(source: &Path) -> Result<ExistingGameAnalysis
         world_count: immediate_directory_count(&worlds)?,
         has_config: config.is_dir(),
     })
+}
+
+fn external_runtime_for(
+    source: &Path,
+    analysis: &ExistingGameAnalysis,
+) -> Result<ExternalRuntime, PackageProblem> {
+    match analysis.runtime_kind {
+        ExistingRuntimeKind::Manifest => {
+            let path = source.join("runtime.json");
+            let manifest: RuntimeManifest =
+                serde_json::from_slice(&fs::read(&path).map_err(|error| io_error(&path, error))?)
+                    .map_err(|error| {
+                    PackageProblem::Invalid(format!("invalid runtime.json: {error}"))
+                })?;
+            Ok(ExternalRuntime {
+                path: source.to_owned(),
+                executable: manifest.executable,
+                resources: manifest.resources,
+            })
+        }
+        ExistingRuntimeKind::Detected => {
+            let (executable, resources) =
+                crate::official::detect_runtime_layout(source).map_err(PackageProblem::Invalid)?;
+            Ok(ExternalRuntime {
+                path: source.to_owned(),
+                executable,
+                resources,
+            })
+        }
+        ExistingRuntimeKind::None => invalid(
+            "the selected directory does not contain the local VoxelCore used by this profile",
+        ),
+    }
+}
+
+fn ensure_directory_writable(path: &Path) -> Result<(), PackageProblem> {
+    let probe = path.join(format!(".vlauncher-write-test-{}", Uuid::new_v4()));
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|error| io_error(path, error));
+    match result {
+        Ok(_) => fs::remove_file(&probe).map_err(|error| io_error(&probe, error)),
+        Err(error) => Err(error),
+    }
 }
 
 fn detect_voxelcore_version(root: &Path, executable: &Path) -> Option<String> {
@@ -4775,8 +4891,28 @@ mod tests {
             store.profile(profile.id).unwrap().manual_packages,
             ["local_mod"]
         );
+
+        let moved = temp.path().join("Moved game");
+        fs::rename(&source, &moved).unwrap();
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|item| item.id == profile.id)
+                .unwrap()
+                .problem
+                .as_deref(),
+            Some("Подключённая папка игры недоступна")
+        );
+        let reconnected = store.reconnect_existing_game(profile.id, &moved).unwrap();
+        assert_eq!(
+            reconnected.external_game_path,
+            Some(fs::canonicalize(&moved).unwrap())
+        );
+        assert_eq!(reconnected.external_runtime.unwrap().path, moved);
         store.delete_profile(profile.id).unwrap();
-        assert!(source.join("worlds/home/world.json").is_file());
+        assert!(moved.join("worlds/home/world.json").is_file());
     }
 
     #[test]
