@@ -33,6 +33,7 @@ import {
 import { Empty, ErrorNotice, Icon, Modal } from "./ui";
 import { useJointCatalogEnabled } from "../experimental";
 import { catalogProjectKeys } from "../catalogIdentity";
+import { isVoxelCoreBuiltin } from "../builtinContent";
 import {
   mergeModCategories,
   useAllRegistryProjects,
@@ -1370,13 +1371,17 @@ export function ProjectView({
                   {release.dependencies.map((dependency) => (
                     <div key={`${dependency.kind}-${dependency.id}`} className="dependency-card">
                       <div className="dependency-card-heading">
-                        <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: dependency.id, requirement: dependency.requirement, relation: dependency.kind, parent: project.title, engine: engineVersion(profile) })}>
-                          {dependency.id}
-                        </button>
+                        {isVoxelCoreBuiltin(dependency.id) ? (
+                          <strong>{dependency.id}</strong>
+                        ) : (
+                          <button className="dependency-project-link" onClick={() => inspect({ source: "vspace", slug: dependency.id, requirement: dependency.requirement, relation: dependency.kind, parent: project.title, engine: engineVersion(profile) })}>
+                            {dependency.id}
+                          </button>
+                        )}
                         <span>{dependencyKindLabel(dependency.kind)}</span>
                       </div>
                       <footer>
-                        <span>VSpace</span>
+                        <span>{isVoxelCoreBuiltin(dependency.id) ? "VoxelCore · встроенный пакет" : "VSpace"}</span>
                         <code>{dependency.requirement}</code>
                       </footer>
                     </div>

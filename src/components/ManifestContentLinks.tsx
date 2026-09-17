@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useContentInspector } from "./ContentInspector";
+import { isVoxelCoreBuiltin } from "../builtinContent";
 
 // Accepts local and moderation manifests without assuming that the project is published.
 export function ManifestContentLinks({
@@ -23,9 +24,10 @@ export function ManifestContentLinks({
         if (!item || typeof item !== "object") return [];
         const value = item as Record<string, unknown>;
         if (typeof value.id !== "string") return [];
+        const source = typeof value.source === "string" ? value.source : "vspace";
         return [
           {
-            source: typeof value.source === "string" ? value.source : "vspace",
+            source,
             slug: typeof value.slug === "string" ? value.slug : value.id,
             title: typeof value.title === "string" ? value.title : value.id,
             version:
@@ -45,6 +47,9 @@ export function ManifestContentLinks({
                   ? value.kind
                   : "required",
             parent,
+            builtin:
+              group !== "external_packages" &&
+              isVoxelCoreBuiltin(value.id, source),
           },
         ];
       });
@@ -63,20 +68,33 @@ export function ManifestContentLinks({
 
   const list = (
     <div className={compact ? "manifest-content-scroll" : undefined}>
-      {visibleRows.map((ref, index) => (
-        <button
-          key={`${ref.source}:${ref.slug}:${index}`}
-          className="inspector-dependency"
-          onClick={() => inspect(ref)}
-        >
-          <strong>{ref.title}</strong>
-          <span>{ref.version || ref.requirement}</span>
-          <small>
-            {ref.source} ·{" "}
-            {ref.relation === "conflict" ? "Конфликт" : "Связанный пакет"}
-          </small>
-        </button>
-      ))}
+      {visibleRows.map((ref, index) =>
+        ref.builtin ? (
+          <div
+            key={`${ref.source}:${ref.slug}:${index}`}
+            className="inspector-dependency builtin-dependency"
+          >
+            <strong>{ref.title}</strong>
+            <span>{ref.version || ref.requirement}</span>
+            <small>
+              VoxelCore · {ref.relation === "conflict" ? "Конфликт" : "Встроенный пакет"}
+            </small>
+          </div>
+        ) : (
+          <button
+            key={`${ref.source}:${ref.slug}:${index}`}
+            className="inspector-dependency"
+            onClick={() => inspect(ref)}
+          >
+            <strong>{ref.title}</strong>
+            <span>{ref.version || ref.requirement}</span>
+            <small>
+              {ref.source} ·{" "}
+              {ref.relation === "conflict" ? "Конфликт" : "Связанный пакет"}
+            </small>
+          </button>
+        ),
+      )}
       {!visibleRows.length && (
         <p className="manifest-content-empty">Ничего не найдено</p>
       )}

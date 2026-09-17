@@ -16,6 +16,7 @@ import { Markdown } from "./Markdown";
 import { Select } from "./Select";
 import { contentIdentity as identity, visitContent } from "../contentHistory";
 import { PrivateImage } from "./PrivateImage";
+import { isVoxelCoreBuiltin } from "../builtinContent";
 
 type Inspect = (ref: ContentRef) => void;
 const InspectorContext = createContext<Inspect>(() => {});
@@ -109,11 +110,12 @@ function InspectorEntry({
   const [retry, setRetry] = useState(0);
   const [version, setVersion] = useState<string>();
   const heading = useRef<HTMLHeadingElement>(null);
+  const builtin = isVoxelCoreBuiltin(target.slug, target.source);
   useEffect(() => {
     let alive = true;
     setData(undefined);
     setError("");
-    if (source)
+    if (source && !builtin)
       void source.load(version ? { ...target, version } : target).then(
         (value) => {
           if (alive) setData(value);
@@ -125,7 +127,7 @@ function InspectorEntry({
     return () => {
       alive = false;
     };
-  }, [source, target, retry, version]);
+  }, [builtin, source, target, retry, version]);
   useEffect(() => {
     if (!hidden) heading.current?.focus({ preventScroll: true });
   }, [hidden]);
@@ -138,7 +140,7 @@ function InspectorEntry({
             {data?.title || target.title || target.slug}
           </h2>
           <p className="muted">
-            {source?.label || target.source} ·{" "}
+            {builtin ? "VoxelCore" : source?.label || target.source} ·{" "}
             {version ||
               target.version ||
               data?.version ||
@@ -161,7 +163,11 @@ function InspectorEntry({
         </p>
       )}
       <div className="content-inspector-body">
-        {!source ? (
+        {builtin ? (
+          <p className="notice">
+            base входит в VoxelCore и не является отдельным проектом каталога.
+          </p>
+        ) : !source ? (
           <p className="notice">
             {target.source === "local"
               ? "Локальный пакет. Он добавлен вручную и не связан с опубликованным проектом каталога."
@@ -205,17 +211,28 @@ function InspectorEntry({
                   : "Нет данных для точной версии."}
               </p>
             )}
-            {data.dependencies.map((dep) => (
-              <button
-                className="inspector-dependency"
-                key={identity(dep)}
-                onClick={() => open(dep)}
-              >
-                <strong>{dep.title || dep.slug}</strong>
-                <span>{dep.version || dep.requirement}</span>
-                <small>{relationLabel[dep.relation || "required"]}</small>
-              </button>
-            ))}
+            {data.dependencies.map((dep) =>
+              isVoxelCoreBuiltin(dep.slug, dep.source) ? (
+                <div
+                  className="inspector-dependency builtin-dependency"
+                  key={identity(dep)}
+                >
+                  <strong>{dep.title || dep.slug}</strong>
+                  <span>{dep.version || dep.requirement}</span>
+                  <small>VoxelCore · Встроенный пакет</small>
+                </div>
+              ) : (
+                <button
+                  className="inspector-dependency"
+                  key={identity(dep)}
+                  onClick={() => open(dep)}
+                >
+                  <strong>{dep.title || dep.slug}</strong>
+                  <span>{dep.version || dep.requirement}</span>
+                  <small>{relationLabel[dep.relation || "required"]}</small>
+                </button>
+              ),
+            )}
           </>
         )}
       </div>

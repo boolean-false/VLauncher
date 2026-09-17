@@ -1139,6 +1139,7 @@ main>div[hidden] {
 .content-inspector-body h3 { margin: 20px 0 12px; }
 .inspector-dependency { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; text-align: left; gap: 6px; margin: 6px 0; white-space: normal; }
 .inspector-dependency small { grid-column: 1 / -1; color: var(--muted); }
+.inspector-dependency.builtin-dependency { min-height: 36px; padding: 7px 13px; border: 1px solid var(--line); background: var(--panel); }
 
 .quick-project-summary>div {
   min-width: 0;
