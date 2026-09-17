@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+type MetricKind = "download" | "install" | "view";
 type Data = {
   total: number;
   daily: { day: string; downloads: number }[];
@@ -12,7 +13,7 @@ type Data = {
   events: { day: string; kind: string; count: number }[];
   started_at: string;
 };
-const kinds: Record<string, string> = {
+const kinds: Record<MetricKind, string> = {
   download: "Скачивания",
   install: "Установки",
   view: "Просмотры",
@@ -23,6 +24,38 @@ const sources: Record<string, string> = {
   direct: "Прямая ссылка",
   unknown: "Неизвестно",
 };
+
+const formatCount = (value: number | null | undefined) =>
+  Number.isFinite(value) ? Math.max(0, value!).toLocaleString("ru") : "—";
+
+const todayUtc = () => new Date().toISOString().slice(0, 10);
+
+const daysEndingToday = (days: number) =>
+  Array.from({ length: days }, (_, index) => {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - (days - index - 1));
+    return date.toISOString().slice(0, 10);
+  });
+
+function metricByDay(data: Data | null, kind: MetricKind, days: number) {
+  if (!data) return [];
+  const counts = new Map(daysEndingToday(days).map((day) => [day, 0]));
+  for (const item of data.daily ?? []) {
+    if (counts.has(item.day))
+      counts.set(item.day, Math.max(0, item.downloads || 0));
+  }
+  if (kind !== "download") {
+    for (const day of counts.keys()) counts.set(day, 0);
+    for (const item of data.events ?? []) {
+      if (item.kind !== kind || !counts.has(item.day)) continue;
+      counts.set(item.day, (counts.get(item.day) ?? 0) + Math.max(0, item.count || 0));
+    }
+  }
+  return [...counts]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([day, count]) => ({ day, count }));
+}
+
 export function ContentAnalytics({
   slug,
   request,
@@ -31,7 +64,7 @@ export function ContentAnalytics({
   request: <T>(path: string, init?: RequestInit) => Promise<T>;
 }) {
   const [days, setDays] = useState(30);
-  const [kind, setKind] = useState("download");
+  const [kind, setKind] = useState<MetricKind>("download");
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -76,15 +109,9 @@ export function ContentAnalytics({
       live = false;
     };
   }, [slug, days, revision]);
-  const daily =
-    data?.daily.map((d) => ({
-      day: d.day,
-      count:
-        kind === "download"
-          ? d.downloads
-          : (data.events?.find((e) => e.day === d.day && e.kind === kind)
-              ?.count ?? 0),
-    })) ?? [];
+  const daily = metricByDay(data, kind, days);
+  const periodTotal = daily.reduce((total, day) => total + day.count, 0);
+  const today = daily.find((day) => day.day === todayUtc())?.count ?? 0;
   const maximum = Math.max(1, ...daily.map((d) => d.count));
   return (
     <section className="team-settings">
@@ -111,7 +138,11 @@ export function ContentAnalytics({
         </label>
         <label>
           Показатель
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+          <select
+            aria-label="Показатель"
+            value={kind}
+            onChange={(e) => setKind(e.target.value as MetricKind)}
+          >
             {Object.entries(kinds).map(([id, name]) => (
               <option value={id} key={id}>
                 {name}
@@ -144,21 +175,19 @@ export function ContentAnalytics({
             {new Date(data.started_at).toLocaleDateString("ru")}. Более ранние
             скачивания считались по началу запроса. Даты - UTC.
           </p>
-          <div className="workshop-stats">
+          <div className="workshop-stats analytics-stats">
             <div>
-              <strong>
-                {daily.reduce((n, d) => n + d.count, 0).toLocaleString("ru")}
-              </strong>
+              <strong>{formatCount(periodTotal)}</strong>
               <span>
                 {kinds[kind]} за {days} дней
               </span>
             </div>
             <div>
-              <strong>{daily[daily.length - 1]?.count ?? 0}</strong>
-              <span>Сегодня</span>
+              <strong>{formatCount(today)}</strong>
+              <span>{kinds[kind]} сегодня · UTC</span>
             </div>
             <div>
-              <strong>{data.total.toLocaleString("ru")}</strong>
+              <strong>{formatCount(data.total)}</strong>
               <span>Скачивания за всё время</span>
             </div>
           </div>

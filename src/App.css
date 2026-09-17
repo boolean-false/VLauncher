@@ -2641,6 +2641,37 @@ select {
   font-size: 12px;
 }
 
+@media (max-width: 620px) {
+  .workshop-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    padding: 0;
+  }
+
+  .workshop-stats > div,
+  .workshop-stats > div:first-child,
+  .workshop-stats > div:last-child {
+    min-width: 0;
+    padding: 16px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .workshop-stats > div:nth-child(even) {
+    border-right: 0;
+  }
+
+  .workshop-stats > div:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    border-right: 0;
+  }
+
+  .workshop-stats > div:nth-child(n + 3) {
+    border-bottom: 0;
+  }
+}
+
 .workshop-search {
   max-width: 380px;
   width: 100%;
