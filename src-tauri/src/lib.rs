@@ -23,9 +23,10 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use vlauncher_core::{
-    CacheStatus, DeliveryManifest, InstallPlan, InstalledRuntime, PackageKind, PackageManifest,
-    PreparedArtifact, Profile, ProfileDefinition, ProfileStorage, ProfileStore, RemoteInstallPlan,
-    SignedRemoteInstallPlan, UploadReceipt, prepare_package, upload_package_with_progress,
+    CacheStatus, DeliveryManifest, ExistingGameAnalysis, InstallPlan, InstalledRuntime,
+    PackageKind, PackageManifest, PreparedArtifact, Profile, ProfileDefinition, ProfileStorage,
+    ProfileStore, RemoteInstallPlan, SignedRemoteInstallPlan, UploadReceipt, prepare_package,
+    upload_package_with_progress,
 };
 
 #[cfg(windows)]
@@ -1127,6 +1128,38 @@ fn import_runtime(app: tauri::AppHandle, path: String) -> Result<InstalledRuntim
 }
 
 #[tauri::command]
+async fn analyze_existing_game(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ExistingGameAnalysis, String> {
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .analyze_existing_game(path)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn attach_existing_game(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+    version: String,
+) -> Result<Profile, String> {
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .attach_existing_game(path, &name, &version)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn cache_status(app: tauri::AppHandle) -> Result<CacheStatus, String> {
     profile_store(&app)?
         .cache_status()
@@ -1756,6 +1789,8 @@ pub fn run() {
             list_official_runtimes,
             install_official_runtime,
             import_runtime,
+            analyze_existing_game,
+            attach_existing_game,
             remove_runtime,
             cache_status,
             clear_cache,

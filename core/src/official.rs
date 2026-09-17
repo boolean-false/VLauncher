@@ -209,7 +209,7 @@ pub(crate) fn install_archive(
     extract_zip(&archive, &prepared)?;
     #[cfg(target_os = "macos")]
     extract_dmg(&archive, &prepared, &stage)?;
-    let (executable, resources) = find_layout(&prepared)?;
+    let (executable, resources) = detect_runtime_layout(&prepared)?;
     #[cfg(target_os = "macos")]
     ensure_macos_arm64_executable(&prepared.join(&executable))?;
     let metadata = RuntimeManifest {
@@ -383,7 +383,9 @@ pub(crate) fn extract_zip(archive: &Path, destination: &Path) -> Result<(), Stri
     Ok(())
 }
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
-fn find_layout(root: &Path) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+pub fn detect_runtime_layout(
+    root: &Path,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     if root.join("AppRun").is_file() {
         for res in [
             "usr/share/VoxelCore/res",
@@ -395,7 +397,7 @@ fn find_layout(root: &Path) -> Result<(std::path::PathBuf, std::path::PathBuf), 
             }
         }
     }
-    for executable in ["VoxelCore", "VoxelEngine"] {
+    for executable in ["VoxelCore", "VoxelEngine", "voxelcore", "voxelengine"] {
         if root.join(executable).is_file() && root.join("res").is_dir() {
             return Ok((executable.into(), "res".into()));
         }
@@ -455,7 +457,7 @@ mod tests {
         header.extend_from_slice(&0x0100_000cu32.to_le_bytes());
         fs::write(&executable, &header).unwrap();
         assert_eq!(
-            find_layout(directory.path()).unwrap(),
+            detect_runtime_layout(directory.path()).unwrap(),
             ("VoxelEngine".into(), "res".into())
         );
         ensure_macos_arm64_executable(&executable).unwrap();
@@ -493,7 +495,7 @@ mod tests {
         drop(zip.finish().unwrap());
         let prepared = dir.path().join("Распакованная игра с пробелами");
         extract_zip(&path, &prepared).unwrap();
-        let (executable, resources) = find_layout(&prepared).unwrap();
+        let (executable, resources) = detect_runtime_layout(&prepared).unwrap();
         assert_eq!(executable, Path::new("VoxelCore win64/voxelcore.exe"));
         assert_eq!(resources, Path::new("VoxelCore win64/res"));
         let metadata = RuntimeManifest {

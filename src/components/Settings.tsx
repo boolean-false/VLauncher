@@ -343,8 +343,8 @@ export function Settings({
             </p>
           )}
           <details className="local-runtime-import">
-            <summary>Подключить свою сборку</summary>
-            <p>Выберите папку с runtime.json, исполняемым файлом и ресурсами игры.</p>
+            <summary>Добавить локальную версию VoxelCore</summary>
+            <p>Только движок, без профиля, миров и контента. Подготовленная папка с runtime.json будет скопирована в хранилище VLauncher.</p>
             <button
               disabled={busy}
               onClick={() =>
@@ -356,7 +356,7 @@ export function Settings({
                 })
               }
             >
-              Импортировать папку…
+              Добавить среду VoxelCore…
             </button>
           </details>
         </div>}

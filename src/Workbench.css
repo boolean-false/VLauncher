@@ -138,6 +138,16 @@
   color: var(--muted);
   flex-wrap: wrap;
 }
+.library-page .attached-profile-path {
+  display: block;
+  max-width: min(640px, 55vw);
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .library-page .profile-modpack-link {
   display: block;
   width: fit-content;

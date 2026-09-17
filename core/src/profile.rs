@@ -1,11 +1,18 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{Read, Seek, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
     sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -46,6 +53,10 @@ pub struct Profile {
     pub created_at: i64,
     #[serde(default)]
     pub problem: Option<String>,
+    #[serde(default)]
+    pub external_game_path: Option<PathBuf>,
+    #[serde(default)]
+    pub external_runtime: Option<ExternalRuntime>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,6 +170,31 @@ pub struct InstalledRuntime {
     pub platform: String,
     pub architecture: String,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExistingRuntimeKind {
+    Manifest,
+    Detected,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExistingGameAnalysis {
+    pub suggested_name: String,
+    pub runtime_kind: ExistingRuntimeKind,
+    pub runtime_version: Option<String>,
+    pub content_count: u64,
+    pub world_count: u64,
+    pub has_config: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalRuntime {
+    pub path: PathBuf,
+    pub executable: PathBuf,
+    pub resources: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -333,6 +369,19 @@ impl ProfileStore {
                 [],
             );
             let _ = database.execute("ALTER TABLE profiles ADD COLUMN folder_name TEXT", []);
+            let _ = database.execute(
+                "ALTER TABLE profiles ADD COLUMN external_game_path TEXT",
+                [],
+            );
+            let _ = database.execute(
+                "ALTER TABLE profiles ADD COLUMN external_runtime_json TEXT",
+                [],
+            );
+            database.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS profiles_external_game_path
+                 ON profiles(external_game_path) WHERE external_game_path IS NOT NULL",
+                [],
+            )?;
             Ok(())
         })?;
         let folders = store.with_database(|database| {
@@ -376,6 +425,8 @@ impl ProfileStore {
             manual_packages: Vec::new(),
             created_at: timestamp(),
             problem: None,
+            external_game_path: None,
+            external_runtime: None,
         };
         let profile_path = self.root.join("profiles").join(&folder_name);
         fs::create_dir(&profile_path).map_err(|source| io_error(&profile_path, source))?;
@@ -648,10 +699,16 @@ impl ProfileStore {
     }
 
     pub fn game_directory(&self, id: Uuid) -> Result<PathBuf, PackageProblem> {
-        if !self.list()?.iter().any(|p| p.id == id) {
-            return invalid("profile does not exist");
-        }
-        Ok(self.profile_path(id).join("game"))
+        let external = self.with_database(|database| {
+            database.query_row(
+                "SELECT external_game_path FROM profiles WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+        })?;
+        Ok(external
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.profile_path(id).join("game")))
     }
 
     pub fn export_world(
@@ -666,8 +723,8 @@ impl ProfileStore {
             return invalid("world folder must be a single directory name");
         }
         let source = self
-            .profile_path(profile_id)
-            .join("game/worlds")
+            .game_directory(profile_id)?
+            .join("worlds")
             .join(relative);
         if !source.join("world.json").is_file() {
             return invalid("world does not contain world.json");
@@ -724,8 +781,8 @@ impl ProfileStore {
     ) -> Result<PathBuf, PackageProblem> {
         self.profile(profile_id)?;
         let archive_path = archive_path.as_ref();
-        let profile = self.profile_path(profile_id);
-        let staging = profile.join(format!(".world-import-{}", Uuid::new_v4()));
+        let game = self.game_directory(profile_id)?;
+        let staging = game.join(format!(".vlauncher-world-import-{}", Uuid::new_v4()));
         fs::create_dir_all(&staging).map_err(|source| io_error(&staging, source))?;
         let result = (|| {
             let file =
@@ -762,7 +819,7 @@ impl ProfileStore {
             } else {
                 base
             };
-            let worlds = profile.join("game/worlds");
+            let worlds = game.join("worlds");
             fs::create_dir_all(&worlds).map_err(|source| io_error(&worlds, source))?;
             let mut destination = worlds.join(&base);
             let mut suffix = 2;
@@ -790,7 +847,8 @@ impl ProfileStore {
         let profiles = self.with_database(|database| {
             let mut statement = database.prepare(
                 "SELECT id, name, active_revision, voxelcore_version, roots_json,
-                        root_requirements_json, created_at
+                        root_requirements_json, created_at, external_game_path,
+                        external_runtime_json
                  FROM profiles ORDER BY created_at",
             )?;
             let rows = statement.query_map([], |row| {
@@ -802,6 +860,8 @@ impl ProfileStore {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
@@ -817,11 +877,23 @@ impl ProfileStore {
                     roots_json,
                     root_requirements_json,
                     created_at,
+                    external_game_path,
+                    external_runtime_json,
                 )| {
                     let id = Uuid::parse_str(&id).ok()?;
                     let roots = serde_json::from_str(&roots_json).unwrap_or_default();
                     let root_requirements =
                         serde_json::from_str(&root_requirements_json).unwrap_or_default();
+                    let (external_runtime, problem) = match external_runtime_json {
+                        Some(value) => match serde_json::from_str(&value) {
+                            Ok(runtime) => (Some(runtime), None),
+                            Err(error) => (
+                                None,
+                                Some(format!("Повреждены данные локального VoxelCore: {error}")),
+                            ),
+                        },
+                        None => (None, None),
+                    };
                     Some(Profile {
                         main_build: None,
                         id,
@@ -835,12 +907,17 @@ impl ProfileStore {
                         external_packages: Vec::new(),
                         manual_packages: Vec::new(),
                         created_at,
-                        problem: None,
+                        problem,
+                        external_game_path: external_game_path.map(PathBuf::from),
+                        external_runtime,
                     })
                 },
             )
             .collect::<Vec<_>>();
         for profile in &mut profiles {
+            if profile.problem.is_some() {
+                continue;
+            }
             let Some(revision) = &profile.active_revision else {
                 continue;
             };
@@ -921,7 +998,14 @@ impl ProfileStore {
                     .map(|package| package.id.clone()),
             );
             let profile_path = self.profile_path(profile.id);
-            let game = profile_path.join("game");
+            let game = profile
+                .external_game_path
+                .clone()
+                .unwrap_or_else(|| profile_path.join("game"));
+            if !game.is_dir() {
+                profile.problem = Some("Подключённая папка игры недоступна".into());
+                continue;
+            }
             if let Ok(materialized_revision) = fs::read_to_string(game.join(".vlauncher-revision"))
             {
                 if safe_relative(Path::new(&materialized_revision)).is_ok() {
@@ -980,7 +1064,7 @@ impl ProfileStore {
             }
 
             // Так недокопированная папка не появится в библиотеке.
-            let source_game = self.profile_path(source.id).join("game");
+            let source_game = self.game_directory(source.id)?;
             let staged_game = cloned_path.join(format!(".clone-game-{}", Uuid::new_v4()));
             copy_tree(&source_game, &staged_game)?;
             let target_game = cloned_path.join("game");
@@ -1068,12 +1152,15 @@ impl ProfileStore {
             return invalid("profile is not initialized");
         }
         let _operation_lock = self.lock_profile(profile_id)?;
-        let profile_path = self.profile_path(profile_id);
-        let content = profile_path.join("game/content");
+        let content = self.game_directory(profile_id)?.join("content");
         fs::create_dir_all(&content).map_err(|source| io_error(&content, source))?;
         let operation = Uuid::new_v4();
-        let staging = profile_path.join(format!(".external-staging-{operation}"));
-        let backup = profile_path.join(format!(".external-backup-{operation}"));
+        let operation_root = content
+            .parent()
+            .expect("content directory has parent")
+            .join(format!(".vlauncher-external-{operation}"));
+        let staging = operation_root.join("staging");
+        let backup = operation_root.join("backup");
         fs::create_dir_all(&staging).map_err(|source| io_error(&staging, source))?;
         fs::create_dir_all(&backup).map_err(|source| io_error(&backup, source))?;
 
@@ -1246,6 +1333,9 @@ impl ProfileStore {
         if backup.exists() {
             let _ = fs::remove_dir_all(&backup);
         }
+        if operation_root.exists() {
+            let _ = fs::remove_dir_all(&operation_root);
+        }
         result
     }
 
@@ -1259,10 +1349,9 @@ impl ProfileStore {
         if !existing.iter().any(|package| package.id == id) {
             return invalid("external package is not installed");
         }
-        let profile_path = self.profile_path(profile_id);
+        let content = self.game_directory(profile_id)?.join("content");
         for package in existing.iter().filter(|package| package.id != id) {
-            let manifest =
-                PackageManifest::read(profile_path.join("game/content").join(&package.id))?;
+            let manifest = PackageManifest::read(content.join(&package.id))?;
             if manifest.dependencies.iter().any(|dependency| {
                 dependency.kind == DependencyKind::Required && dependency.id == id
             }) {
@@ -1272,8 +1361,11 @@ impl ProfileStore {
                 ));
             }
         }
-        let source = profile_path.join("game/content").join(id);
-        let temporary = profile_path.join(format!(".external-remove-{}", Uuid::new_v4()));
+        let source = content.join(id);
+        let temporary = content
+            .parent()
+            .expect("content directory has parent")
+            .join(format!(".vlauncher-external-remove-{}", Uuid::new_v4()));
         if source.exists() {
             fs::rename(&source, &temporary).map_err(|error| io_error(&source, error))?;
         }
@@ -1648,7 +1740,7 @@ impl ProfileStore {
                 fs::write(source.join("icon.png"), bytes)
                     .map_err(|error| io_error(&source, error))?;
             }
-            let config = self.profile_path(profile_id).join("game/config");
+            let config = self.game_directory(profile_id)?.join("config");
             if config.is_dir() {
                 copy_tree(&config, &source.join("config"))?;
             }
@@ -1676,8 +1768,8 @@ impl ProfileStore {
         }
         let profile = self.profile(profile_id)?;
         let world = self
-            .profile_path(profile_id)
-            .join("game/worlds")
+            .game_directory(profile_id)?
+            .join("worlds")
             .join(relative);
         if !world.join("world.json").is_file() {
             return invalid("world does not contain world.json");
@@ -1907,6 +1999,123 @@ impl ProfileStore {
         Ok(runtimes)
     }
 
+    pub fn analyze_existing_game(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> Result<ExistingGameAnalysis, PackageProblem> {
+        analyze_existing_game_directory(source.as_ref())
+    }
+
+    pub fn attach_existing_game(
+        &self,
+        source: impl AsRef<Path>,
+        name: &str,
+        version: &str,
+    ) -> Result<Profile, PackageProblem> {
+        semver::Version::parse(version).map_err(|error| {
+            PackageProblem::Invalid(format!("invalid VoxelCore version: {error}"))
+        })?;
+        let source =
+            fs::canonicalize(source.as_ref()).map_err(|error| io_error(source.as_ref(), error))?;
+        let analysis = analyze_existing_game_directory(&source)?;
+        if analysis
+            .runtime_version
+            .as_deref()
+            .is_some_and(|detected| detected != version)
+        {
+            return invalid("selected VoxelCore version does not match the detected version");
+        }
+        if analysis.runtime_kind == ExistingRuntimeKind::None
+            && analysis.content_count == 0
+            && analysis.world_count == 0
+            && !analysis.has_config
+        {
+            return invalid("directory does not contain VoxelCore or profile data");
+        }
+
+        let data_root = existing_game_data_root(&source);
+        let data_root =
+            fs::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
+        let duplicate = self.with_database(|database| {
+            database.query_row(
+                "SELECT EXISTS(SELECT 1 FROM profiles WHERE external_game_path = ?1)",
+                [data_root.to_string_lossy().as_ref()],
+                |row| row.get::<_, bool>(0),
+            )
+        })?;
+        if duplicate {
+            return invalid("this game directory is already attached to a profile");
+        }
+
+        let external_runtime = match analysis.runtime_kind {
+            ExistingRuntimeKind::Manifest => {
+                let path = source.join("runtime.json");
+                let manifest: RuntimeManifest = serde_json::from_slice(
+                    &fs::read(&path).map_err(|error| io_error(&path, error))?,
+                )
+                .map_err(|error| {
+                    PackageProblem::Invalid(format!("invalid runtime.json: {error}"))
+                })?;
+                Some(ExternalRuntime {
+                    path: source.clone(),
+                    executable: manifest.executable,
+                    resources: manifest.resources,
+                })
+            }
+            ExistingRuntimeKind::Detected => {
+                let (executable, resources) = crate::official::detect_runtime_layout(&source)
+                    .map_err(PackageProblem::Invalid)?;
+                Some(ExternalRuntime {
+                    path: source.clone(),
+                    executable,
+                    resources,
+                })
+            }
+            ExistingRuntimeKind::None => {
+                if !self
+                    .list_runtimes()?
+                    .iter()
+                    .any(|runtime| runtime.version == version)
+                {
+                    return invalid(format!(
+                        "VoxelCore {version} must be installed before attaching this directory"
+                    ));
+                }
+                None
+            }
+        };
+        let runtime_json = external_runtime
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
+        let profile = self.create_initialized(name, version)?;
+        let result = self.with_database(|database| {
+            database.execute(
+                "UPDATE profiles SET external_game_path = ?1, external_runtime_json = ?2
+                 WHERE id = ?3",
+                params![
+                    data_root.to_string_lossy().as_ref(),
+                    runtime_json,
+                    profile.id.to_string()
+                ],
+            )?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            let _ = self.delete_profile(profile.id);
+            return Err(error);
+        }
+        let internal_game = self.profile_path(profile.id).join("game");
+        if internal_game.exists() {
+            if let Err(error) = fs::remove_dir_all(&internal_game) {
+                let _ = self.delete_profile(profile.id);
+                return Err(io_error(&internal_game, error));
+            }
+        }
+        self.profile(profile.id)
+    }
+
     pub fn import_runtime(
         &self,
         source: impl AsRef<Path>,
@@ -2049,9 +2258,9 @@ impl ProfileStore {
     }
 
     pub fn profile_storage(&self, profile_id: Uuid) -> Result<ProfileStorage, PackageProblem> {
-        self.profile(profile_id)?;
+        let attached = self.profile(profile_id)?.external_game_path.is_some();
         let profile = self.profile_path(profile_id);
-        let game_bytes = tree_size(&profile.join("game"))?;
+        let game_bytes = tree_size(&self.game_directory(profile_id)?)?;
         let snapshots = profile.join("snapshots");
         let (active, previous): (Option<String>, Option<String>) =
             self.with_database(|database| {
@@ -2082,7 +2291,7 @@ impl ProfileStore {
             }
         }
         Ok(ProfileStorage {
-            total_bytes: game_bytes + snapshot_bytes,
+            total_bytes: snapshot_bytes + if attached { 0 } else { game_bytes },
             game_bytes,
             snapshot_bytes,
             reclaimable_bytes,
@@ -2164,41 +2373,57 @@ impl ProfileStore {
         let revision = profile
             .active_revision
             .ok_or_else(|| PackageProblem::Invalid("profile has no installed snapshot".into()))?;
-        let runtime = self
-            .list_runtimes()?
-            .into_iter()
-            .find(|runtime| runtime.version == runtime_version)
-            .ok_or_else(|| PackageProblem::Invalid("VoxelCore runtime is not installed".into()))?;
-        if !match (&profile.main_build, &runtime.main_build) {
-            (Some(expected), Some(actual)) => expected.same_artifact(actual),
-            (None, None) => true,
-            _ => false,
-        } {
-            return invalid("runtime identity does not match this profile");
-        }
-        let metadata_path = runtime.path.join("runtime.json");
-        let metadata: RuntimeManifest = serde_json::from_slice(
-            &fs::read(&metadata_path).map_err(|source| io_error(&metadata_path, source))?,
-        )
-        .map_err(|error| PackageProblem::Invalid(format!("invalid runtime.json: {error}")))?;
+        let (runtime_path, executable, resources) = if let Some(runtime) =
+            profile.external_runtime.as_ref()
+        {
+            safe_relative(&runtime.executable)?;
+            safe_relative(&runtime.resources)?;
+            if !runtime.path.join(&runtime.executable).is_file()
+                || !runtime.path.join(&runtime.resources).is_dir()
+            {
+                return invalid("attached VoxelCore executable or resources are unavailable");
+            }
+            (
+                runtime.path.clone(),
+                runtime.executable.clone(),
+                runtime.resources.clone(),
+            )
+        } else {
+            let runtime = self
+                .list_runtimes()?
+                .into_iter()
+                .find(|runtime| runtime.version == runtime_version)
+                .ok_or_else(|| {
+                    PackageProblem::Invalid("VoxelCore runtime is not installed".into())
+                })?;
+            if !match (&profile.main_build, &runtime.main_build) {
+                (Some(expected), Some(actual)) => expected.same_artifact(actual),
+                (None, None) => true,
+                _ => false,
+            } {
+                return invalid("runtime identity does not match this profile");
+            }
+            let metadata_path = runtime.path.join("runtime.json");
+            let metadata: RuntimeManifest = serde_json::from_slice(
+                &fs::read(&metadata_path).map_err(|source| io_error(&metadata_path, source))?,
+            )
+            .map_err(|error| PackageProblem::Invalid(format!("invalid runtime.json: {error}")))?;
+            (runtime.path, metadata.executable, metadata.resources)
+        };
         let user_folder = self.materialize_game_folder(profile_id, &revision)?;
         let logs = self.profile_path(profile_id).join("logs");
         fs::create_dir_all(&logs).map_err(|source| io_error(&logs, source))?;
         // Для неизвестной версии запускаем без дополнительных аргументов.
         let arguments = vec![
             "--res".into(),
-            runtime
-                .path
-                .join(&metadata.resources)
-                .to_string_lossy()
-                .into_owned(),
+            runtime_path.join(&resources).to_string_lossy().into_owned(),
             "--dir".into(),
             user_folder.to_string_lossy().into_owned(),
         ];
         Ok(LaunchSpec {
-            executable: runtime.path.join(metadata.executable),
+            executable: runtime_path.join(executable),
             arguments,
-            working_directory: runtime.path,
+            working_directory: runtime_path,
             log_path: logs.join("latest.log"),
         })
     }
@@ -2275,7 +2500,7 @@ impl ProfileStore {
         if !source.is_dir() {
             return invalid("active profile snapshot is missing its content directory");
         }
-        let game = profile.join("game");
+        let game = self.game_directory(profile_id)?;
         fs::create_dir_all(&game).map_err(|source| io_error(&game, source))?;
         let marker = game.join(".vlauncher-revision");
         if fs::read_to_string(&marker).is_ok_and(|installed| installed == revision)
@@ -2283,10 +2508,29 @@ impl ProfileStore {
         {
             return Ok(game);
         }
+        let newly_attached = self.with_database(|database| {
+            database.query_row(
+                "SELECT external_game_path IS NOT NULL FROM profiles WHERE id = ?1",
+                [profile_id.to_string()],
+                |row| row.get::<_, bool>(0),
+            )
+        })? && !marker.exists();
+        if newly_attached
+            && source
+                .read_dir()
+                .map_err(|error| io_error(&source, error))?
+                .next()
+                .is_none()
+        {
+            fs::create_dir_all(game.join("content")).map_err(|error| io_error(&game, error))?;
+            write_atomic(&marker, revision.as_bytes())?;
+            return Ok(game);
+        }
 
         let operation_id = Uuid::new_v4();
-        let staging = profile.join(format!(".content-staging-{operation_id}"));
-        let previous = profile.join(format!(".content-previous-{operation_id}"));
+        ensure_space(&game, tree_size(&source)?.saturating_mul(2))?;
+        let staging = game.join(format!(".vlauncher-content-staging-{operation_id}"));
+        let previous = game.join(format!(".vlauncher-content-previous-{operation_id}"));
         copy_tree(&source, &staging)?;
         let content = game.join("content");
         // Пользователь мог сам положить сюда другие паки.
@@ -2823,6 +3067,151 @@ fn extract_archive<R: Read + Seek>(reader: R, destination: &Path) -> Result<(), 
         }
     }
     Ok(())
+}
+
+fn analyze_existing_game_directory(source: &Path) -> Result<ExistingGameAnalysis, PackageProblem> {
+    if !source.is_dir() {
+        return invalid("selected path must be a directory");
+    }
+    let data_root = existing_game_data_root(source);
+    let content = data_root.join("content");
+    let worlds = data_root.join("worlds");
+    let config = data_root.join("config");
+    let metadata_path = source.join("runtime.json");
+    let (runtime_kind, runtime_version) = if metadata_path.is_file() {
+        let metadata: RuntimeManifest = serde_json::from_slice(
+            &fs::read(&metadata_path).map_err(|error| io_error(&metadata_path, error))?,
+        )
+        .map_err(|error| PackageProblem::Invalid(format!("invalid runtime.json: {error}")))?;
+        if metadata.schema_version != 1
+            || metadata.platform != std::env::consts::OS
+            || metadata.architecture != std::env::consts::ARCH
+            || semver::Version::parse(&metadata.version).is_err()
+        {
+            return invalid("runtime directory is incompatible with this system");
+        }
+        safe_relative(&metadata.executable)?;
+        safe_relative(&metadata.resources)?;
+        if !source.join(&metadata.executable).is_file()
+            || !source.join(&metadata.resources).is_dir()
+        {
+            return invalid("runtime executable or resources are missing");
+        }
+        (ExistingRuntimeKind::Manifest, Some(metadata.version))
+    } else {
+        match crate::official::detect_runtime_layout(source) {
+            Ok((executable, _)) => (
+                ExistingRuntimeKind::Detected,
+                detect_voxelcore_version(source, &executable),
+            ),
+            Err(_) => (ExistingRuntimeKind::None, None),
+        }
+    };
+    let suggested_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("VoxelCore")
+        .to_owned();
+    Ok(ExistingGameAnalysis {
+        suggested_name,
+        runtime_kind,
+        runtime_version,
+        content_count: immediate_directory_count(&content)?,
+        world_count: immediate_directory_count(&worlds)?,
+        has_config: config.is_dir(),
+    })
+}
+
+fn detect_voxelcore_version(root: &Path, executable: &Path) -> Option<String> {
+    let mut stdout = tempfile::tempfile().ok()?;
+    let mut stderr = tempfile::tempfile().ok()?;
+    let mut command = Command::new(root.join(executable));
+    command
+        .arg("--version")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone().ok()?))
+        .stderr(Stdio::from(stderr.try_clone().ok()?));
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut text = String::new();
+    stdout.seek(SeekFrom::Start(0)).ok()?;
+    stdout.take(128 * 1024).read_to_string(&mut text).ok()?;
+    stderr.seek(SeekFrom::Start(0)).ok()?;
+    stderr.take(128 * 1024).read_to_string(&mut text).ok()?;
+    parse_voxelcore_version(&text)
+}
+
+fn parse_voxelcore_version(text: &str) -> Option<String> {
+    let mut shortened = None;
+    for token in text.split_whitespace() {
+        let Some(start) = token.find(|character: char| character.is_ascii_digit()) else {
+            continue;
+        };
+        let candidate = token[start..]
+            .trim_end_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '+')
+            })
+            .trim_end_matches(['.', '-', '+']);
+        let core = candidate.split(['-', '+']).next().unwrap_or(candidate);
+        let components = core.split('.').count();
+        if components >= 3 {
+            if let Ok(version) = semver::Version::parse(candidate) {
+                return Some(version.to_string());
+            }
+        } else if components == 2 && shortened.is_none() {
+            if let Ok(version) = semver::Version::parse(&format!("{candidate}.0")) {
+                shortened = Some(version.to_string());
+            }
+        }
+    }
+    shortened
+}
+
+fn existing_game_data_root(source: &Path) -> PathBuf {
+    let nested = source.join("game");
+    if ["content", "worlds", "config"]
+        .iter()
+        .any(|folder| nested.join(folder).is_dir())
+    {
+        nested
+    } else {
+        source.to_owned()
+    }
+}
+
+fn immediate_directory_count(path: &Path) -> Result<u64, PackageProblem> {
+    if !path.is_dir() {
+        return Ok(0);
+    }
+    let mut count = 0u64;
+    for entry in fs::read_dir(path).map_err(|error| io_error(path, error))? {
+        let entry = entry.map_err(|error| io_error(path, error))?;
+        if entry
+            .file_type()
+            .map_err(|error| io_error(&entry.path(), error))?
+            .is_dir()
+        {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), PackageProblem> {
@@ -4343,5 +4732,78 @@ mod tests {
         assert_eq!(fs::read(imported.join("data.bin")).unwrap(), b"world state");
         assert!(imported.join("world.json").is_file());
         assert_ne!(imported, source_world);
+    }
+
+    #[test]
+    fn attaches_an_existing_game_without_copying_its_source_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let source = temp.path().join("My existing game");
+        fs::create_dir_all(source.join("res")).unwrap();
+        fs::write(source.join("VoxelCore"), b"local executable").unwrap();
+        fs::create_dir_all(source.join("content/local_mod")).unwrap();
+        fs::write(source.join("content/local_mod/package.json"), b"{}").unwrap();
+        fs::create_dir_all(source.join("worlds/home")).unwrap();
+        fs::write(source.join("worlds/home/world.json"), b"{}").unwrap();
+        fs::create_dir_all(source.join("config")).unwrap();
+        fs::write(source.join("config/settings.toml"), b"volume = 0.5").unwrap();
+
+        let analysis = store.analyze_existing_game(&source).unwrap();
+        assert_eq!(analysis.suggested_name, "My existing game");
+        assert_eq!(analysis.runtime_kind, ExistingRuntimeKind::Detected);
+        assert_eq!(analysis.runtime_version, None);
+        assert_eq!(analysis.content_count, 1);
+        assert_eq!(analysis.world_count, 1);
+        assert!(analysis.has_config);
+
+        let profile = store
+            .attach_existing_game(&source, "Imported", "0.31.4")
+            .unwrap();
+        let game = store.game_directory(profile.id).unwrap();
+        assert_eq!(game, fs::canonicalize(&source).unwrap());
+        assert!(game.join("content/local_mod/package.json").is_file());
+        assert!(game.join("worlds/home/world.json").is_file());
+        assert!(game.join("config/settings.toml").is_file());
+        assert!(source.join("content/local_mod/package.json").is_file());
+
+        assert!(store.list_runtimes().unwrap().is_empty());
+        assert_eq!(profile.external_runtime.unwrap().path, source);
+        let launch = store.launch_spec(profile.id, "0.31.4").unwrap();
+        assert_eq!(launch.executable, source.join("VoxelCore"));
+        assert_eq!(launch.arguments.last().map(String::as_str), source.to_str());
+        assert_eq!(
+            store.profile(profile.id).unwrap().manual_packages,
+            ["local_mod"]
+        );
+        store.delete_profile(profile.id).unwrap();
+        assert!(source.join("worlds/home/world.json").is_file());
+    }
+
+    #[test]
+    fn parses_the_full_engine_version_before_the_short_display_version() {
+        let output = "[I] 2026/09/15 21:03:24.250 [ main] build: 0.31.4\nVoxelCore v0.31\n";
+        assert_eq!(parse_voxelcore_version(output).as_deref(), Some("0.31.4"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_an_existing_engine_version_without_runtime_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("game");
+        fs::create_dir_all(source.join("res")).unwrap();
+        let executable = source.join("VoxelCore");
+        fs::write(
+            &executable,
+            b"#!/bin/sh\nprintf '[I] main build: 0.31.4\\nVoxelCore v0.31\\n'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+
+        let analysis = store.analyze_existing_game(&source).unwrap();
+        assert_eq!(analysis.runtime_kind, ExistingRuntimeKind::Detected);
+        assert_eq!(analysis.runtime_version.as_deref(), Some("0.31.4"));
     }
 }

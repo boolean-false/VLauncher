@@ -80,6 +80,14 @@ type Confirmation = {
   action: () => Promise<unknown>;
   danger?: boolean;
 };
+type ExistingGameAnalysis = {
+  suggested_name: string;
+  runtime_kind: "manifest" | "detected" | "none";
+  runtime_version: string | null;
+  content_count: number;
+  world_count: number;
+  has_config: boolean;
+};
 const navigation: { id: Screen; title: string; icon: IconName }[] = [
   { id: "library", title: "Библиотека", icon: "library" },
   { id: "catalog", title: "Каталог", icon: "catalog" },
@@ -132,6 +140,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const taskLock = useRef(false);
   const [newProfile, setNewProfile] = useState(false);
+  const [existingGame, setExistingGame] = useState<{
+    path: string;
+    analysis: ExistingGameAnalysis;
+  } | null>(null);
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [deepLink, setDeepLink] = useState("");
@@ -361,6 +373,15 @@ export default function App() {
       setOfficialTransfer(false);
     }
   };
+  const chooseExistingGame = async () => {
+    const path = await open({ directory: true, multiple: false });
+    if (!path) return;
+    await run("Проверка существующей игры", async (stage) => {
+      stage("Проверяем папку VoxelCore…");
+      const analysis = await invoke<ExistingGameAnalysis>("analyze_existing_game", { path });
+      setExistingGame({ path, analysis });
+    });
+  };
   const launchProfile = (profile: LocalProfile | null) => {
     if (!profile) return;
     setSelected(profile.id);
@@ -376,7 +397,7 @@ export default function App() {
           try { await invoke("install_mainline_build", { build: profile.main_build }); }
           finally { setOfficialTransfer(false); }
         }
-      } else await installEngine(version, stage);
+      } else if (!profile.external_runtime) await installEngine(version, stage);
       if (!profile.active_revision)
         await invoke("initialize_vanilla", { profileId: profile.id, version });
       stage("Запуск VoxelCore…");
@@ -488,7 +509,7 @@ export default function App() {
     void run("Проверка совместимости VoxelCore", prepare);
   };
   const importProfile = () =>
-    void run("Импорт профиля", async (stage) => {
+    void run("Создание профиля из файла", async (stage) => {
       const path = await open({
         multiple: false,
         filters: [{ name: "Профиль VLauncher", extensions: ["json"] }],
@@ -701,10 +722,19 @@ export default function App() {
                 <div className="actions">
                   <button
                     disabled={busy || !!loadError}
+                    title="Использовать существующую папку игры без переноса файлов"
+                    onClick={() => void chooseExistingGame()}
+                  >
+                    <Icon name="plus" size={16} />
+                    Подключить папку
+                  </button>
+                  <button
+                    disabled={busy || !!loadError}
+                    title="Создать профиль из файла с версией VoxelCore и списком пакетов"
                     onClick={importProfile}
                   >
                     <Icon name="download" size={16} />
-                    Импорт
+                    Создать из файла
                   </button>
                   <button
                     disabled={busy || !!loadError}
@@ -734,8 +764,8 @@ export default function App() {
                       <Icon name="plus" />
                       Создать профиль
                     </button>
-                    <button className="text-button" onClick={importProfile}>
-                      У меня уже есть профиль
+                    <button className="text-button" onClick={() => void chooseExistingGame()}>
+                      Подключить существующую папку
                     </button>
                   </Empty>
                 </div>
@@ -750,6 +780,11 @@ export default function App() {
                         <span className="eyebrow supporting-label">VoxelCore {profileEngineLabel(profile) || "· версия не выбрана"}</span>
                         {profile.main_build && <p>Экспериментальная сборка. Совместимость модов не подтверждена.</p>}
                         <h2>{profile.name}</h2>
+                        {profile.external_game_path && (
+                          <span className="attached-profile-path selectable" title={profile.external_game_path}>
+                            Подключённая папка · {profile.external_game_path}
+                          </span>
+                        )}
                         {installedModpack && (
                           <button
                             className="profile-modpack-link"
@@ -764,7 +799,7 @@ export default function App() {
                           />
                           {running.has(profile.id)
                             ? "Игра запущена"
-                            : !engineVersion(profile) ? "Выберите версию в разделе «Управление»" : runtimes.some(
+                            : !engineVersion(profile) ? "Выберите версию в разделе «Управление»" : profile.external_runtime || runtimes.some(
                                   (r) => r.version === profileRuntimeId(profile),
                                 )
                               ? "Готов к запуску"
@@ -799,7 +834,7 @@ export default function App() {
                             <Icon name="play" />
                             {busy
                               ? "Подождите…"
-                              : !engineVersion(profile) ? "Версия не выбрана" : runtimes.some(
+                              : !engineVersion(profile) ? "Версия не выбрана" : profile.external_runtime || runtimes.some(
                                     (r) => r.version === profileRuntimeId(profile),
                                   )
                                 ? "Играть"
@@ -1116,7 +1151,7 @@ export default function App() {
               availableRuntimes={availableRuntimes}
               runtimeCatalogError={runtimeCatalogError}
               reloadRuntimes={reloadRuntimes}
-              usedVersions={new Set(profiles.flatMap(item => [engineVersion(item), ...(item.main_build ? [mainRuntimeId(item.main_build)] : [])]))}
+              usedVersions={new Set(profiles.flatMap(item => item.external_runtime ? [] : [engineVersion(item), ...(item.main_build ? [mainRuntimeId(item.main_build)] : [])]))}
               busy={busy}
               run={run}
               refresh={refresh}
@@ -1198,6 +1233,37 @@ export default function App() {
               setScreen("library");
             });
             if (ok) setNewProfile(false);
+            return ok;
+          }}
+        />
+      )}
+      {existingGame && (
+        <ImportExistingGame
+          source={existingGame.path}
+          analysis={existingGame.analysis}
+          runtimes={runtimes}
+          availableRuntimes={availableRuntimes}
+          runtimeCatalogError={runtimeCatalogError}
+          reloadRuntimes={reloadRuntimes}
+          busy={busy}
+          close={() => setExistingGame(null)}
+          submit={async (name, version) => {
+            const ok = await run("Добавление существующей игры", async (stage) => {
+              if (existingGame.analysis.runtime_kind === "none") {
+                await installEngine(version, stage);
+              }
+              stage("Подключаем папку к новому профилю…");
+              const created = await invoke<LocalProfile>("attach_existing_game", {
+                path: existingGame.path,
+                name,
+                version,
+              });
+              await refresh();
+              setSelected(created.id);
+              setTab("content");
+              setScreen("library");
+            });
+            if (ok) setExistingGame(null);
             return ok;
           }}
         />
@@ -1298,6 +1364,172 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+function ImportExistingGame({
+  source,
+  analysis,
+  runtimes,
+  availableRuntimes,
+  runtimeCatalogError,
+  reloadRuntimes,
+  busy,
+  close,
+  submit,
+}: {
+  source: string;
+  analysis: ExistingGameAnalysis;
+  runtimes: Runtime[];
+  availableRuntimes: RuntimeRelease[];
+  runtimeCatalogError: string;
+  reloadRuntimes: () => void;
+  busy: boolean;
+  close: () => void;
+  submit: (name: string, version: string) => Promise<boolean>;
+}) {
+  const versions = [
+    ...availableRuntimes,
+    ...runtimes
+      .filter(
+        (runtime) =>
+          !runtime.main_build &&
+          !availableRuntimes.some((item) => item.version === runtime.version),
+      )
+      .map((runtime) => ({
+        version: runtime.version,
+        channel: "local" as const,
+        artifact_size: 0,
+        published_at: "",
+      })),
+  ];
+  const initialVersion =
+    analysis.runtime_version ??
+    versions.find((item) => item.channel === "stable")?.version ??
+    versions[0]?.version ??
+    "";
+  const [name, setName] = useState(analysis.suggested_name);
+  const [version, setVersion] = useState(initialVersion);
+  const [failed, setFailed] = useState(false);
+  const recognizable =
+    analysis.runtime_kind !== "none" ||
+    analysis.content_count > 0 ||
+    analysis.world_count > 0 ||
+    analysis.has_config;
+  const runtimeInstalled = runtimes.some((runtime) => runtime.version === version);
+  const runtimeText =
+    analysis.runtime_kind === "manifest"
+      ? `Готовая среда VLauncher · VoxelCore ${analysis.runtime_version}`
+      : analysis.runtime_kind === "detected"
+        ? "Найдены исполняемый файл VoxelCore и ресурсы"
+        : "Движок в папке не найден";
+
+  return (
+    <Modal title="Подключить существующую игру" close={close} busy={busy}>
+      <form
+        className="existing-game-import"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!recognizable || !name.trim() || !version) return;
+          void submit(name.trim(), version).then((ok) => setFailed(!ok));
+        }}
+      >
+        <p className="existing-game-source selectable" title={source}>{source}</p>
+        <section className="existing-game-summary">
+          <div>
+            <strong>VoxelCore</strong>
+            <span>{runtimeText}</span>
+          </div>
+          {analysis.runtime_kind !== "manifest" && (
+            <span className="muted">
+              {analysis.runtime_kind === "detected"
+                ? analysis.runtime_version
+                  ? `Версия ${analysis.runtime_version} определена командой --version`
+                  : "Не удалось определить версию автоматически"
+                : "Выбранная версия будет установлена обычным способом"}
+            </span>
+          )}
+        </section>
+
+        {!recognizable && (
+          <ErrorNotice>
+            В папке нет VoxelCore, контент-паков, миров или настроек. Выберите папку игры либо создайте обычный профиль.
+          </ErrorNotice>
+        )}
+
+        <label>
+          Название профиля
+          <input
+            autoFocus
+            data-initial-focus
+            required
+            maxLength={80}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onFocus={(event) => event.target.select()}
+          />
+        </label>
+
+        {analysis.runtime_version ? (
+          <div className="existing-game-fixed-version">
+            <span>Версия VoxelCore</span>
+            <strong>{analysis.runtime_version}</strong>
+          </div>
+        ) : (
+          <label>
+            Версия VoxelCore
+            <Select
+              required
+              value={version}
+              onChange={(event) => setVersion(event.target.value)}
+              disabled={!versions.length}
+            >
+              {versions.map((item) => (
+                <option key={item.version} value={item.version}>
+                  {item.version} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная" : item.channel}
+                  {runtimes.some((runtime) => runtime.version === item.version)
+                    ? " · установлена"
+                    : ""}
+                </option>
+              ))}
+            </Select>
+            <small>
+              {analysis.runtime_kind === "detected"
+                ? "Будет запускаться найденный исполняемый файл; выбранная версия нужна для совместимости пакетов"
+                : runtimeInstalled
+                  ? "Уже установлена на компьютере"
+                  : "Будет загружена и проверена"}
+            </small>
+          </label>
+        )}
+
+        <section className="existing-game-data" aria-label="Найденные данные">
+          <h3>Найдено в папке</h3>
+          <div><strong>{analysis.content_count}</strong><span>контент-паков</span></div>
+          <div><strong>{analysis.world_count}</strong><span>миров</span></div>
+          <div><strong>{analysis.has_config ? "Есть" : "Нет"}</strong><span>настройки config</span></div>
+        </section>
+
+        <p className="existing-game-note">
+          Папка останется на своём месте и станет рабочей папкой профиля. Установка контента и изменения в игре будут сохраняться прямо в неё.
+        </p>
+        {runtimeCatalogError && !analysis.runtime_version && (
+          <ErrorNotice retry={reloadRuntimes}>
+            Не удалось загрузить список релизов. Можно выбрать уже установленную версию.
+          </ErrorNotice>
+        )}
+        {failed && <ErrorNotice>Не удалось добавить игру. Подробности в журнале.</ErrorNotice>}
+        <div className="modal-actions">
+          <button type="button" disabled={busy} onClick={close}>Отмена</button>
+          <button
+            className="primary"
+            disabled={busy || !recognizable || !name.trim() || !version}
+          >
+            {busy ? "Подключаем…" : "Подключить профиль"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -1546,13 +1778,19 @@ function ProfileSettings({
       <section className="setting-row">
         <div>
           <h3>Версия VoxelCore</h3>
-          <p>{modpack ? `Определяется сборкой ${modpack.title || modpack.id} ${modpack.version}. Меняется вместе с версией сборки.` : "Перед сменой лаунчер проверит совместимость всех выбранных контент-паков."}</p>
+          <p>{modpack ? `Определяется сборкой ${modpack.title || modpack.id} ${modpack.version}. Меняется вместе с версией сборки.` : profile.external_runtime ? "Используется VoxelCore из подключённой папки. Версия задаёт совместимость с контент-паками." : "Перед сменой лаунчер проверит совместимость всех выбранных контент-паков."}</p>
         </div>
         {modpack ? (
           <div className="profile-managed-value">
             <span>VoxelCore</span>
             <strong>{engineVersion(profile)}</strong>
             <small>Управляется сборкой</small>
+          </div>
+        ) : profile.external_runtime ? (
+          <div className="profile-managed-value">
+            <span>Локальный VoxelCore</span>
+            <strong>{engineVersion(profile)}</strong>
+            <small className="selectable" title={profile.external_runtime.path}>{profile.external_runtime.path}</small>
           </div>
         ) : <form
           className="actions"
@@ -1598,7 +1836,9 @@ function ProfileSettings({
           <h3>Место на диске</h3>
           <p>
             {storage
-              ? `${formatBytes(storage.total_bytes)}: миры и настройки ${formatBytes(storage.game_bytes)}, снимки ${formatBytes(storage.snapshot_bytes)}.`
+              ? profile.external_game_path
+                ? `${formatBytes(storage.total_bytes)} занимает VLauncher. Подключённая папка: ${formatBytes(storage.game_bytes)}; эти данные остаются на своём месте.`
+                : `${formatBytes(storage.total_bytes)}: миры и настройки ${formatBytes(storage.game_bytes)}, снимки ${formatBytes(storage.snapshot_bytes)}.`
               : "Подсчёт размера…"}
             {storage && storage.reclaimable_bytes > 0 && (
               <>
@@ -1750,7 +1990,7 @@ function ProfileSettings({
       <section className="setting-row">
         <div>
           <h3>Удалить профиль</h3>
-          <p>Удалит его миры, настройки и установленные пакеты.</p>
+          <p>{profile.external_game_path ? "Отключит профиль от VLauncher. Сама папка игры и все её данные останутся на месте." : "Удалит его миры, настройки и установленные пакеты."}</p>
         </div>
         <button
           className="danger"
@@ -1758,7 +1998,9 @@ function ProfileSettings({
           onClick={() =>
             confirm({
               title: `Удалить «${profile.name}»?`,
-              text: "Все миры и настройки этого профиля будут удалены с компьютера. Восстановить их через лаунчер нельзя.",
+              text: profile.external_game_path
+                ? "Профиль исчезнет из VLauncher, но подключённая папка, миры, настройки и контент удалены не будут."
+                : "Все миры и настройки этого профиля будут удалены с компьютера. Восстановить их через лаунчер нельзя.",
               label: "Удалить профиль",
               danger: true,
               action: async () => {

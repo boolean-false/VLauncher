@@ -26,6 +26,12 @@ export type LocalProfile = {
   }[];
   manual_packages?: string[];
   problem?: string | null;
+  external_game_path?: string | null;
+  external_runtime?: {
+    path: string;
+    executable: string;
+    resources: string;
+  } | null;
 };
 export type Runtime = {
   main_build?: MainBuild | null;
