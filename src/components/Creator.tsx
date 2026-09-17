@@ -104,6 +104,11 @@ type GithubReleasePage = {
   releases: GithubRelease[];
   has_more: boolean;
 };
+type ReleaseSource = "local" | "github";
+type ProjectReleasePreference = {
+  source: ReleaseSource;
+  githubRepository: string;
+};
 const delay = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 const readDraft = <T,>(key: string, fallback: T): T => {
@@ -224,6 +229,7 @@ export function Creator({
     changelog: "",
     source: "local",
     githubRepository: "",
+    projectPreferences: {} as Record<string, ProjectReleasePreference>,
   });
   const [folder, setFolder] = useState(releaseDraft.folder);
   const [selectedProject, setSelectedProject] = useState(
@@ -231,10 +237,49 @@ export function Creator({
   );
   const [channel, setChannel] = useState(releaseDraft.channel);
   const [changelog, setChangelog] = useState(releaseDraft.changelog);
-  const [releaseSource, setReleaseSource] = useState<"local" | "github">(
-    releaseDraft.source === "github" ? "github" : "local",
-  );
-  const [githubRepository, setGithubRepository] = useState(releaseDraft.githubRepository);
+  const [projectReleasePreferences, setProjectReleasePreferences] = useState<
+    Record<string, ProjectReleasePreference>
+  >(() => {
+    const preferences = { ...releaseDraft.projectPreferences };
+    if (releaseDraft.selectedProject && !preferences[releaseDraft.selectedProject]) {
+      preferences[releaseDraft.selectedProject] = {
+        source: releaseDraft.source === "github" ? "github" : "local",
+        githubRepository: typeof releaseDraft.githubRepository === "string"
+          ? releaseDraft.githubRepository
+          : "",
+      };
+    }
+    return preferences;
+  });
+  const projectReleasePreference = projectReleasePreferences[selectedProject];
+  const releaseSource: ReleaseSource = projectReleasePreference?.source === "github"
+    ? "github"
+    : "local";
+  const githubRepository = typeof projectReleasePreference?.githubRepository === "string"
+    ? projectReleasePreference.githubRepository
+    : "";
+  const updateProjectReleasePreference = (
+    updates: Partial<ProjectReleasePreference>,
+  ) => {
+    if (!selectedProject) return;
+    setProjectReleasePreferences((preferences) => {
+      const current = preferences[selectedProject];
+      return {
+        ...preferences,
+        [selectedProject]: {
+          source: current?.source === "github" ? "github" : "local",
+          githubRepository: typeof current?.githubRepository === "string"
+            ? current.githubRepository
+            : "",
+          ...updates,
+        },
+      };
+    });
+  };
+  const setReleaseSource = (source: ReleaseSource) =>
+    updateProjectReleasePreference({ source });
+  const setGithubRepository = (githubRepository: string) =>
+    updateProjectReleasePreference({ githubRepository });
   const [githubReleases, setGithubReleases] = useState<GithubRelease[]>([]);
   const [githubPage, setGithubPage] = useState(0);
   const [githubHasMore, setGithubHasMore] = useState(false);
@@ -274,6 +319,12 @@ export function Creator({
   useEffect(() => {
     if (selectedProjectType !== "mod") setPreparedSource(null);
   }, [selectedProjectType]);
+
+  useEffect(() => {
+    setGithubReleases([]);
+    setGithubPage(0);
+    setGithubHasMore(false);
+  }, [selectedProject]);
 
   useEffect(() => {
     if (worldPublish) {
@@ -389,11 +440,10 @@ export function Creator({
         selectedProject,
         channel,
         changelog,
-        source: releaseSource,
-        githubRepository,
+        projectPreferences: projectReleasePreferences,
       }),
     );
-  }, [folder, selectedProject, channel, changelog, releaseSource, githubRepository]);
+  }, [folder, selectedProject, channel, changelog, projectReleasePreferences]);
 
   const refresh = useCallback(async (value: string) => {
     lastRefresh.current = Date.now();
@@ -648,6 +698,7 @@ export function Creator({
         release: release.tag_name,
         archive: archive.name,
       });
+      setChannel(release.prerelease ? "beta" : "stable");
       if (!changelog.trim() && release.body.trim()) setChangelog(release.body.trim());
       setStatus("ZIP из GitHub скачан и проверен");
     } catch (reason) {
@@ -662,7 +713,10 @@ export function Creator({
     const project = projects.find((item) => item.slug === selectedProject);
     const identityMatches = project?.type !== "mod" || !project.package_id ||
       prepared?.manifest.id === project.package_id;
-    if (!token || !project || !prepared || !identityMatches) return;
+    const versionExists = !!prepared && releases.some(
+      (release) => release.version === prepared.manifest.version,
+    );
+    if (!token || !project || !prepared || !identityMatches || versionExists) return;
     setError("");
     setStatus("Загружаем проверенный архив…");
     setTransfer({ completed: 0, total: prepared.size, bytes_per_second: 0, eta_seconds: 0 });
@@ -934,6 +988,9 @@ export function Creator({
   const preparedMatchesProject = !!prepared && !!current &&
     preparedKind === current.type &&
     (current.type !== "mod" || !current.package_id || prepared.manifest.id === current.package_id);
+  const preparedVersionRelease = prepared
+    ? releases.find((release) => release.version === prepared.manifest.version)
+    : undefined;
   return (
     <>
       {editingImage && (
@@ -1621,6 +1678,12 @@ export function Creator({
                     для всех версий движка.
                   </span>
                 )}
+                {preparedVersionRelease && (
+                  <span className="notice error" role="alert">
+                    Версия {prepared.manifest.version} уже добавлена в этот проект.
+                    Выберите другой релиз или измените версию пакета.
+                  </span>
+                )}
               </div>
             )}
             <p id="release-publish-state" role="status" className="release-publish-state">
@@ -1636,6 +1699,8 @@ export function Creator({
                         : "Выберите профиль, мир и подготовьте карту."
                     : !preparedMatchesProject
                       ? "Подготовленные файлы не соответствуют выбранному проекту."
+                      : preparedVersionRelease
+                        ? `Версия ${prepared.manifest.version} уже существует в проекте.`
                       : `Версия ${prepared.manifest.version} готова к отправке.`}
             </p>
             {transfer && (
@@ -1655,7 +1720,7 @@ export function Creator({
               className="primary small"
               aria-describedby="release-publish-state"
               disabled={
-                working || !preparedMatchesProject
+                working || !preparedMatchesProject || !!preparedVersionRelease
               }
               onClick={() => void perform(publish)}
             >
