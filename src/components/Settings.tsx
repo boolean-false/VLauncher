@@ -16,6 +16,7 @@ import { ThemeSettings } from "./ThemeSettings";
 import { MainlineSettings } from "./Mainline";
 import { mainBuildLabel, type MainBuild } from "../model";
 import { checkForAppUpdate, type AppUpdateChannel } from "../appUpdates";
+import { useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
 import {
   setJointCatalogEnabled,
   useJointCatalogEnabled,
@@ -60,6 +61,7 @@ export function Settings({
   remove: (version: string) => void;
   refresh: () => Promise<void>;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [versionError, setVersionError] = useState(false);
   useEffect(() => {
@@ -329,7 +331,7 @@ export function Settings({
                   <div>
                     <h3>
                       <Icon name="package" size={16} />
-                      VoxelCore {r.main_build ? mainBuildLabel(r.main_build) : r.version}
+                      VoxelCore {r.main_build ? mainBuildLabel(r.main_build) : versionLabel(r.version)}
                     </h3>
                     <p className="selectable">{r.path}</p>
                   </div>

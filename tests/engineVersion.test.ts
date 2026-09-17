@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { engineVersion, exactVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileModpack, profileRuntimeId, type LocalProfile, type MainBuild } from "../src/model.ts";
+import { engineVersion, exactVoxelCoreVersion, isDevelopmentVoxelCoreVersion, latestPublishedVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileEngineLabel, profileModpack, profileRuntimeId, voxelCoreVersionLabel, type LocalProfile, type MainBuild } from "../src/model.ts";
 
 test("сборка main хранит свою версию движка", () => {
   const build: MainBuild = {
@@ -15,7 +15,20 @@ test("сборка main хранит свою версию движка", () => 
   assert.equal(engineVersion({ ...profile, main_build: null }), "0.31.4");
   assert.equal(profileRuntimeId({ ...profile, main_build: null }), "0.31.4");
   assert.equal(mainRuntimeId(resolved), mainRuntimeId(build));
-  assert.match(mainBuildLabel(resolved), /0\.32\.0 · develop \(main\) · aaaaaaa/);
+  assert.match(mainBuildLabel(resolved), /0\.32\.0 · DEV \(main\) · aaaaaaa/);
+});
+
+test("версия новее последнего релиза помечается как DEV", () => {
+  const releases = ["0.9.12", "0.31.4", "0.10.2-beta.1", "not-a-version"];
+  const latest = latestPublishedVoxelCoreVersion(releases);
+  assert.equal(latest, "0.31.4");
+  assert.equal(isDevelopmentVoxelCoreVersion("0.32.0", latest), true);
+  assert.equal(isDevelopmentVoxelCoreVersion("0.31.5-beta.1", latest), true);
+  assert.equal(isDevelopmentVoxelCoreVersion("0.31.4", latest), false);
+  assert.equal(voxelCoreVersionLabel("0.32.0", latest), "0.32.0 · DEV");
+  assert.equal(voxelCoreVersionLabel("0.31.4", latest), "0.31.4");
+  const profile: LocalProfile = { id: "dev", name: "Dev", active_revision: null, voxelcore_version: "0.32.0", roots: [], packages: [] };
+  assert.equal(profileEngineLabel(profile, latest), "0.32.0 · DEV");
 });
 
 test("для пустого профиля версия не придумывается", () => {

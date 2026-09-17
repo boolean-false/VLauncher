@@ -34,6 +34,7 @@ import { Empty, ErrorNotice, Icon, Modal } from "./ui";
 import { useJointCatalogEnabled } from "../experimental";
 import { catalogProjectKeys } from "../catalogIdentity";
 import { isVoxelCoreBuiltin } from "../builtinContent";
+import { useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
 import {
   mergeModCategories,
   useAllRegistryProjects,
@@ -114,6 +115,7 @@ export function Catalog({
   profileContext?: { close: () => void };
   openProfile: (id: string) => void;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("mod");
@@ -369,7 +371,7 @@ export function Catalog({
       <header className="page-heading">
         <div>
           <h1>Каталог</h1>
-          {targetProfile && <p>Для профиля <strong>{targetProfile.name}</strong> · VoxelCore {catalogEngine || "не выбран"}</p>}
+          {targetProfile && <p>Для профиля <strong>{targetProfile.name}</strong> · VoxelCore {catalogEngine ? versionLabel(catalogEngine) : "не выбран"}</p>}
           {profileContext && <button className="catalog-profile-back" onClick={profileContext.close}>← К профилю</button>}
         </div>
         <label className="search">
@@ -765,6 +767,7 @@ function VoxelWorldProjectView({
   refreshProfiles: () => Promise<void>;
   close: () => void;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const result = useVoxelWorldMod(slug);
   const project = result.data;
@@ -928,7 +931,7 @@ function VoxelWorldProjectView({
                     <option value="" disabled>Выберите профиль</option>
                     {profiles.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name} · {engineVersion(item) || "версия не выбрана"}
+                        {item.name} · {engineVersion(item) ? versionLabel(engineVersion(item)) : "версия не выбрана"}
                       </option>
                     ))}
                   </Select>
@@ -977,7 +980,7 @@ function VoxelWorldProjectView({
               {profile && !profileEngine && <ErrorNotice>В профиле не выбрана версия VoxelCore.</ErrorNotice>}
               {profileEngine && selectedVersion && !compatible && (
                 <ErrorNotice>
-                  Эта версия не поддерживает VoxelCore {profileEngine}. Перед установкой VLauncher покажет подробности.
+                  Эта версия не поддерживает VoxelCore {versionLabel(profileEngine)}. Перед установкой VLauncher покажет подробности.
                 </ErrorNotice>
               )}
               {profile && running.has(profile.id) && <div className="notice">Завершите игру, чтобы изменить её контент.</div>}
@@ -1024,7 +1027,7 @@ function VoxelWorldProjectView({
         busy={busy}
       >
         <p>
-          Профиль <strong>{profile.name}</strong> · VoxelCore {profileEngine}
+          Профиль <strong>{profile.name}</strong> · VoxelCore {versionLabel(profileEngine)}
         </p>
         <div className="install-changes">
           {compatibilityWarning.packages.map((item, index) => (
@@ -1145,6 +1148,7 @@ export function ProjectView({
   create: () => void;
   openProfile: (id: string) => void;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
   const releasesResult = useRegistryResource<Release[]>(`/projects/${encodeURIComponent(slug)}/releases`);
@@ -1326,7 +1330,7 @@ export function ProjectView({
                     </option>
                     {profiles.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} · {engineVersion(p) || "версия не выбрана"}
+                        {p.name} · {engineVersion(p) ? versionLabel(engineVersion(p)) : "версия не выбрана"}
                       </option>
                     ))}
                   </Select>
@@ -1532,6 +1536,7 @@ export function InstallPreview({
   apply: () => Promise<boolean>;
   skipVersion?: (id: string, version: string) => Promise<boolean>;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const [failed, setFailed] = useState(false);
   const modpack = plan.plan.packages.find((pkg) => pkg.type === "modpack");
@@ -1591,7 +1596,7 @@ export function InstallPreview({
       {profile.main_build && <p>Выбрана сборка main · {profile.main_build.sha.slice(0, 7)}. Некоторые пакеты могут с ней не работать.</p>}
       <p>
         {newProfileName ? "Будет создан профиль" : "Профиль"} <strong>{newProfileName || profile.name}</strong> · VoxelCore{" "}
-        {plan.plan.voxelcore_version}
+        {versionLabel(plan.plan.voxelcore_version)}
       </p>
       {modpack && (
         <p className="install-modpack-version">

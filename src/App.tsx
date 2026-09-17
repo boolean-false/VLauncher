@@ -24,6 +24,8 @@ import {
   profileRuntimeId,
   mainBuildLabel,
   profileEngineLabel,
+  latestPublishedVoxelCoreVersion,
+  voxelCoreVersionLabel,
   profileModpack,
   type MainBuild,
   requireEngineVersion,
@@ -35,6 +37,7 @@ import {
   formatBytes,
   friendlyError,
 } from "./model";
+import { VoxelCoreVersionProvider, useVoxelCoreVersionLabel } from "./VoxelCoreVersionContext";
 import {
   Icon,
   Modal,
@@ -93,6 +96,7 @@ const navigation: { id: Screen; title: string; icon: IconName }[] = [
   { id: "catalog", title: "Каталог", icon: "catalog" },
   { id: "activity", title: "Журнал", icon: "activity" },
 ];
+const latestVoxelCoreVersionKey = "vlauncher.voxelcore.latest-published-version";
 const storedTasks = (): Task[] => {
   try {
     const value = JSON.parse(localStorage.getItem("vlauncher.tasks") ?? "[]") as Task[];
@@ -113,6 +117,9 @@ export default function App() {
   const [profiles, setProfiles] = useState<LocalProfile[]>([]);
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [availableRuntimes, setAvailableRuntimes] = useState<RuntimeRelease[]>([]);
+  const [knownLatestVoxelCoreVersion, setKnownLatestVoxelCoreVersion] = useState(
+    () => localStorage.getItem(latestVoxelCoreVersionKey) ?? "",
+  );
   const [runtimeCatalogError, setRuntimeCatalogError] = useState("");
   const [runtimeCatalogRevision, setRuntimeCatalogRevision] = useState(0);
   const reloadRuntimes = () => setRuntimeCatalogRevision((n) => n + 1);
@@ -169,6 +176,9 @@ export default function App() {
   }, []);
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
   const installedModpack = profileModpack(profile);
+  const latestVoxelCoreVersion =
+    latestPublishedVoxelCoreVersion(availableRuntimes.map((item) => item.version)) ||
+    knownLatestVoxelCoreVersion;
   const currentTask = tasks[0];
   useEffect(() => {
     localStorage.setItem("vlauncher.tasks", JSON.stringify(tasks.slice(0, 100)));
@@ -220,6 +230,11 @@ export default function App() {
       .then((items) => {
         if (active) {
           setAvailableRuntimes(items);
+          const latest = latestPublishedVoxelCoreVersion(items.map((item) => item.version));
+          if (latest) {
+            setKnownLatestVoxelCoreVersion(latest);
+            localStorage.setItem(latestVoxelCoreVersionKey, latest);
+          }
           setRuntimeCatalogError("");
         }
       })
@@ -577,6 +592,7 @@ export default function App() {
     });
 
   return (
+    <VoxelCoreVersionProvider latestVersion={latestVoxelCoreVersion}>
     <div className="app-shell workbench" data-screen={screen}>
       <aside className="sidebar">
         <div className="brand">
@@ -649,7 +665,7 @@ export default function App() {
               <span>
                 {p.name}
                 <small>
-                  {engineVersion(p) || "Версия не выбрана"}
+                  {voxelCoreVersionLabel(engineVersion(p), latestVoxelCoreVersion) || "Версия не выбрана"}
                   {running.has(p.id) ? " · запущена" : ""}
                 </small>
               </span>
@@ -777,7 +793,7 @@ export default function App() {
                         <div className="game-emblem"><img src={profile.icon} alt="" /></div>
                       )}
                       <div className="game-title">
-                        <span className="eyebrow supporting-label">VoxelCore {profileEngineLabel(profile) || "· версия не выбрана"}</span>
+                        <span className="eyebrow supporting-label">VoxelCore {profileEngineLabel(profile, latestVoxelCoreVersion) || "· версия не выбрана"}</span>
                         {profile.main_build && <p>Экспериментальная сборка. Совместимость модов не подтверждена.</p>}
                         <h2>{profile.name}</h2>
                         {profile.external_game_path && (
@@ -1369,6 +1385,7 @@ export default function App() {
         />
       )}
     </div>
+    </VoxelCoreVersionProvider>
   );
 }
 
@@ -1393,6 +1410,7 @@ function ImportExistingGame({
   close: () => void;
   submit: (name: string, version: string) => Promise<boolean>;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const versions = [
     ...availableRuntimes,
     ...runtimes
@@ -1424,7 +1442,7 @@ function ImportExistingGame({
   const runtimeInstalled = runtimes.some((runtime) => runtime.version === version);
   const runtimeText =
     analysis.runtime_kind === "manifest"
-      ? `Готовая среда VLauncher · VoxelCore ${analysis.runtime_version}`
+      ? `Готовая среда VLauncher · VoxelCore ${versionLabel(analysis.runtime_version ?? "")}`
       : analysis.runtime_kind === "detected"
         ? "Найдены исполняемый файл VoxelCore и ресурсы"
         : "Движок в папке не найден";
@@ -1449,7 +1467,7 @@ function ImportExistingGame({
             <span className="muted">
               {analysis.runtime_kind === "detected"
                 ? analysis.runtime_version
-                  ? `Версия ${analysis.runtime_version} определена командой --version`
+                  ? `Версия ${versionLabel(analysis.runtime_version)} определена командой --version`
                   : "Не удалось определить версию автоматически"
                 : "Выбранная версия будет установлена обычным способом"}
             </span>
@@ -1478,7 +1496,7 @@ function ImportExistingGame({
         {analysis.runtime_version ? (
           <div className="existing-game-fixed-version">
             <span>Версия VoxelCore</span>
-            <strong>{analysis.runtime_version}</strong>
+            <strong>{versionLabel(analysis.runtime_version)}</strong>
           </div>
         ) : (
           <label>
@@ -1491,7 +1509,7 @@ function ImportExistingGame({
             >
               {versions.map((item) => (
                 <option key={item.version} value={item.version}>
-                  {item.version} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная" : item.channel}
+                  {versionLabel(item.version)} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная" : item.channel}
                   {runtimes.some((runtime) => runtime.version === item.version)
                     ? " · установлена"
                     : ""}
@@ -1555,6 +1573,7 @@ function CreateProfile({
   close: () => void;
   submit: (name: string, version: string, mainBuild?: MainBuild) => Promise<boolean>;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const [name, setName] = useState("VoxelCore");
   const { status: mainlineStatus, error: mainlineError } = useMainlineStatus();
   const [selectedMainId, setSelectedMainId] = useState("");
@@ -1646,7 +1665,7 @@ function CreateProfile({
             ))}
             {versions.map((item) => (
               <option key={item.version} value={item.version}>
-                {item.version} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная сборка" : item.channel}
+                {versionLabel(item.version)} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная сборка" : item.channel}
                 {runtimes.some((runtime) => runtime.version === item.version)
                   ? " · установлена"
                   : ""}
@@ -1766,6 +1785,7 @@ function ProfileSettings({
     reclaimable_bytes: number;
     snapshot_count: number;
   };
+  const versionLabel = useVoxelCoreVersionLabel();
   const [name, setName] = useState(profile.name);
   const modpack = profileModpack(profile);
   const { status: mainlineStatus } = useMainlineStatus();
@@ -1788,13 +1808,13 @@ function ProfileSettings({
         {modpack ? (
           <div className="profile-managed-value">
             <span>VoxelCore</span>
-            <strong>{engineVersion(profile)}</strong>
+            <strong>{versionLabel(engineVersion(profile))}</strong>
             <small>Управляется сборкой</small>
           </div>
         ) : profile.external_runtime ? (
           <div className="profile-managed-value">
             <span>Локальный VoxelCore</span>
-            <strong>{engineVersion(profile)}</strong>
+            <strong>{versionLabel(engineVersion(profile))}</strong>
             <small className="selectable" title={profile.external_runtime.path}>{profile.external_runtime.path}</small>
           </div>
         ) : <form
@@ -1819,11 +1839,11 @@ function ProfileSettings({
               </option>
             ))}
             {!!engineVersion(profile) && !profile.main_build && !availableRuntimes.some((item) => item.version === engineVersion(profile)) && (
-              <option value={engineVersion(profile)}>{engineVersion(profile)} · текущая</option>
+              <option value={engineVersion(profile)}>{versionLabel(engineVersion(profile))} · текущая</option>
             )}
             {availableRuntimes.map((item) => (
               <option key={item.version} value={item.version}>
-                {item.version} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная сборка" : item.channel}
+                {versionLabel(item.version)} · {item.channel === "stable" ? "стабильная" : item.channel === "local" ? "локальная сборка" : item.channel}
               </option>
             ))}
           </Select>
@@ -2068,6 +2088,7 @@ function Worlds({
   run: RunTask;
   publish: (folder: string) => void;
 }) {
+  const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const result = useLocalResource<
     {
@@ -2137,7 +2158,7 @@ function Worlds({
                 <strong>{world.name}</strong>
                 <small>
                   {world.folder}
-                  {world.voxelcore_version && ` · VoxelCore ${world.voxelcore_version}`}
+                  {world.voxelcore_version && ` · VoxelCore ${versionLabel(world.voxelcore_version)}`}
                   {world.compatible === false && " · требуется другая версия движка"}
                 </small>
                 {world.origin_title && (

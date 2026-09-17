@@ -5215,6 +5215,7 @@ mod tests {
     fn parses_the_full_engine_version_before_the_short_display_version() {
         let output = "[I] 2026/09/15 21:03:24.250 [ main] build: 0.31.4\nVoxelCore v0.31\n";
         assert_eq!(parse_voxelcore_version(output).as_deref(), Some("0.31.4"));
+        assert_eq!(parse_voxelcore_version("0.32\n").as_deref(), Some("0.32.0"));
     }
 
     #[cfg(unix)]

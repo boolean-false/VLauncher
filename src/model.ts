@@ -55,8 +55,8 @@ export type MainBuild = {
 export const mainRuntimeId = (build: MainBuild) => `0.0.0-main.${build.artifact_id}+g${build.sha}`;
 export const profileRuntimeId = (profile?: LocalProfile) =>
   profile?.main_build ? mainRuntimeId(profile.main_build) : engineVersion(profile);
-export const mainBuildLabel = (build: MainBuild) => `${build.engine_version ? `${build.engine_version} · develop (main)` : "main"} · ${build.sha.slice(0, 7)} · ${build.created_at.slice(0, 10)}`;
-export const profileEngineLabel = (profile: LocalProfile) => profile.main_build ? mainBuildLabel(profile.main_build) : engineVersion(profile);
+export const mainBuildLabel = (build: MainBuild) => `${build.engine_version ? `${build.engine_version} · DEV (main)` : "main"} · ${build.sha.slice(0, 7)} · ${build.created_at.slice(0, 10)}`;
+export const profileEngineLabel = (profile: LocalProfile, latestPublishedVersion = "") => profile.main_build ? mainBuildLabel(profile.main_build) : voxelCoreVersionLabel(engineVersion(profile), latestPublishedVersion);
 export type GameEvent = {
   profile_id: string;
   stream: string;
@@ -76,6 +76,56 @@ export type RunTask = (
 ) => Promise<boolean>;
 export const engineVersion = (profile?: LocalProfile) =>
   profile?.main_build?.engine_version?.trim() || profile?.voxelcore_version?.trim() || "";
+
+type SemVer = { core: number[]; prerelease: (number | string)[] };
+
+const parseSemVer = (value: string): SemVer | null => {
+  const match = value.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!match) return null;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4]
+      ? match[4].split(".").map((part) => /^\d+$/.test(part) ? Number(part) : part)
+      : [],
+  };
+};
+
+const compareSemVer = (left: string, right: string) => {
+  const a = parseSemVer(left);
+  const b = parseSemVer(right);
+  if (!a || !b) return 0;
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] - b.core[index];
+  }
+  if (!a.prerelease.length || !b.prerelease.length) {
+    return Number(!a.prerelease.length) - Number(!b.prerelease.length);
+  }
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
+    const av = a.prerelease[index];
+    const bv = b.prerelease[index];
+    if (av === undefined || bv === undefined) return av === undefined ? -1 : 1;
+    if (av === bv) continue;
+    if (typeof av === "number" && typeof bv === "number") return av - bv;
+    if (typeof av === "number") return -1;
+    if (typeof bv === "number") return 1;
+    return av.localeCompare(bv, "en");
+  }
+  return 0;
+};
+
+export const latestPublishedVoxelCoreVersion = (versions: Iterable<string>) => {
+  let latest = "";
+  for (const version of versions) {
+    if (parseSemVer(version) && (!latest || compareSemVer(version, latest) > 0)) latest = version.trim();
+  }
+  return latest;
+};
+
+export const isDevelopmentVoxelCoreVersion = (version: string, latestPublishedVersion: string) =>
+  !!parseSemVer(version) && !!parseSemVer(latestPublishedVersion) && compareSemVer(version, latestPublishedVersion) > 0;
+
+export const voxelCoreVersionLabel = (version: string, latestPublishedVersion: string) =>
+  isDevelopmentVoxelCoreVersion(version, latestPublishedVersion) ? `${version} · DEV` : version;
 
 export const profileModpack = (profile?: LocalProfile) =>
   profile?.packages.find((pkg) => pkg.kind === "modpack");
