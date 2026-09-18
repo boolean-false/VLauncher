@@ -160,10 +160,10 @@ export function Creator({
   };
 
   const [token, setToken] = useState("");
-  const [tokenReady,setTokenReady] = useState(false);
+  const [tokenReady, setTokenReady] = useState(false);
   const tokenRef = useRef(token); tokenRef.current = token;
   const lastRefresh = useRef(0);
-  useEffect(()=>{const clear=(event:Event)=>{if((event as CustomEvent).detail===tokenRef.current){setToken("");setAccount(null);setProjects([]);setSessions([]);setOrganizations([]);}};window.addEventListener('image-session-cleared',clear);return()=>window.removeEventListener('image-session-cleared',clear);},[]);
+  useEffect(() => { const clear = (event: Event) => { if ((event as CustomEvent).detail === tokenRef.current) { setToken(""); setAccount(null); setProjects([]); setSessions([]); setOrganizations([]); } }; window.addEventListener('image-session-cleared', clear); return () => window.removeEventListener('image-session-cleared', clear); }, []);
   const [account, setAccount] = useState<Account | null>(null);
   const [sessions, setSessions] = useState<AccessSession[]>([]);
   const [projects, setProjects] = useState<CreatorProject[]>([]);
@@ -474,7 +474,7 @@ export function Creator({
       // Старый токен не привязан к адресу сервера.
       localStorage.removeItem("vlauncher_token");
       setToken((await storedToken()) ?? "");
-    })().catch((reason) => setError(String(reason))).finally(()=>setTokenReady(true));
+    })().catch((reason) => setError(String(reason))).finally(() => setTokenReady(true));
   }, []);
   useEffect(() => {
     if (token)
@@ -482,19 +482,19 @@ export function Creator({
         setError(String(reason));
       });
   }, [token, refresh]);
-  useEffect(()=>{if(!active||!token||section!=="sessions")return;let alive=true;void loadSessions(token).then(value=>{if(alive)setSessions(value);}).catch(e=>{if(alive)setError(String(e));});return()=>{alive=false;};},[active,token,section]);
+  useEffect(() => { if (!active || !token || section !== "sessions") return; let alive = true; void loadSessions(token).then(value => { if (alive) setSessions(value); }).catch(e => { if (alive) setError(String(e)); }); return () => { alive = false; }; }, [active, token, section]);
   const selectedProjectExists = projects.some(
     (project) => project.slug === selectedProject,
   );
   const projectPath = `/creator/projects/${encodeURIComponent(selectedProject)}`;
   const projectActive = active && !!token && selectedProjectExists;
-  const releaseData = useRegistryResource<CreatorRelease[]>(`${projectPath}/releases`,token,projectActive && (section === "release" || section === "manage" && projectTab === "versions"));
-  const mediaData = useRegistryResource<ProjectMedia[]>(`${projectPath}/media`,token,projectActive && section === "manage" && ["manage","media"].includes(projectTab));
-  const memberData = useRegistryResource<ProjectMember[]>(`${projectPath}/members`,token,projectActive && section === "manage" && projectTab === "members");
-  useEffect(()=>setReleases(releaseData.data ?? []),[releaseData.data,selectedProject]);
-  useEffect(()=>setMedia(mediaData.data ?? []),[mediaData.data,selectedProject]);
-  useEffect(()=>setMembers(memberData.data ?? []),[memberData.data,selectedProject]);
-  useEffect(()=>{ const failure=releaseData.error||mediaData.error||memberData.error;if(failure)setError(failure); },[releaseData.error,mediaData.error,memberData.error]);
+  const releaseData = useRegistryResource<CreatorRelease[]>(`${projectPath}/releases`, token, projectActive && (section === "release" || section === "manage" && projectTab === "versions"));
+  const mediaData = useRegistryResource<ProjectMedia[]>(`${projectPath}/media`, token, projectActive && section === "manage" && ["manage", "media"].includes(projectTab));
+  const memberData = useRegistryResource<ProjectMember[]>(`${projectPath}/members`, token, projectActive && section === "manage" && projectTab === "members");
+  useEffect(() => setReleases(releaseData.data ?? []), [releaseData.data, selectedProject]);
+  useEffect(() => setMedia(mediaData.data ?? []), [mediaData.data, selectedProject]);
+  useEffect(() => setMembers(memberData.data ?? []), [memberData.data, selectedProject]);
+  useEffect(() => { const failure = releaseData.error || mediaData.error || memberData.error; if (failure) setError(failure); }, [releaseData.error, mediaData.error, memberData.error]);
 
   const login = async () => {
     const attempt = ++loginAttempt.current;
@@ -609,11 +609,11 @@ export function Creator({
     (project) =>
       savedProjects.current.get(project.slug) !== JSON.stringify(project),
   );
-  useEffect(()=>{
-    if(!active||!token||hasUnsavedProject)return;
-    const check=()=>{if(Date.now()-lastRefresh.current>60_000)void refresh(token).catch(e=>setError(String(e)));};
-    check();window.addEventListener('focus',check);return()=>window.removeEventListener('focus',check);
-  },[active,token,hasUnsavedProject,refresh]);
+  useEffect(() => {
+    if (!active || !token || hasUnsavedProject) return;
+    const check = () => { if (Date.now() - lastRefresh.current > 60_000) void refresh(token).catch(e => setError(String(e))); };
+    check(); window.addEventListener('focus', check); return () => window.removeEventListener('focus', check);
+  }, [active, token, hasUnsavedProject, refresh]);
 
   const switchProject = (slug: string) => {
     setProjects((items) =>
@@ -667,7 +667,7 @@ export function Creator({
       setGithubReleases((items) => page === 1
         ? result.releases
         : [...items, ...result.releases.filter((release) =>
-            !items.some((item) => item.id === release.id))]);
+          !items.some((item) => item.id === release.id))]);
       setGithubPage(page);
       setGithubHasMore(result.has_more);
     } finally {
@@ -714,7 +714,9 @@ export function Creator({
     const identityMatches = project?.type !== "mod" || !project.package_id ||
       prepared?.manifest.id === project.package_id;
     const versionExists = !!prepared && releases.some(
-      (release) => release.version === prepared.manifest.version,
+      (release) =>
+        release.version === prepared.manifest.version &&
+        release.status !== "yanked",
     );
     if (!token || !project || !prepared || !identityMatches || versionExists) return;
     setError("");
@@ -729,7 +731,7 @@ export function Creator({
         changelog,
       });
       const deadline = Date.now() + 120_000;
-      for (;;) {
+      for (; ;) {
         if (!alive.current) return;
         if (Date.now() > deadline) {
           setStatus(
@@ -887,7 +889,7 @@ export function Creator({
     setLifecycleDialog({ release, action });
   };
 
-  if (!tokenReady || token && !account) return <><div className="page-title"><h1>Мастерская</h1></div>{error ? <ErrorNotice retry={()=>void refresh(token).catch(e=>setError(String(e)))}>{error}</ErrorNotice> : <p role="status">Загружаем мастерскую…</p>}</>;
+  if (!tokenReady || token && !account) return <><div className="page-title"><h1>Мастерская</h1></div>{error ? <ErrorNotice retry={() => void refresh(token).catch(e => setError(String(e)))}>{error}</ErrorNotice> : <p role="status">Загружаем мастерскую…</p>}</>;
   if (!token || !account)
     return (
       <>
@@ -989,7 +991,11 @@ export function Creator({
     preparedKind === current.type &&
     (current.type !== "mod" || !current.package_id || prepared.manifest.id === current.package_id);
   const preparedVersionRelease = prepared
-    ? releases.find((release) => release.version === prepared.manifest.version)
+    ? releases.find(
+      (release) =>
+        release.version === prepared.manifest.version &&
+        release.status !== "yanked",
+    )
     : undefined;
   return (
     <>
@@ -1047,8 +1053,8 @@ export function Creator({
             key={id}
             className={
               section === id ||
-              (id === "projects" &&
-                ["create", "manage", "release"].includes(section))
+                (id === "projects" &&
+                  ["create", "manage", "release"].includes(section))
                 ? "active"
                 : ""
             }
@@ -1209,9 +1215,9 @@ export function Creator({
               </div>
             </div>
             <div className="form-row">
-            <span className={"publication-status " + current.status}>
-              {publicationStatus(current.status)}{current.archived_at ? " · В архиве" : ""}
-            </span>
+              <span className={"publication-status " + current.status}>
+                {publicationStatus(current.status)}{current.archived_at ? " · В архиве" : ""}
+              </span>
             </div>
           </div>
           <nav className="workshop-project-tabs" aria-label="Разделы проекта">
@@ -1701,7 +1707,7 @@ export function Creator({
                       ? "Подготовленные файлы не соответствуют выбранному проекту."
                       : preparedVersionRelease
                         ? `Версия ${prepared.manifest.version} уже существует в проекте.`
-                      : `Версия ${prepared.manifest.version} готова к отправке.`}
+                        : `Версия ${prepared.manifest.version} готова к отправке.`}
             </p>
             {transfer && (
               <div className="transfer-progress">
@@ -1936,7 +1942,7 @@ export function Creator({
                       ? "Редактор"
                       : "Участник"}
                 </small>
-              <TeamActions slug={org.slug} request={<T,>(path: string, init?: RequestInit) => registryRequest<T>(path, init, token)} changed={() => void refresh(token).catch(e => setError(String(e)))} />
+                <TeamActions slug={org.slug} request={<T,>(path: string, init?: RequestInit) => registryRequest<T>(path, init, token)} changed={() => void refresh(token).catch(e => setError(String(e)))} />
               </article>
             ))}
             <h3>Создать команду</h3>

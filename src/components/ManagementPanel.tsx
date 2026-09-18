@@ -655,6 +655,7 @@ function EntityManager({
       title={item.title || item.name || item.username || "Управление"}
       close={close}
       busy={false}
+      className={project ? "management-project-dialog" : undefined}
     >
       <div className="management-entity">
         {error && <ErrorNotice>{error}</ErrorNotice>}

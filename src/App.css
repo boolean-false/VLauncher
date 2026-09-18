@@ -3866,6 +3866,10 @@ input[type="checkbox"]:disabled {
   margin: 0;
 }
 
+.management-project-dialog {
+  width: min(960px, calc(100vw - 48px));
+}
+
 .management-entity details> :not(summary) {
   margin-top: 16px;
 }

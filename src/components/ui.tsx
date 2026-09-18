@@ -59,12 +59,14 @@ export function Modal({
   close,
   busy = false,
   closeOnBackdrop = true,
+  className,
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
   busy?: boolean;
   closeOnBackdrop?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const id = useId();
@@ -81,6 +83,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
+      className={className}
       aria-labelledby={id}
       onCancel={(e) => {
         e.preventDefault();
