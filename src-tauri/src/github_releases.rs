@@ -15,6 +15,8 @@ use vlauncher_core::{PreparedArtifact, prepare_package};
 use crate::{TransferEvent, application_cache_dir};
 
 const API: &str = "https://api.github.com";
+const API_ACCEPT: &str = "application/vnd.github+json";
+const ASSET_ACCEPT: &str = "application/octet-stream";
 const MAX_DOWNLOAD: u64 = 2 * 1024 * 1024 * 1024;
 const PAGE_SIZE: u32 = 10;
 
@@ -141,10 +143,10 @@ fn api_error(response: Response) -> String {
 fn get_json<T: serde::de::DeserializeOwned>(http: &Client, url: &str) -> Result<T, String> {
     let response = http
         .get(url)
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", API_ACCEPT)
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
-        .map_err(|_| "Не удалось подключиться к GitHub".to_owned())?;
+        .map_err(|error| format!("Не удалось подключиться к GitHub: {error}"))?;
     if !response.status().is_success() {
         return Err(api_error(response));
     }
@@ -285,7 +287,7 @@ pub async fn prepare_github_release(
             return Err("Выберите один ZIP из релиза GitHub".into());
         }
         let http = client()?;
-        let (url, expected_size) = if let Some(asset_id) = asset_id {
+        let (url, expected_size, accept) = if let Some(asset_id) = asset_id {
             let url = format!("{API}/repos/{owner}/{repo}/releases/assets/{asset_id}");
             let asset: ApiAsset = get_json(&http, &url)?;
             if asset.state != "uploaded"
@@ -295,7 +297,7 @@ pub async fn prepare_github_release(
             {
                 return Err("Выбранный файл GitHub не является доступным ZIP-архивом".into());
             }
-            (url, Some(asset.size))
+            (url, Some(asset.size), ASSET_ACCEPT)
         } else {
             let tag = tag.unwrap();
             let mut release_url =
@@ -315,14 +317,14 @@ pub async fn prepare_github_release(
                 .path_segments_mut()
                 .map_err(|_| "Некорректный адрес GitHub")?
                 .push(&tag);
-            (zip_url.to_string(), None)
+            (zip_url.to_string(), None, API_ACCEPT)
         };
         let response = http
             .get(url)
-            .header("Accept", "application/octet-stream")
+            .header("Accept", accept)
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
-            .map_err(|_| "Не удалось скачать ZIP из GitHub".to_owned())?;
+            .map_err(|error| format!("Не удалось скачать ZIP из GitHub: {error}"))?;
         let temporary_dir = application_cache_dir(&app)?.join("github-imports");
         fs::create_dir_all(&temporary_dir).map_err(|error| error.to_string())?;
         let mut temporary = tempfile::Builder::new()
