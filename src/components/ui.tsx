@@ -16,6 +16,7 @@ export type IconName =
   | "world"
   | "check"
   | "download"
+  | "warning"
   | "more";
 const paths: Record<IconName, ReactNode> = {
   library: <><path d="M3 3h18v8H3zM3 13h18v8H3z" /><path d="M7 7h5M7 17h5" /></>,
@@ -34,6 +35,7 @@ const paths: Record<IconName, ReactNode> = {
   world: <><path d="M3 3h18v18H3zM7 7h4v4H7zM13 13h4v4h-4z" /><path d="M11 9h4v6" /></>,
   check: <path d="m4 12 5 5L20 6" />,
   download: <path d="M12 3v12m-5-5 5 5 5-5M3 17v4h18v-4" />,
+  warning: <><path d="M12 3 22 21H2z" /><path d="M12 9v5M12 18h.01" /></>,
   more: <path d="M3 10h4v4H3zM10 10h4v4h-4zM17 10h4v4h-4z" fill="currentColor" stroke="none" />,
 };
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

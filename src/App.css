@@ -1450,6 +1450,33 @@ main>div[hidden] {
 .modpack-profile-notice span {
   color: var(--muted);
 }
+.main-commit-requirement {
+  display: grid;
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--warning, #e0a53a) 55%, transparent);
+}
+
+.main-commit-requirement span {
+  color: var(--muted);
+}
+
+.main-compatibility-editor,
+.main-compatibility-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.main-compatibility-fields {
+  padding-left: 24px;
+}
+
+.catalog-main-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warning, #e0a53a);
+  font-size: 12px;
+}
 
 .catalog-project-page .project-install-panel .release-info {
   gap: 8px;

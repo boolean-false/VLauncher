@@ -132,11 +132,29 @@ pub struct RemoteInstallPackage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoxelCoreRuntimeKind {
+    Stable,
+    Main,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoxelCoreRuntimeContext {
+    pub kind: VoxelCoreRuntimeKind,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+    pub platform: String,
+    pub architecture: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteInstallPlan {
     pub revision: String,
     pub issued_at: i64,
     pub expires_at: i64,
     pub voxelcore_version: String,
+    pub runtime: VoxelCoreRuntimeContext,
     pub roots: Vec<String>,
     #[serde(default)]
     pub root_requirements: HashMap<String, String>,
@@ -285,6 +303,35 @@ impl SignedRemoteInstallPlan {
         }
         if verified.expires_at < now {
             return invalid("resolution plan has expired");
+        }
+        let local_platform = if std::env::consts::OS == "macos" {
+            "macos"
+        } else {
+            std::env::consts::OS
+        };
+        if verified.runtime.version != verified.voxelcore_version
+            || verified.runtime.platform.is_empty()
+            || verified.runtime.architecture.is_empty()
+            || !matches!(
+                verified.runtime.platform.as_str(),
+                "linux" | "windows" | "macos"
+            )
+            || !matches!(verified.runtime.architecture.as_str(), "x86_64" | "aarch64")
+            || verified.runtime.platform != local_platform
+            || verified.runtime.architecture != std::env::consts::ARCH
+            || match verified.runtime.kind {
+                VoxelCoreRuntimeKind::Stable => verified.runtime.commit_sha.is_some(),
+                VoxelCoreRuntimeKind::Main => {
+                    verified.runtime.commit_sha.as_ref().is_none_or(|sha| {
+                        sha.len() != 40
+                            || !sha
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                    })
+                }
+            }
+        {
+            return invalid("resolution plan contains an invalid VoxelCore runtime context");
         }
         Ok(verified)
     }
@@ -1517,6 +1564,27 @@ impl ProfileStore {
         plan: &RemoteInstallPlan,
         progress: impl Fn(&str, u64, u64) -> bool,
     ) -> Result<(), PackageProblem> {
+        self.apply_remote_with_progress_and_main(profile_id, plan, None, progress)
+    }
+
+    pub fn apply_remote_with_progress_and_main(
+        &self,
+        profile_id: Uuid,
+        plan: &RemoteInstallPlan,
+        target_main: Option<crate::mainline::MainBuild>,
+        progress: impl Fn(&str, u64, u64) -> bool,
+    ) -> Result<(), PackageProblem> {
+        if let Some(build) = &target_main {
+            build.validate().map_err(PackageProblem::Invalid)?;
+            if plan.runtime.kind != VoxelCoreRuntimeKind::Main
+                || plan.runtime.commit_sha.as_deref() != Some(&build.sha)
+                || build.engine_version.as_deref() != Some(&plan.runtime.version)
+                || build.platform != plan.runtime.platform
+                || build.architecture != plan.runtime.architecture
+            {
+                return invalid("selected main build differs from the signed resolution plan");
+            }
+        }
         let client = Client::builder()
             .user_agent(concat!("VLauncher/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
@@ -1537,18 +1605,24 @@ impl ProfileStore {
             });
         }
         let previous_metadata = self.profile_metadata(profile_id)?;
-        let metadata = ProfileSnapshotMetadata {
-            main_build: if previous_metadata
+        let existing_main = match plan.runtime.kind {
+            VoxelCoreRuntimeKind::Stable => None,
+            VoxelCoreRuntimeKind::Main => previous_metadata
                 .main_build
                 .as_ref()
-                .and_then(|b| b.engine_version.as_deref())
-                .or(previous_metadata.voxelcore_version.as_deref())
-                == Some(&plan.voxelcore_version)
-            {
-                previous_metadata.main_build
-            } else {
-                None
-            },
+                .zip(plan.runtime.commit_sha.as_ref())
+                .filter(|(build, sha)| {
+                    &build.sha == *sha
+                        && build.engine_version.as_deref() == Some(&plan.runtime.version)
+                })
+                .map(|(build, _)| build.clone()),
+        };
+        let selected_main = target_main.or(existing_main);
+        if plan.runtime.kind == VoxelCoreRuntimeKind::Main && selected_main.is_none() {
+            return invalid("profile main build differs from the signed resolution plan");
+        }
+        let metadata = ProfileSnapshotMetadata {
+            main_build: selected_main,
             voxelcore_version: Some(plan.voxelcore_version.clone()),
             roots: plan.roots.clone(),
             root_requirements: plan.root_requirements.clone(),
@@ -1690,7 +1764,7 @@ impl ProfileStore {
             .and_then(|build| build.engine_version.as_deref())
             .or(profile.voxelcore_version.as_deref())
             .ok_or_else(|| PackageProblem::Invalid("profile has no VoxelCore version".into()))?;
-        let dependencies = profile
+        let mut dependencies = profile
             .packages
             .iter()
             .filter(|package| {
@@ -1705,6 +1779,9 @@ impl ProfileStore {
                 })
             })
             .collect::<Vec<_>>();
+        dependencies.push(serde_json::json!({
+            "id": "base", "requirement": format!("={engine}"), "kind": "required"
+        }));
         let external_packages = profile
             .external_packages
             .iter()
@@ -1814,7 +1891,6 @@ impl ProfileStore {
                         "creators": [creator],
                         "description": format!("Стартовая карта сборки {title}"),
                         "license": license,
-                        "voxelcore": format!("={engine}"),
                         "dependencies": [],
                         "capabilities": [],
                         "environments": ["client"]
@@ -1853,7 +1929,6 @@ impl ProfileStore {
                 "creators": [creator],
                 "description": format!("Сборка профиля {}", profile.name),
                 "license": license,
-                "voxelcore": format!("={engine}"),
                 "dependencies": dependencies,
                 "external_packages": external_packages,
                 "components": components,
@@ -1919,7 +1994,7 @@ impl ProfileStore {
             .iter()
             .map(|package| (package.id.as_str(), package.version.as_str()))
             .collect::<HashMap<_, _>>();
-        let dependencies = fs::read_to_string(world.join("packs.list"))
+        let mut dependencies = fs::read_to_string(world.join("packs.list"))
             .unwrap_or_default()
             .lines()
             .map(str::trim)
@@ -1931,6 +2006,9 @@ impl ProfileStore {
                 })
             })
             .collect::<Vec<_>>();
+        dependencies.push(serde_json::json!({
+            "id": "base", "requirement": format!("={engine}"), "kind": "required"
+        }));
         let output_folder = output_folder.as_ref();
         fs::create_dir_all(output_folder).map_err(|source| io_error(output_folder, source))?;
         let source = output_folder.join(format!(".world-source-{}", Uuid::new_v4()));
@@ -1942,7 +2020,7 @@ impl ProfileStore {
                 "schema_version": 1, "id": slug, "type": "world", "title": title,
                 "version": version, "creators": [creator],
                 "description": format!("Карта из профиля {}", profile.name),
-                "license": license, "voxelcore": format!("={engine}"),
+                "license": license,
                 "dependencies": dependencies, "capabilities": [], "environments": ["client"]
             });
             fs::write(
@@ -3855,8 +3933,7 @@ mod tests {
                 "version": version,
                 "creators": ["Tester"],
                 "description": "External package",
-                "license": "MIT",
-                "voxelcore": ">=0.31.0"
+                "license": "MIT"
             }))
             .unwrap(),
         )
@@ -3886,7 +3963,6 @@ mod tests {
                     "creators": ["Dagger"],
                     "description": "Demo",
                     "license": "MIT",
-                    "voxelcore": ">=0.31.4",
                     "environments": if server_compatible { vec!["client", "server"] } else { vec!["client"] }
                 }))
                 .unwrap()
@@ -3926,7 +4002,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "schema_version": 1, "id": id, "type": "world",
                     "title": "Demo world", "version": version, "creators": ["Dagger"],
-                    "description": "World", "license": "MIT", "voxelcore": ">=0.31.4"
+                    "description": "World", "license": "MIT"
                 }))
                 .unwrap()
                 .as_bytes(),
@@ -3959,6 +4035,13 @@ mod tests {
             issued_at: 1_000,
             expires_at,
             voxelcore_version: "0.31.4".into(),
+            runtime: VoxelCoreRuntimeContext {
+                kind: VoxelCoreRuntimeKind::Stable,
+                version: "0.31.4".into(),
+                commit_sha: None,
+                platform: "linux".into(),
+                architecture: "x86_64".into(),
+            },
             roots: vec!["demo_mod".into()],
             root_requirements: HashMap::from([("demo_mod".into(), "=1.0.0".into())]),
             packages: vec![RemoteInstallPackage {
@@ -4652,6 +4735,13 @@ mod tests {
                     issued_at: timestamp(),
                     expires_at: timestamp() + 100,
                     voxelcore_version: "0.32.0".into(),
+                    runtime: VoxelCoreRuntimeContext {
+                        kind: VoxelCoreRuntimeKind::Main,
+                        version: "0.32.0".into(),
+                        commit_sha: Some(build.sha.clone()),
+                        platform: build.platform.clone(),
+                        architecture: build.architecture.clone(),
+                    },
                     roots: vec![],
                     root_requirements: HashMap::new(),
                     packages: vec![],
@@ -4771,7 +4861,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(artifact.manifest.kind, PackageKind::Modpack);
-        assert_eq!(artifact.manifest.voxelcore, "=0.31.4");
+        assert!(artifact.manifest.dependencies.iter().any(|dependency|
+            dependency.id == "base" && dependency.requirement == "=0.31.4"
+        ));
         assert_eq!(artifact.manifest.dependencies[0].id, "demo_mod");
         assert_eq!(artifact.manifest.dependencies[0].requirement, "=1.0.0");
         assert_eq!(artifact.manifest.external_packages.len(), 1);

@@ -53,7 +53,8 @@ import {
   type ProjectMedia,
   type ProjectMember,
 } from "../api";
-import { formatBytes, friendlyError, profileModpack, type LocalProfile } from "../model";
+import { compareSemVer, formatBytes, friendlyError, mainBuildLabel, profileModpack, type LocalProfile, type MainBuild } from "../model";
+import { useLatestPublishedVoxelCoreVersion } from "../VoxelCoreVersionContext";
 const storedToken = () => invoke<string | null>("load_access_token");
 const draftStorageKey = (kind: "project" | "release") =>
   `vlauncher.creator.${kind}-draft:${registryUrl.replace(/\/$/, "")}`;
@@ -66,14 +67,17 @@ type PreparedArtifact = {
     type: Project["type"] | "library";
     version: string;
     title: string;
-    voxelcore: string;
     capabilities?: string[];
-    dependencies?: unknown[];
+    dependencies?: { id: string; requirement: string; kind: "required" | "optional" | "weak" }[];
     conflicts?: unknown[];
     external_packages?: unknown[];
     components?: { key: string; type: "world"; title: string }[];
   };
 };
+const minimumVoxelCoreVersion = (requirement: string) =>
+  requirement.match(/(?:^|[\s,])(?:>=|=)\s*(\d+\.\d+\.\d+)/)?.[1] ?? "";
+const packageVoxelCoreRequirement = (artifact: PreparedArtifact) =>
+  artifact.manifest.dependencies?.find((dependency) => dependency.id === "base")?.requirement ?? "";
 type LocalWorld = {
   folder: string;
   name: string;
@@ -135,6 +139,7 @@ export function Creator({
   active?: boolean;
   worldPublish?: { profileId: string; folder: string } | null;
 }) {
+  const latestStableVoxelCore = useLatestPublishedVoxelCoreVersion();
   const [section, setSection] = useState("projects");
   const [working, setWorking] = useState(false);
   const alive = useRef(true);
@@ -227,6 +232,9 @@ export function Creator({
     selectedProject: "",
     channel: "stable",
     changelog: "",
+    voxelcoreRequirement: "",
+    allowMain: false,
+    mainMinCommit: "",
     source: "local",
     githubRepository: "",
     projectPreferences: {} as Record<string, ProjectReleasePreference>,
@@ -237,6 +245,14 @@ export function Creator({
   );
   const [channel, setChannel] = useState(releaseDraft.channel);
   const [changelog, setChangelog] = useState(releaseDraft.changelog);
+  const [voxelcoreRequirement, setVoxelcoreRequirement] = useState(
+    typeof releaseDraft.voxelcoreRequirement === "string" ? releaseDraft.voxelcoreRequirement : "",
+  );
+  const [allowMain, setAllowMain] = useState(releaseDraft.allowMain === true);
+  const [mainMinCommit, setMainMinCommit] = useState(
+    typeof releaseDraft.mainMinCommit === "string" ? releaseDraft.mainMinCommit : "",
+  );
+  const [mainBuilds, setMainBuilds] = useState<MainBuild[]>([]);
   const [projectReleasePreferences, setProjectReleasePreferences] = useState<
     Record<string, ProjectReleasePreference>
   >(() => {
@@ -440,10 +456,21 @@ export function Creator({
         selectedProject,
         channel,
         changelog,
+        voxelcoreRequirement,
+        allowMain,
+        mainMinCommit,
         projectPreferences: projectReleasePreferences,
       }),
     );
-  }, [folder, selectedProject, channel, changelog, projectReleasePreferences]);
+  }, [folder, selectedProject, channel, changelog, voxelcoreRequirement, allowMain, mainMinCommit, projectReleasePreferences]);
+
+  useEffect(() => {
+    if (!prepared) return;
+    setVoxelcoreRequirement(packageVoxelCoreRequirement(prepared));
+    setAllowMain(false);
+    setMainMinCommit("");
+    setMainBuilds([]);
+  }, [prepared?.sha256]);
 
   const refresh = useCallback(async (value: string) => {
     lastRefresh.current = Date.now();
@@ -729,6 +756,10 @@ export function Creator({
         artifact: prepared,
         channel,
         changelog,
+        voxelcore: voxelcoreRequirement.trim(),
+        voxelcoreMain: futureVoxelCore && allowMain
+          ? { target_version: mainTargetVersion, min_commit: mainMinCommit }
+          : null,
       });
       const deadline = Date.now() + 120_000;
       for (; ;) {
@@ -997,6 +1028,13 @@ export function Creator({
         release.status !== "yanked",
     )
     : undefined;
+  const mainTargetVersion = prepared ? minimumVoxelCoreVersion(voxelcoreRequirement) : "";
+  const futureVoxelCore = !!mainTargetVersion && !!latestStableVoxelCore &&
+    compareSemVer(mainTargetVersion, latestStableVoxelCore) > 0;
+  const validMainCommit = /^[a-f0-9]{40}$/.test(mainMinCommit);
+  const compatibleMainBuilds = mainBuilds.filter(
+    (build) => build.engine_version === mainTargetVersion,
+  );
   return (
     <>
       {editingImage && (
@@ -1648,7 +1686,83 @@ export function Creator({
                   Список изменений
                   <textarea aria-label="Список изменений" placeholder="Что изменилось в этой версии" value={changelog} onChange={(event) => setChangelog(event.target.value)} />
                 </label>
+                {prepared && (
+                  <label>
+                    Совместимость с VoxelCore
+                    <input
+                      aria-label="Совместимость с VoxelCore"
+                      value={voxelcoreRequirement}
+                      placeholder=">=0.31.4"
+                      spellCheck={false}
+                      onChange={(event) => setVoxelcoreRequirement(event.target.value)}
+                    />
+                    <small>
+                      Начальное значение берётся из зависимости <code>base</code>. Оно применяется только к этому релизу.
+                    </small>
+                  </label>
+                )}
               </div>
+            )}
+            {prepared && futureVoxelCore && prepared.manifest.type !== "modpack" && (
+              <section className="main-compatibility-editor">
+                <div className="notice">
+                  <strong>VoxelCore {mainTargetVersion} ещё не выпущен</strong>
+                  <span>
+                    Последняя стабильная версия — {latestStableVoxelCore}. Без дополнительной настройки релиз станет доступен после выхода VoxelCore {mainTargetVersion}.
+                  </span>
+                </div>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={allowMain}
+                    onChange={(event) => setAllowMain(event.target.checked)}
+                  />
+                  Разрешить установку на экспериментальные main-сборки
+                </label>
+                {allowMain && (
+                  <div className="main-compatibility-fields">
+                    <label>
+                      Первый совместимый commit
+                      <input
+                        value={mainMinCommit}
+                        spellCheck={false}
+                        placeholder="Полный SHA из 40 символов"
+                        onChange={(event) => setMainMinCommit(event.target.value.trim().toLowerCase())}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={working}
+                      onClick={() => void perform(async () => {
+                        const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
+                        setMainBuilds(catalog.builds);
+                        const matching = catalog.builds.filter((build) => build.engine_version === mainTargetVersion);
+                        if (!matching.length) throw new Error(`Для VoxelCore ${mainTargetVersion} нет доступных main-сборок`);
+                        if (!mainMinCommit) setMainMinCommit(matching[0].sha);
+                      })}
+                    >
+                      Загрузить сборки из GitHub
+                    </button>
+                    {!!compatibleMainBuilds.length && (
+                      <label>
+                        Выбрать сборку
+                        <Select
+                          value={compatibleMainBuilds.some((build) => build.sha === mainMinCommit) ? mainMinCommit : ""}
+                          onChange={(event) => setMainMinCommit(event.target.value)}
+                        >
+                          <option value="">Выберите первый совместимый commit</option>
+                          {compatibleMainBuilds.map((build) => (
+                            <option key={build.sha} value={build.sha}>{mainBuildLabel(build)}</option>
+                          ))}
+                        </Select>
+                      </label>
+                    )}
+                    <small>
+                      Подойдёт выбранный коммит или любой его потомок в официальной ветке VoxelCore.
+                    </small>
+                  </div>
+                )}
+              </section>
             )}
             {prepared && (
               <div className="package-preview release-ready-card">
@@ -1678,10 +1792,9 @@ export function Creator({
                     ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
                     : "Без дополнительных разрешений"}
                 </span>
-                {prepared.manifest.voxelcore === "*" && (
-                  <span className="notice" role="note">
-                    Ограничение версии VoxelCore не задано. Релиз будет доступен
-                    для всех версий движка.
+                {!voxelcoreRequirement.trim() && (
+                  <span className="notice error" role="alert">
+                    Укажите совместимость с VoxelCore для этой версии.
                   </span>
                 )}
                 {preparedVersionRelease && (
@@ -1726,7 +1839,9 @@ export function Creator({
               className="primary small"
               aria-describedby="release-publish-state"
               disabled={
-                working || !preparedMatchesProject || !!preparedVersionRelease
+                working || !preparedMatchesProject || !!preparedVersionRelease ||
+                !voxelcoreRequirement.trim() ||
+                (futureVoxelCore && allowMain && !validMainCommit)
               }
               onClick={() => void perform(publish)}
             >

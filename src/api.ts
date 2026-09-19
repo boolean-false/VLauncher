@@ -1,4 +1,5 @@
 import { requireEngineVersion } from "./model";
+import { invoke } from "@tauri-apps/api/core";
 import { connectPublicMetadata } from "./publicMetadataCache";
 import { clearImageSession } from "./imageCache";
 import { resources, consumerSignal } from "./resourceCache";
@@ -21,6 +22,7 @@ export type Release = {
   attestation?: {
     assertion?: {
       manifest?: {
+        voxelcore_main?: VoxelCoreMainRequirement | null;
         capabilities?: string[];
         external_packages?: ExternalPackageLock[];
         components?: {
@@ -58,6 +60,17 @@ export type RuntimeRelease = {
   channel: "stable" | "beta" | "alpha";
   artifact_size: number;
   published_at: string;
+};
+export type VoxelCoreMainRequirement = {
+  target_version: string;
+  min_commit: string;
+};
+export type VoxelCoreRuntimeContext = {
+  kind: "stable" | "main";
+  version: string;
+  commit_sha?: string | null;
+  platform?: "linux" | "windows" | "macos";
+  architecture?: "x86_64" | "aarch64";
 };
 export type ProjectDetail = Project & {
   description: string;
@@ -112,6 +125,7 @@ export type SignedInstallPlan = {
     issued_at: number;
     expires_at: number;
     voxelcore_version: string;
+    runtime: VoxelCoreRuntimeContext;
     roots: string[];
     root_requirements: Record<string, string>;
     packages: ResolvedPackage[];
@@ -130,6 +144,8 @@ connectPublicMetadata(resources, registryUrl);
 
 const translatedErrors: Record<string, string> = {
   no_compatible_release: "Для выбранной версии VoxelCore нет совместимого набора пакетов.",
+  voxelcore_main_commit_required: "Для этой версии нужна более свежая экспериментальная сборка VoxelCore.",
+  voxelcore_commit_check_unavailable: "Не удалось проверить свежесть экспериментальной сборки VoxelCore. Повторите позже.",
   dependency_cycle: "В зависимостях проекта найден замкнутый цикл.",
   package_conflict: "Выбранные пакеты конфликтуют друг с другом.",
   multiple_modpacks: "В одном профиле не может быть несколько сборок.",
@@ -523,8 +539,23 @@ export async function resolveProject(
   channels: string[] = ["stable"],
   locked: Record<string, string> = {},
   directProject?: { id: string; version: string },
+  runtime?: VoxelCoreRuntimeContext,
 ): Promise<SignedInstallPlan> {
   voxelcoreVersion = requireEngineVersion(voxelcoreVersion);
+  runtime ??= { kind: "stable", version: voxelcoreVersion };
+  if (!runtime.platform || !runtime.architecture) {
+    const host = await invoke<{ platform: string; architecture: string }>("launcher_info");
+    const platform = host.platform === "darwin" ? "macos" : host.platform;
+    if (!(["linux", "windows", "macos"] as string[]).includes(platform) ||
+        !(["x86_64", "aarch64"] as string[]).includes(host.architecture)) {
+      throw new Error("Эта платформа не поддерживает проверку версии VoxelCore.");
+    }
+    runtime = {
+      ...runtime,
+      platform: platform as VoxelCoreRuntimeContext["platform"],
+      architecture: host.architecture as VoxelCoreRuntimeContext["architecture"],
+    };
+  }
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const direct = new Map<string, string>();
   if (directProject) direct.set(directProject.id, directProject.version);
@@ -541,6 +572,7 @@ export async function resolveProject(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       voxelcore_version: voxelcoreVersion,
+      runtime,
       roots: packageRoots.map((id) => ({ id, requirement: requirements[id] ?? "*" })),
       channels,
       locked: Object.fromEntries(Object.entries(locked).filter(([id]) => !direct.has(id))),

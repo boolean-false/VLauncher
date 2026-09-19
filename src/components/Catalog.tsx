@@ -26,7 +26,9 @@ import {
   formatBytes,
   friendlyError,
   kinds,
+  compareSemVer,
   profileModpack,
+  profileRuntimeContext,
   type LocalProfile,
   type RunTask,
 } from "../model";
@@ -34,7 +36,8 @@ import { Empty, ErrorNotice, Icon, Modal } from "./ui";
 import { useJointCatalogEnabled } from "../experimental";
 import { catalogProjectKeys } from "../catalogIdentity";
 import { isVoxelCoreBuiltin } from "../builtinContent";
-import { useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
+import { useLatestPublishedVoxelCoreVersion, useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
+import { useMainlineStatus } from "./Mainline";
 import {
   mergeModCategories,
   useAllRegistryProjects,
@@ -116,6 +119,7 @@ export function Catalog({
   openProfile: (id: string) => void;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
+  const latestVoxelCore = useLatestPublishedVoxelCoreVersion();
   const inspect = useContentInspector();
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("mod");
@@ -154,7 +158,15 @@ export function Catalog({
       const roots = [...new Set([...targetProfile.roots, item.packageId!])];
       const requirements = { ...targetProfile.root_requirements };
       delete requirements[item.packageId!];
-      const plan = await resolveProject(roots, catalogEngine, requirements);
+      const plan = await resolveProject(
+        roots,
+        catalogEngine,
+        requirements,
+        ["stable"],
+        {},
+        undefined,
+        profileRuntimeContext(targetProfile),
+      );
       preview({ profile: targetProfile, plan, title: `Добавить ${item.title} · ${targetProfile.name}` });
     });
   };
@@ -556,6 +568,14 @@ export function Catalog({
                     <h2>{project.title}</h2>
                   </div>
                 </div>
+                {(() => {
+                  const requirement = project.project?.latest_release?.attestation?.assertion?.manifest?.voxelcore_main;
+                  return requirement && (!latestVoxelCore || compareSemVer(latestVoxelCore, requirement.target_version) < 0)
+                    ? <span className="catalog-main-warning" title={`Минимальный коммит ${requirement.min_commit}`}>
+                        <Icon name="warning" size={15} /> Требует экспериментальный VoxelCore {requirement.target_version}
+                      </span>
+                    : null;
+                })()}
                 <p>{project.summary || "Автор пока не добавил описание."}</p>
                 <footer>
                   <span>{project.footer}</span>
@@ -1149,6 +1169,8 @@ export function ProjectView({
   openProfile: (id: string) => void;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
+  const latestVoxelCore = useLatestPublishedVoxelCoreVersion();
+  const { status: mainlineStatus } = useMainlineStatus();
   const inspect = useContentInspector();
   const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
   const releasesResult = useRegistryResource<Release[]>(`/projects/${encodeURIComponent(slug)}/releases`);
@@ -1170,6 +1192,9 @@ export function ProjectView({
     if (releasesResult.data) setVersion(current => releasesResult.data!.some(r => r.version === current) ? current : (releasesResult.data!.find(r => r.channel === 'stable' && !r.deprecated)?.version ?? releasesResult.data![0]?.version ?? ""));
   }, [releasesResult.data]);
   const release = releases.find((r) => r.version === version);
+  const mainRequirement = release?.attestation?.assertion?.manifest?.voxelcore_main;
+  const targetIsStable = !!mainRequirement && !!latestVoxelCore &&
+    compareSemVer(latestVoxelCore, mainRequirement.target_version) >= 0;
   const releaseComponents = release?.attestation?.assertion?.manifest?.components ?? [];
   const profile = profiles.find((p) => p.id === selected);
   const installedModpackProfile = project?.type === "modpack"
@@ -1184,6 +1209,13 @@ export function ProjectView({
   const install = () => {
     if (!release || !project) return;
     void run(`Проверка · ${project.title}`, async () => {
+      if (mainRequirement && !targetIsStable && !profile?.main_build) {
+        throw new Error(
+          mainlineStatus.enabled
+            ? `Нужна экспериментальная сборка VoxelCore ${mainRequirement.target_version} от коммита ${mainRequirement.min_commit.slice(0, 7)} или новее. Сначала выберите main-сборку в управлении профилем.`
+            : "Эта версия требует ещё не выпущенную возможность VoxelCore. Включите main-сборки в экспериментальных настройках и выберите их для профиля.",
+        );
+      }
       const modpackEngine = project.type === "modpack"
         ? exactVoxelCoreVersion(release.voxelcore)
         : "";
@@ -1209,6 +1241,9 @@ export function ProjectView({
         release.channel === "stable" ? ["stable"] : ["stable", release.channel],
         {},
         directProject ? { id: project.id, version } : undefined,
+        project.type === "modpack"
+          ? { kind: "stable", version: modpackEngine }
+          : profileRuntimeContext(profile),
       );
       preview({
         profile: project.type === "modpack" && !targetProfile
@@ -1361,6 +1396,17 @@ export function ProjectView({
               {release?.deprecated && (
                 <div className="notice">
                   Автор пометил эту версию как устаревшую.
+                </div>
+              )}
+              {mainRequirement && !targetIsStable && (
+                <div className="notice main-commit-requirement" role="status">
+                  <strong>Экспериментальная версия VoxelCore</strong>
+                  <span>
+                    Требуется VoxelCore {mainRequirement.target_version}, коммит {mainRequirement.min_commit.slice(0, 7)} или новее.
+                    {mainlineStatus.enabled
+                      ? " Точная свежесть main-сборки будет проверена сервером перед установкой."
+                      : " Включите main-сборки в экспериментальных настройках."}
+                  </span>
                 </div>
               )}
               {release?.changelog && (

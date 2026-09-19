@@ -85,10 +85,6 @@ fn default_environments() -> Vec<PackageEnvironment> {
     vec![PackageEnvironment::Client]
 }
 
-fn default_voxelcore_requirement() -> String {
-    "*".into()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PackageManifest {
@@ -101,8 +97,6 @@ pub struct PackageManifest {
     pub creators: Vec<String>,
     pub description: String,
     pub license: String,
-    #[serde(default = "default_voxelcore_requirement")]
-    pub voxelcore: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -266,7 +260,6 @@ impl PackageManifest {
                 .and_then(Value::as_str)
                 .unwrap_or("LicenseRef-Proprietary")
                 .to_owned(),
-            voxelcore: default_voxelcore_requirement(),
             source: object
                 .get("source")
                 .and_then(Value::as_str)
@@ -288,9 +281,6 @@ impl PackageManifest {
         validate_id(&self.id)?;
         Version::parse(&self.version)
             .map_err(|error| PackageProblem::Invalid(format!("invalid version: {error}")))?;
-        VersionReq::parse(&self.voxelcore).map_err(|error| {
-            PackageProblem::Invalid(format!("invalid voxelcore requirement: {error}"))
-        })?;
         if self.title.trim().is_empty() || self.title.chars().count() > 128 {
             return invalid("title must contain 1 to 128 characters");
         }
@@ -302,7 +292,9 @@ impl PackageManifest {
         }
         let mut relations = HashSet::new();
         for dependency in self.dependencies.iter().chain(&self.conflicts) {
-            validate_id(&dependency.id)?;
+            if dependency.id != "base" {
+                validate_id(&dependency.id)?;
+            }
             VersionReq::parse(&dependency.requirement).map_err(|error| {
                 PackageProblem::Invalid(format!(
                     "invalid requirement for '{}': {error}",
@@ -627,11 +619,10 @@ mod tests {
         assert_eq!(manifest.dependencies[0].requirement, ">=0.4.0");
         assert_eq!(manifest.dependencies[1].kind, DependencyKind::Optional);
         assert_eq!(manifest.dependencies[2].kind, DependencyKind::Weak);
-        assert_eq!(manifest.voxelcore, "*");
     }
 
     #[test]
-    fn current_manifest_without_voxelcore_is_unrestricted() {
+    fn current_manifest_accepts_base_as_builtin_dependency() {
         let manifest: PackageManifest = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "id": "wire_demo",
@@ -640,11 +631,12 @@ mod tests {
             "version": "1.2.0",
             "creators": ["Dagger"],
             "description": "Demo",
-            "license": "MIT"
+            "license": "MIT",
+            "dependencies": [{"id": "base", "requirement": ">=0.32.0", "kind": "required"}]
         }))
         .unwrap();
         manifest.validate().unwrap();
-        assert_eq!(manifest.voxelcore, "*");
+        assert_eq!(manifest.dependencies[0].id, "base");
     }
 
     #[test]

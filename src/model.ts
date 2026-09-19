@@ -76,6 +76,25 @@ export type RunTask = (
 ) => Promise<boolean>;
 export const engineVersion = (profile?: LocalProfile) =>
   profile?.main_build?.engine_version?.trim() || profile?.voxelcore_version?.trim() || "";
+export const profileRuntimeContext = (profile?: LocalProfile) => {
+  const version = engineVersion(profile);
+  return profile?.main_build
+    ? {
+        kind: "main" as const,
+        version,
+        commit_sha: profile.main_build.sha,
+        platform: profile.main_build.platform as "linux" | "windows" | "macos",
+        architecture: profile.main_build.architecture as "x86_64" | "aarch64",
+      }
+    : { kind: "stable" as const, version };
+};
+export const mainRuntimeContext = (build: MainBuild) => ({
+  kind: "main" as const,
+  version: build.engine_version?.trim() || "",
+  commit_sha: build.sha,
+  platform: build.platform as "linux" | "windows" | "macos",
+  architecture: build.architecture as "x86_64" | "aarch64",
+});
 
 type SemVer = { core: number[]; prerelease: (number | string)[] };
 
@@ -90,7 +109,7 @@ const parseSemVer = (value: string): SemVer | null => {
   };
 };
 
-const compareSemVer = (left: string, right: string) => {
+export const compareSemVer = (left: string, right: string) => {
   const a = parseSemVer(left);
   const b = parseSemVer(right);
   if (!a || !b) return 0;

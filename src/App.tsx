@@ -27,6 +27,8 @@ import {
   latestPublishedVoxelCoreVersion,
   voxelCoreVersionLabel,
   profileModpack,
+  profileRuntimeContext,
+  mainRuntimeContext,
   type MainBuild,
   requireEngineVersion,
   type LocalProfile,
@@ -96,7 +98,7 @@ const navigation: { id: Screen; title: string; icon: IconName }[] = [
   { id: "catalog", title: "Каталог", icon: "catalog" },
   { id: "activity", title: "Журнал", icon: "activity" },
 ];
-const latestVoxelCoreVersionKey = "vlauncher.voxelcore.latest-published-version";
+const latestVoxelCoreVersionKey = "vlauncher.voxelcore.latest-stable-version";
 const storedTasks = (): Task[] => {
   try {
     const value = JSON.parse(localStorage.getItem("vlauncher.tasks") ?? "[]") as Task[];
@@ -177,7 +179,11 @@ export default function App() {
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
   const installedModpack = profileModpack(profile);
   const latestVoxelCoreVersion =
-    latestPublishedVoxelCoreVersion(availableRuntimes.map((item) => item.version)) ||
+    latestPublishedVoxelCoreVersion(
+      availableRuntimes
+        .filter((item) => item.channel === "stable")
+        .map((item) => item.version),
+    ) ||
     knownLatestVoxelCoreVersion;
   const currentTask = tasks[0];
   useEffect(() => {
@@ -230,7 +236,9 @@ export default function App() {
       .then((items) => {
         if (active) {
           setAvailableRuntimes(items);
-          const latest = latestPublishedVoxelCoreVersion(items.map((item) => item.version));
+          const latest = latestPublishedVoxelCoreVersion(
+            items.filter((item) => item.channel === "stable").map((item) => item.version),
+          );
           if (latest) {
             setKnownLatestVoxelCoreVersion(latest);
             localStorage.setItem(latestVoxelCoreVersionKey, latest);
@@ -479,6 +487,11 @@ export default function App() {
           targetEngine,
           requirements,
           channels,
+          {},
+          undefined,
+          targetEngine === engineVersion(profile)
+            ? profileRuntimeContext(profile)
+            : { kind: "stable", version: targetEngine },
         );
         setPendingPlan({ profile, plan, title, allowVersionSkips });
       });
@@ -498,6 +511,11 @@ export default function App() {
           version,
           target.root_requirements ?? {},
           ["stable", "beta", "alpha"],
+          {},
+          undefined,
+          mainBuild
+            ? mainRuntimeContext(mainBuild)
+            : { kind: "stable", version },
         );
         setPendingPlan({
           profile: target,
@@ -553,6 +571,10 @@ export default function App() {
             Object.fromEntries(
               (definition.locked ?? []).map((item) => [item.id, item.version]),
             ),
+            undefined,
+            definition.main_build
+              ? mainRuntimeContext(definition.main_build)
+              : { kind: "stable", version: definition.voxelcore_version },
           )
         : null;
       for (const expected of definition.locked ?? []) {
@@ -1315,6 +1337,9 @@ export default function App() {
                         [id]: `=${version}`,
                       },
                       ["stable", "beta", "alpha"],
+                      {},
+                      undefined,
+                      pendingPlan.plan.plan.runtime,
                     );
                     setPendingPlan({ ...pendingPlan, plan });
                   })
@@ -1337,22 +1362,18 @@ export default function App() {
                     {
                       name: pendingPlan.newProfileName,
                       plan: pendingPlan.plan,
+                      mainBuild: pendingPlan.mainBuild ?? null,
                     },
                   );
                   installedProfileId = created.id;
-                  if (pendingPlan.mainBuild) await invoke("select_mainline_build", { profileId: created.id, build: pendingPlan.mainBuild });
                   setSelected(created.id);
                   setScreen("library");
                 } else {
                   await invoke("apply_remote_install_plan", {
                     profileId: pendingPlan.profile.id,
                     plan: pendingPlan.plan,
+                    mainBuild: pendingPlan.mainBuild ?? null,
                   });
-                  if (pendingPlan.mainBuild !== undefined)
-                    await invoke("select_mainline_build", {
-                      profileId: pendingPlan.profile.id,
-                      build: pendingPlan.mainBuild,
-                    });
                 }
                 for (const pack of pendingPlan.plan.plan.packages) recordContent(pack.id, "install", pack.version);
                 if (pendingPlan.coverUrl && !pendingPlan.profile.icon) {

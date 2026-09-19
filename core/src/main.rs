@@ -104,6 +104,14 @@ fn execute() -> Result<serde_json::Value, String> {
                 .map_err(|_| "VLAUNCHER_TOKEN environment variable is required".to_owned())?;
             let output = env::temp_dir().join("vlauncher-prepared");
             let artifact = prepare_package(path, output).map_err(|error| error.to_string())?;
+            let voxelcore = artifact
+                .manifest
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.id == "base")
+                .map(|dependency| dependency.requirement.as_str())
+                .unwrap_or("*")
+                .to_owned();
             let receipt = upload_package(
                 &registry,
                 &token,
@@ -111,6 +119,8 @@ fn execute() -> Result<serde_json::Value, String> {
                 &artifact,
                 &channel,
                 "Published with vlauncher-core",
+                &voxelcore,
+                None,
             )
             .map_err(|error| error.to_string())?;
             serde_json::to_value(receipt).map_err(|error| error.to_string())

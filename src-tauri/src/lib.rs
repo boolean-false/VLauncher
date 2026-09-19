@@ -26,8 +26,8 @@ use tauri::{Emitter, Manager};
 use vlauncher_core::{
     CacheStatus, DeliveryManifest, ExistingGameAnalysis, InstallPlan, InstalledRuntime,
     PackageKind, PackageManifest, PreparedArtifact, Profile, ProfileDefinition, ProfileStorage,
-    ProfileStore, RemoteInstallPlan, SignedRemoteInstallPlan, UploadReceipt, prepare_package,
-    upload_package_with_progress,
+    ProfileStore, RemoteInstallPlan, SignedRemoteInstallPlan, UploadReceipt,
+    VoxelCoreMainRequirement, prepare_package, upload_package_with_progress,
 };
 
 #[cfg(windows)]
@@ -481,6 +481,8 @@ async fn publish_release(
     artifact: PreparedArtifact,
     channel: String,
     changelog: String,
+    voxelcore: String,
+    voxelcore_main: Option<VoxelCoreMainRequirement>,
 ) -> Result<UploadReceipt, String> {
     control.cancelled.store(false, Ordering::SeqCst);
     let cancelled = control.cancelled.clone();
@@ -493,6 +495,8 @@ async fn publish_release(
             &artifact,
             &channel,
             &changelog,
+            &voxelcore,
+            voxelcore_main.as_ref(),
             move |completed, total| {
                 let elapsed = started.elapsed().as_secs_f64().max(0.001);
                 let bytes_per_second = (completed as f64 / elapsed) as u64;
@@ -663,7 +667,11 @@ async fn create_profile_from_plan(
     control: tauri::State<'_, TransferControl>,
     name: String,
     plan: SignedRemoteInstallPlan,
+    main_build: Option<vlauncher_core::mainline::MainBuild>,
 ) -> Result<Profile, String> {
+    if main_build.is_some() {
+        mainline::require_enabled(&app)?;
+    }
     let store = profile_store(&app)?;
     control.cancelled.store(false, Ordering::SeqCst);
     let cancelled = control.cancelled.clone();
@@ -680,7 +688,12 @@ async fn create_profile_from_plan(
         let profile = store.create(&name).map_err(|error| error.to_string())?;
         let result = (|| {
             store
-                .apply_remote(profile.id, &verified)
+                .apply_remote_with_progress_and_main(
+                    profile.id,
+                    &verified,
+                    main_build,
+                    |_, _, _| true,
+                )
                 .map_err(|error| error.to_string())?;
             if let Some(packages) = verified.external_packages {
                 voxelworld::install_locked_packages(
@@ -1776,7 +1789,11 @@ async fn apply_remote_install_plan(
     control: tauri::State<'_, TransferControl>,
     profile_id: String,
     plan: SignedRemoteInstallPlan,
+    main_build: Option<vlauncher_core::mainline::MainBuild>,
 ) -> Result<(), String> {
+    if main_build.is_some() {
+        mainline::require_enabled(&app)?;
+    }
     ensure_stopped(&app, &profile_id)?;
     let id = profile_id
         .parse()
@@ -1808,30 +1825,36 @@ async fn apply_remote_install_plan(
     let started = Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
         store
-            .apply_remote_with_progress(id, &verified, |package, completed, _| {
-                let aggregate = if let Ok(mut values) = progress.lock() {
-                    values.insert(package.to_owned(), completed);
-                    values.values().copied().sum()
-                } else {
-                    completed
-                };
-                let speed = (aggregate as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
-                let _ = app.emit(
-                    "transfer-progress",
-                    TransferEvent {
-                        kind: "download",
-                        completed: aggregate,
-                        total,
-                        bytes_per_second: speed,
-                        eta_seconds: if speed > 0 {
-                            total.saturating_sub(aggregate) / speed
-                        } else {
-                            0
+            .apply_remote_with_progress_and_main(
+                id,
+                &verified,
+                main_build,
+                |package, completed, _| {
+                    let aggregate = if let Ok(mut values) = progress.lock() {
+                        values.insert(package.to_owned(), completed);
+                        values.values().copied().sum()
+                    } else {
+                        completed
+                    };
+                    let speed =
+                        (aggregate as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+                    let _ = app.emit(
+                        "transfer-progress",
+                        TransferEvent {
+                            kind: "download",
+                            completed: aggregate,
+                            total,
+                            bytes_per_second: speed,
+                            eta_seconds: if speed > 0 {
+                                total.saturating_sub(aggregate) / speed
+                            } else {
+                                0
+                            },
                         },
-                    },
-                );
-                !cancelled.load(Ordering::SeqCst)
-            })
+                    );
+                    !cancelled.load(Ordering::SeqCst)
+                },
+            )
             .map_err(|error| error.to_string())?;
         if let Some(packages) = verified.external_packages {
             if let Err(error) =

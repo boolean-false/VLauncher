@@ -24,3 +24,7 @@ export function useVoxelCoreVersionLabel() {
     [latestVersion],
   );
 }
+
+export function useLatestPublishedVoxelCoreVersion() {
+  return useContext(LatestPublishedVoxelCoreVersion);
+}

@@ -29,6 +29,12 @@ pub struct UploadReceipt {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoxelCoreMainRequirement {
+    pub target_version: String,
+    pub min_commit: String,
+}
+
 #[derive(Deserialize)]
 struct UploadSession {
     id: String,
@@ -52,6 +58,9 @@ struct SavedUpload {
     project_id: String,
     artifact_sha256: String,
     part_size: usize,
+    voxelcore: String,
+    #[serde(default)]
+    voxelcore_main: Option<VoxelCoreMainRequirement>,
 }
 
 fn problem(message: impl Into<String>) -> PackageProblem {
@@ -247,6 +256,8 @@ pub fn upload_package(
     artifact: &PreparedArtifact,
     channel: &str,
     changelog: &str,
+    voxelcore: &str,
+    voxelcore_main: Option<&VoxelCoreMainRequirement>,
 ) -> Result<UploadReceipt, PackageProblem> {
     upload_package_with_progress(
         registry_url,
@@ -255,6 +266,8 @@ pub fn upload_package(
         artifact,
         channel,
         changelog,
+        voxelcore,
+        voxelcore_main,
         |_, _| true,
     )
 }
@@ -282,6 +295,8 @@ pub fn upload_package_with_progress(
     artifact: &PreparedArtifact,
     channel: &str,
     changelog: &str,
+    voxelcore: &str,
+    voxelcore_main: Option<&VoxelCoreMainRequirement>,
     progress: impl Fn(u64, u64) -> bool + Send + Sync + 'static,
 ) -> Result<UploadReceipt, PackageProblem> {
     let (actual_hash, actual_size) = hash_file(&artifact.path)?;
@@ -313,6 +328,8 @@ pub fn upload_package_with_progress(
             saved.registry_url == registry_url
                 && saved.project_id == project_id
                 && saved.artifact_sha256 == artifact.sha256
+                && saved.voxelcore == voxelcore
+                && saved.voxelcore_main.as_ref() == voxelcore_main
         });
     let mut session = if let Some(saved) = saved {
         let response = client
@@ -356,8 +373,10 @@ pub fn upload_package_with_progress(
                     "version": artifact.manifest.version,
                     "channel": channel,
                     "changelog": changelog,
+                    "voxelcore": voxelcore,
                     "sha256": artifact.sha256,
                     "size": artifact.size,
+                    "voxelcore_main": voxelcore_main,
                 }))
                 .send()
                 .map_err(transfer_error)?;
@@ -375,6 +394,8 @@ pub fn upload_package_with_progress(
                     project_id: project_id.into(),
                     artifact_sha256: artifact.sha256.clone(),
                     part_size: session.part_size,
+                    voxelcore: voxelcore.into(),
+                    voxelcore_main: voxelcore_main.cloned(),
                 })
                 .map_err(|error| problem(error.to_string()))?,
             )
@@ -490,7 +511,8 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1, "id": "publish_test", "type": "mod",
                 "title": "Publish test", "version": "1.0.0", "creators": ["Tester"],
-                "description": "Test", "license": "MIT", "voxelcore": ">=0.31.4"
+                "description": "Test", "license": "MIT",
+                "dependencies": [{"id": "base", "requirement": ">=0.31.4", "kind": "required"}]
             }))
             .unwrap(),
         )
@@ -517,7 +539,8 @@ mod tests {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1, "id": "publish_test", "type": "mod",
             "title": "Publish test", "version": "1.0.0", "creators": ["Tester"],
-            "description": "Test", "license": "MIT", "voxelcore": ">=0.31.4"
+            "description": "Test", "license": "MIT",
+            "dependencies": [{"id": "base", "requirement": ">=0.31.4", "kind": "required"}]
         }))
         .unwrap()
     }
@@ -608,7 +631,8 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1, "id": "publish_test", "type": "mod",
                 "title": "Publish test", "version": "1.0.0", "creators": ["Tester"],
-                "description": "Test", "license": "MIT", "voxelcore": ">=0.31.4"
+                "description": "Test", "license": "MIT",
+                "dependencies": [{"id": "base", "requirement": ">=0.31.4", "kind": "required"}]
             }))
             .unwrap(),
         )
@@ -622,6 +646,8 @@ mod tests {
             &artifact,
             "stable",
             "",
+            ">=0.31.4",
+            None,
         )
         .unwrap_err();
         assert!(error.to_string().contains("changed after preview"));
