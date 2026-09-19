@@ -1229,7 +1229,7 @@ export function ProjectView({
       const pendingProfile: LocalProfile | undefined = createProjectProfile
         ? {
             id: "pending-project",
-            name: project.title,
+            name: "Новый профиль",
             icon: null,
             active_revision: null,
             voxelcore_version: null,
@@ -1323,6 +1323,9 @@ export function ProjectView({
           plan = await makePlan();
         }
       }
+      const automaticProfileName = createProjectProfile
+        ? `VoxelCore ${voxelcoreVersion}${selectedMainBuild ? " DEV" : ""}`
+        : undefined;
       preview({
         mainBuild: selectedMainBuild,
         profile: project.type === "modpack" && !targetProfile
@@ -1341,18 +1344,18 @@ export function ProjectView({
           : targetProfile!,
         plan,
         title: createProjectProfile
-          ? `Новый профиль · ${project.title}`
+          ? `Новый профиль · ${automaticProfileName}`
           : project.type === "modpack"
             ? targetProfile
               ? `${project.title} · ${installedModpack?.version} → ${version}`
               : `Новый профиль · ${project.title}`
             : `Установка ${project.title}`,
-        coverUrl: (project.type === "modpack" && !targetProfile) || createProjectProfile
+        coverUrl: project.type === "modpack" && !targetProfile
           ? project.cover_url ?? release.preview_url ?? undefined
           : undefined,
-        newProfileName: (project.type === "modpack" && !targetProfile) || createProjectProfile
+        newProfileName: project.type === "modpack" && !targetProfile
           ? project.title
-          : undefined,
+          : automaticProfileName,
       });
       close();
     }).then((ok) => setFailed(!ok));
@@ -1469,7 +1472,7 @@ export function ProjectView({
                   ) : (
                     <div className="install-new-profile">
                       <span>Профиль</span>
-                      <strong>Будет создан «{project.title}»</strong>
+                      <strong>Будет создан новый профиль</strong>
                     </div>
                   )
                 )}
