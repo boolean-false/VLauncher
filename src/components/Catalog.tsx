@@ -179,6 +179,7 @@ export function Catalog({
     });
   };
   const params = new URLSearchParams({ limit: "24", offset: String(offset), sort, kind });
+  if (latestVoxelCore) params.set("latest_voxelcore_version", latestVoxelCore);
   if (search.trim()) params.set("q", search.trim());
   for (const id of category) params.append("category", id);
   if (compatibleOnly && catalogEngine) params.set("voxelcore_version", catalogEngine);
@@ -211,6 +212,7 @@ export function Catalog({
     !compatibleOnly &&
     voxelWorldHasCategories;
   const allVSpaceParams = new URLSearchParams({ sort, kind: "mod" });
+  if (latestVoxelCore) allVSpaceParams.set("latest_voxelcore_version", latestVoxelCore);
   if (search.trim()) allVSpaceParams.set("q", search.trim());
   for (const id of category) allVSpaceParams.append("category", id);
   if (compatibleOnly && catalogEngine)
@@ -1182,8 +1184,11 @@ export function ProjectView({
   const publishedVoxelCoreVersions = usePublishedVoxelCoreVersions();
   const { status: mainlineStatus } = useMainlineStatus();
   const inspect = useContentInspector();
-  const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
-  const releasesResult = useRegistryResource<Release[]>(`/projects/${encodeURIComponent(slug)}/releases`);
+  const compatibilityQuery = latestVoxelCore
+    ? `?${new URLSearchParams({ latest_voxelcore_version: latestVoxelCore })}`
+    : "";
+  const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}${compatibilityQuery}`);
+  const releasesResult = useRegistryResource<Release[]>(`/projects/${encodeURIComponent(slug)}/releases${compatibilityQuery}`);
   const project = projectResult.data;
   useEffect(() => { if (project) recordContent(project.slug, "view"); }, [project?.slug]);
   const releases = releasesResult.data ?? [];
