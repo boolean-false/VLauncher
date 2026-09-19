@@ -14,6 +14,7 @@ export type Release = {
   preview_url?: string | null;
   changelog?: string;
   deprecated?: boolean;
+  effective_voxelcore_main?: VoxelCoreMainRequirement | null;
   dependencies?: {
     id: string;
     requirement: string;

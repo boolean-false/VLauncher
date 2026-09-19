@@ -577,7 +577,8 @@ export function Catalog({
                   </div>
                 </div>
                 {(() => {
-                  const requirement = project.project?.latest_release?.attestation?.assertion?.manifest?.voxelcore_main;
+                  const requirement = project.project?.latest_release?.effective_voxelcore_main ??
+                    project.project?.latest_release?.attestation?.assertion?.manifest?.voxelcore_main;
                   return requirement && (!latestVoxelCore || compareSemVer(latestVoxelCore, requirement.target_version) < 0)
                     ? <span className="catalog-main-warning" title={`Минимальный коммит ${requirement.min_commit}`}>
                         <Icon name="warning" size={15} /> Требует экспериментальный VoxelCore {requirement.target_version}
@@ -1202,7 +1203,8 @@ export function ProjectView({
     if (releasesResult.data) setVersion(current => releasesResult.data!.some(r => r.version === current) ? current : (releasesResult.data!.find(r => r.channel === 'stable' && !r.deprecated)?.version ?? releasesResult.data![0]?.version ?? ""));
   }, [releasesResult.data]);
   const release = releases.find((r) => r.version === version);
-  const mainRequirement = release?.attestation?.assertion?.manifest?.voxelcore_main;
+  const mainRequirement = release?.effective_voxelcore_main ??
+    release?.attestation?.assertion?.manifest?.voxelcore_main;
   const targetIsStable = !!mainRequirement && !!latestVoxelCore &&
     compareSemVer(latestVoxelCore, mainRequirement.target_version) >= 0;
   const releaseComponents = release?.attestation?.assertion?.manifest?.components ?? [];
