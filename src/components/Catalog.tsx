@@ -1376,7 +1376,7 @@ export function ProjectView({
           </dl>
           <button
             type="button"
-            className="secondary"
+            className="secondary project-share-button"
             onClick={() => void writeText(`https://vlauncher.space/project/${project.slug}`)
               .then(() => {
                 setLinkCopied(true);

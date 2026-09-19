@@ -1437,12 +1437,7 @@ export function Creator({
                 }}
               />
             </label>
-            {draft.type === "mod" ? (
-              <div className="notice compact">
-                <strong>Адрес будет взят из package.json</strong>
-                <span>После первой проверки ID пакета, например <code>wire_mod</code>, станет его постоянным адресом в каталоге.</span>
-              </div>
-            ) : (
+            {draft.type !== "mod" && (
               <label>
                 Короткий адрес проекта
                 <div className="project-slug-field">
@@ -1878,18 +1873,7 @@ export function Creator({
                 {current?.type === "mod" && (
                   <span>
                     ID пакета: <code>{prepared.manifest.id}</code>
-                    {current.package_id
-                      ? " · уже закреплён за этим проектом"
-                      : " · будет зарегистрирован после загрузки и проверки архива"}
                   </span>
-                )}
-                {current?.type === "mod" && !current.package_id && (
-                  <div className="notice">
-                    <strong>Сейчас этот ID существует только в локальном package.json</strong>
-                    <span>
-                      Сервер и администраторы увидят его после загрузки и успешной проверки архива. Тогда он станет коротким публичным адресом мода. Если удалить проект до первой публикации, ID освободится автоматически.
-                    </span>
-                  </div>
                 )}
                 <ManifestContentLinks
                   manifest={prepared.manifest}
@@ -1913,11 +1897,6 @@ export function Creator({
                     ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
                     : "Без дополнительных разрешений"}
                 </span>
-                {!validVoxelcoreRequirement && (
-                  <span className="notice error" role="alert">
-                    Выберите совместимость с VoxelCore или исправьте расширенное условие.
-                  </span>
-                )}
                 {preparedVersionRelease && (
                   <span className="notice error" role="alert">
                     Версия {prepared.manifest.version} уже добавлена в этот проект.

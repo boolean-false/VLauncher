@@ -604,7 +604,6 @@ main>div[hidden] {
 
 .mainline-enable-row {
   align-items: flex-start;
-  padding-top: 0;
 }
 
 .mainline-enable-row>div {
@@ -1419,6 +1418,10 @@ main>div[hidden] {
 
 .catalog-project-page .metadata dd {
   overflow-wrap: anywhere;
+}
+
+.project-share-button {
+  margin: 16px 0 24px;
 }
 
 .project-install-panel {
@@ -3240,10 +3243,10 @@ select {
 
 .version-requirement-editor {
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 14px;
+  padding: 16px;
   border: 1px solid var(--line);
-  background: var(--surface-inset);
+  background: var(--panel);
 }
 
 .version-requirement-heading {
@@ -3279,6 +3282,14 @@ select {
 
 .version-requirement-explanation {
   margin: 0;
+}
+
+.version-requirement-error {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--danger-line);
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .version-requirement-advanced > summary {

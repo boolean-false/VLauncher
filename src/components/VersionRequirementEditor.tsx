@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { compareSemVer } from "../model";
 import {
   makeVersionRequirement,
+  isVersionRequirementValid,
   nextMinorVersion,
   normalizeVersion,
   parseVersionRequirement,
@@ -20,6 +21,9 @@ export function VersionRequirementEditor({
   onChange: (value: string) => void;
 }) {
   const parsed = parseVersionRequirement(value);
+  const [advancedOpen, setAdvancedOpen] = useState(parsed.mode === "advanced");
+  const displayedMode: VersionRequirementMode = advancedOpen ? "advanced" : parsed.mode;
+  const valid = isVersionRequirementValid(value);
   const knownVersions = useMemo(() => {
     const values = new Set(
       [parsed.minimum, parsed.maximum, ...versions]
@@ -34,9 +38,10 @@ export function VersionRequirementEditor({
 
   const setMode = (mode: VersionRequirementMode) => {
     if (mode === "advanced") {
-      onChange(minimum ? `^${minimum}` : "");
+      setAdvancedOpen(true);
       return;
     }
+    setAdvancedOpen(false);
     onChange(makeVersionRequirement(mode, minimum, maximum));
   };
   const setMinimum = (version: string) => {
@@ -63,7 +68,7 @@ export function VersionRequirementEditor({
           Правило совместимости
           <Select
             aria-label="Правило совместимости VoxelCore"
-            value={parsed.mode}
+            value={displayedMode}
             onChange={(event) => setMode(event.target.value as VersionRequirementMode)}
           >
             <option value="minimum">Эта версия и новее</option>
@@ -73,7 +78,7 @@ export function VersionRequirementEditor({
             <option value="advanced">Расширенное условие</option>
           </Select>
         </label>
-        {parsed.mode !== "any" && parsed.mode !== "advanced" && (
+        {displayedMode !== "any" && displayedMode !== "advanced" && (
           <label>
             {parsed.mode === "range" ? "Начиная с" : "Версия"}
             <Select
@@ -87,7 +92,7 @@ export function VersionRequirementEditor({
             </Select>
           </label>
         )}
-        {parsed.mode === "range" && (
+        {displayedMode === "range" && (
           <label>
             До версии, не включая
             <Select
@@ -104,7 +109,16 @@ export function VersionRequirementEditor({
         )}
       </div>
       <p className="version-requirement-explanation">{versionRequirementExplanation(value)}</p>
-      <details className="version-requirement-advanced" open={parsed.mode === "advanced"}>
+      {!valid && (
+        <p className="version-requirement-error" role="alert">
+          Условие не закончено или записано неверно.
+        </p>
+      )}
+      <details
+        className="version-requirement-advanced"
+        open={advancedOpen}
+        onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+      >
         <summary>Расширенный режим</summary>
         <label>
           Условие semver
