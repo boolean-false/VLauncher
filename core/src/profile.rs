@@ -4039,8 +4039,8 @@ mod tests {
                 kind: VoxelCoreRuntimeKind::Stable,
                 version: "0.31.4".into(),
                 commit_sha: None,
-                platform: "linux".into(),
-                architecture: "x86_64".into(),
+                platform: std::env::consts::OS.into(),
+                architecture: std::env::consts::ARCH.into(),
             },
             roots: vec!["demo_mod".into()],
             root_requirements: HashMap::from([("demo_mod".into(), "=1.0.0".into())]),
@@ -4861,9 +4861,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(artifact.manifest.kind, PackageKind::Modpack);
-        assert!(artifact.manifest.dependencies.iter().any(|dependency|
-            dependency.id == "base" && dependency.requirement == "=0.31.4"
-        ));
+        assert!(
+            artifact
+                .manifest
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.id == "base" && dependency.requirement == "=0.31.4")
+        );
         assert_eq!(artifact.manifest.dependencies[0].id, "demo_mod");
         assert_eq!(artifact.manifest.dependencies[0].requirement, "=1.0.0");
         assert_eq!(artifact.manifest.external_packages.len(), 1);
