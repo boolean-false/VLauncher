@@ -1,6 +1,6 @@
 [package]
 name = "vlauncher"
-version = "1.3.3"
+version = "1.3.4"
 description = "Desktop launcher for VoxelCore"
 authors = ["DaggerLab"]
 edition = "2024"

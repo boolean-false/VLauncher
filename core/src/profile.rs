@@ -767,6 +767,7 @@ impl ProfileStore {
         })?;
         Ok(external
             .map(PathBuf::from)
+            .map(compatible_path)
             .unwrap_or_else(|| self.profile_path(id).join("game")))
     }
 
@@ -944,8 +945,11 @@ impl ProfileStore {
                     let root_requirements =
                         serde_json::from_str(&root_requirements_json).unwrap_or_default();
                     let (external_runtime, problem) = match external_runtime_json {
-                        Some(value) => match serde_json::from_str(&value) {
-                            Ok(runtime) => (Some(runtime), None),
+                        Some(value) => match serde_json::from_str::<ExternalRuntime>(&value) {
+                            Ok(mut runtime) => {
+                                runtime.path = compatible_path(runtime.path);
+                                (Some(runtime), None)
+                            }
                             Err(error) => (
                                 None,
                                 Some(format!("Повреждены данные локального VoxelCore: {error}")),
@@ -967,7 +971,9 @@ impl ProfileStore {
                         manual_packages: Vec::new(),
                         created_at,
                         problem,
-                        external_game_path: external_game_path.map(PathBuf::from),
+                        external_game_path: external_game_path
+                            .map(PathBuf::from)
+                            .map(compatible_path),
                         external_runtime,
                     })
                 },
@@ -2229,8 +2235,8 @@ impl ProfileStore {
         semver::Version::parse(version).map_err(|error| {
             PackageProblem::Invalid(format!("invalid VoxelCore version: {error}"))
         })?;
-        let source =
-            fs::canonicalize(source.as_ref()).map_err(|error| io_error(source.as_ref(), error))?;
+        let source = dunce::canonicalize(source.as_ref())
+            .map_err(|error| io_error(source.as_ref(), error))?;
         let analysis = analyze_existing_game_directory(&source)?;
         if analysis
             .runtime_version
@@ -2249,14 +2255,19 @@ impl ProfileStore {
 
         let data_root = existing_game_data_root(&source);
         let data_root =
-            fs::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
+            dunce::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
         ensure_directory_writable(&data_root)?;
         let duplicate = self.with_database(|database| {
-            database.query_row(
-                "SELECT EXISTS(SELECT 1 FROM profiles WHERE external_game_path = ?1)",
-                [data_root.to_string_lossy().as_ref()],
-                |row| row.get::<_, bool>(0),
-            )
+            let mut statement = database.prepare(
+                "SELECT external_game_path FROM profiles WHERE external_game_path IS NOT NULL",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            Ok(rows
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(PathBuf::from)
+                .map(compatible_path)
+                .any(|path| path == data_root))
         })?;
         if duplicate {
             return invalid("this game directory is already attached to a profile");
@@ -2340,8 +2351,8 @@ impl ProfileStore {
         if profile.external_game_path.is_none() {
             return invalid("profile is not connected to an external game directory");
         }
-        let source =
-            fs::canonicalize(source.as_ref()).map_err(|error| io_error(source.as_ref(), error))?;
+        let source = dunce::canonicalize(source.as_ref())
+            .map_err(|error| io_error(source.as_ref(), error))?;
         let analysis = analyze_existing_game_directory(&source)?;
         if analysis.runtime_kind == ExistingRuntimeKind::None
             && analysis.content_count == 0
@@ -2363,14 +2374,21 @@ impl ProfileStore {
         }
         let data_root = existing_game_data_root(&source);
         let data_root =
-            fs::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
+            dunce::canonicalize(&data_root).map_err(|error| io_error(&data_root, error))?;
         ensure_directory_writable(&data_root)?;
         let duplicate = self.with_database(|database| {
-            database.query_row(
-                "SELECT EXISTS(SELECT 1 FROM profiles WHERE external_game_path = ?1 AND id != ?2)",
-                params![data_root.to_string_lossy().as_ref(), profile_id.to_string()],
-                |row| row.get::<_, bool>(0),
-            )
+            let mut statement = database.prepare(
+                "SELECT external_game_path FROM profiles
+                 WHERE external_game_path IS NOT NULL AND id != ?1",
+            )?;
+            let rows =
+                statement.query_map([profile_id.to_string()], |row| row.get::<_, String>(0))?;
+            Ok(rows
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(PathBuf::from)
+                .map(compatible_path)
+                .any(|path| path == data_root))
         })?;
         if duplicate {
             return invalid("this game directory is already attached to another profile");
@@ -3494,6 +3512,10 @@ fn external_runtime_for(
             "the selected directory does not contain the local VoxelCore used by this profile",
         ),
     }
+}
+
+fn compatible_path(path: PathBuf) -> PathBuf {
+    dunce::simplified(&path).to_owned()
 }
 
 fn ensure_directory_writable(path: &Path) -> Result<(), PackageProblem> {
@@ -5248,7 +5270,7 @@ mod tests {
         fs::write(source.join("worlds/home/world.json"), b"{}").unwrap();
         fs::create_dir_all(source.join("config")).unwrap();
         fs::write(source.join("config/settings.toml"), b"volume = 0.5").unwrap();
-        let canonical_source = fs::canonicalize(&source).unwrap();
+        let canonical_source = dunce::canonicalize(&source).unwrap();
 
         let analysis = store.analyze_existing_game(&source).unwrap();
         assert_eq!(analysis.suggested_name, "My existing game");
@@ -5261,6 +5283,15 @@ mod tests {
         let profile = store
             .attach_existing_game(&source, "Imported", "0.31.4")
             .unwrap();
+        #[cfg(windows)]
+        assert!(
+            !profile
+                .external_game_path
+                .as_ref()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(r"\\?\")
+        );
         let game = store.game_directory(profile.id).unwrap();
         assert_eq!(game, canonical_source);
         assert!(game.join("content/local_mod/package.json").is_file());
@@ -5297,14 +5328,23 @@ mod tests {
         let reconnected = store.reconnect_existing_game(profile.id, &moved).unwrap();
         assert_eq!(
             reconnected.external_game_path,
-            Some(fs::canonicalize(&moved).unwrap())
+            Some(dunce::canonicalize(&moved).unwrap())
         );
         assert_eq!(
             reconnected.external_runtime.unwrap().path,
-            fs::canonicalize(&moved).unwrap()
+            dunce::canonicalize(&moved).unwrap()
         );
         store.delete_profile(profile.id).unwrap();
         assert!(moved.join("worlds/home/world.json").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplifies_legacy_windows_verbatim_paths() {
+        assert_eq!(
+            compatible_path(PathBuf::from(r"\\?\C:\Users\player\VoxelCore")),
+            PathBuf::from(r"C:\Users\player\VoxelCore")
+        );
     }
 
     #[test]
