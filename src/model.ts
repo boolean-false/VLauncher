@@ -1,3 +1,5 @@
+import { normalizeVersion } from "./versionRequirement.ts";
+
 export type LocalProfile = {
   main_build?: MainBuild | null;
   id: string;
@@ -55,7 +57,9 @@ export type MainBuild = {
 export const mainRuntimeId = (build: MainBuild) => `0.0.0-main.${build.artifact_id}+g${build.sha}`;
 export const profileRuntimeId = (profile?: LocalProfile) =>
   profile?.main_build ? mainRuntimeId(profile.main_build) : engineVersion(profile);
-export const mainBuildLabel = (build: MainBuild) => `${build.engine_version ? `${build.engine_version} · DEV (main)` : "main"} · ${build.sha.slice(0, 7)} · ${build.created_at.slice(0, 10)}`;
+export const formatVoxelCoreVersion = (version: string) =>
+  normalizeVersion(version) || version.trim();
+export const mainBuildLabel = (build: MainBuild) => `${build.engine_version ? `${formatVoxelCoreVersion(build.engine_version)} · DEV (main)` : "main"} · ${build.sha.slice(0, 7)} · ${build.created_at.slice(0, 10)}`;
 export const profileEngineLabel = (profile: LocalProfile, latestPublishedVersion = "") => profile.main_build ? mainBuildLabel(profile.main_build) : voxelCoreVersionLabel(engineVersion(profile), latestPublishedVersion);
 export type GameEvent = {
   profile_id: string;
@@ -99,7 +103,7 @@ export const mainRuntimeContext = (build: MainBuild) => ({
 type SemVer = { core: number[]; prerelease: (number | string)[] };
 
 const parseSemVer = (value: string): SemVer | null => {
-  const match = value.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  const match = normalizeVersion(value).match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!match) return null;
   return {
     core: [Number(match[1]), Number(match[2]), Number(match[3])],
@@ -135,7 +139,9 @@ export const compareSemVer = (left: string, right: string) => {
 export const latestPublishedVoxelCoreVersion = (versions: Iterable<string>) => {
   let latest = "";
   for (const version of versions) {
-    if (parseSemVer(version) && (!latest || compareSemVer(version, latest) > 0)) latest = version.trim();
+    if (parseSemVer(version) && (!latest || compareSemVer(version, latest) > 0)) {
+      latest = formatVoxelCoreVersion(version);
+    }
   }
   return latest;
 };
@@ -144,14 +150,16 @@ export const isDevelopmentVoxelCoreVersion = (version: string, latestPublishedVe
   !!parseSemVer(version) && !!parseSemVer(latestPublishedVersion) && compareSemVer(version, latestPublishedVersion) > 0;
 
 export const voxelCoreVersionLabel = (version: string, latestPublishedVersion: string) =>
-  isDevelopmentVoxelCoreVersion(version, latestPublishedVersion) ? `${version} · DEV` : version;
+  isDevelopmentVoxelCoreVersion(version, latestPublishedVersion)
+    ? `${formatVoxelCoreVersion(version)} · DEV`
+    : formatVoxelCoreVersion(version);
 
 export const profileModpack = (profile?: LocalProfile) =>
   profile?.packages.find((pkg) => pkg.kind === "modpack");
 
 export const exactVoxelCoreVersion = (requirement: string) => {
-  const match = requirement.trim().match(/^=?\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/);
-  return match?.[1] ?? "";
+  const match = requirement.trim().match(/^=?\s*(v?\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?)$/);
+  return match ? normalizeVersion(match[1]) : "";
 };
 
 export function requireEngineVersion(version: string): string {

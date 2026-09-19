@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { engineVersion, exactVoxelCoreVersion, isDevelopmentVoxelCoreVersion, latestPublishedVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileEngineLabel, profileModpack, profileRuntimeId, voxelCoreVersionLabel, type LocalProfile, type MainBuild } from "../src/model.ts";
+import { engineVersion, exactVoxelCoreVersion, formatVoxelCoreVersion, isDevelopmentVoxelCoreVersion, latestPublishedVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileEngineLabel, profileModpack, profileRuntimeId, voxelCoreVersionLabel, type LocalProfile, type MainBuild } from "../src/model.ts";
 
 test("сборка main хранит свою версию движка", () => {
   const build: MainBuild = {
@@ -27,6 +27,8 @@ test("версия новее последнего релиза помечает
   assert.equal(isDevelopmentVoxelCoreVersion("0.31.4", latest), false);
   assert.equal(voxelCoreVersionLabel("0.32.0", latest), "0.32.0 · DEV");
   assert.equal(voxelCoreVersionLabel("0.31.4", latest), "0.31.4");
+  assert.equal(formatVoxelCoreVersion("0.32"), "0.32.0");
+  assert.equal(voxelCoreVersionLabel("0.32", latest), "0.32.0 · DEV");
   const profile: LocalProfile = { id: "dev", name: "Dev", active_revision: null, voxelcore_version: "0.32.0", roots: [], packages: [] };
   assert.equal(profileEngineLabel(profile, latest), "0.32.0 · DEV");
 });
@@ -46,6 +48,7 @@ test("операции требуют выбранную версию", () => {
 test("сборка определяет профиль и точную версию движка", () => {
   assert.equal(exactVoxelCoreVersion("=0.31.4"), "0.31.4");
   assert.equal(exactVoxelCoreVersion("0.31.4"), "0.31.4");
+  assert.equal(exactVoxelCoreVersion("=0.32"), "0.32.0");
   assert.equal(exactVoxelCoreVersion(">=0.31.4"), "");
   const profile: LocalProfile = {
     id: "test",

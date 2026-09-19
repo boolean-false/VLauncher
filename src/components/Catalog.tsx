@@ -25,6 +25,7 @@ import {
 import {
   engineVersion,
   exactVoxelCoreVersion,
+  formatVoxelCoreVersion,
   formatBytes,
   friendlyError,
   kinds,
@@ -42,7 +43,7 @@ import { useJointCatalogEnabled } from "../experimental";
 import { catalogProjectKeys } from "../catalogIdentity";
 import { isVoxelCoreBuiltin } from "../builtinContent";
 import { useLatestPublishedVoxelCoreVersion, usePublishedVoxelCoreVersions, useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
-import { parseVersionRequirement } from "../versionRequirement";
+import { normalizeVersionRequirement, parseVersionRequirement } from "../versionRequirement";
 import { mainRequirementFromResolutionError } from "../resolutionRequirement";
 import { useMainlineStatus } from "./Mainline";
 import {
@@ -492,7 +493,7 @@ export function Catalog({
             setCompatibleOnly(event.target.checked);
             setOffset(0);
           }} />
-          {catalogEngine ? `Только совместимые с VoxelCore ${catalogEngine}` : "Для проверки совместимости выберите профиль с версией VoxelCore"}
+          {catalogEngine ? `Только совместимые с VoxelCore ${versionLabel(catalogEngine)}` : "Для проверки совместимости выберите профиль с версией VoxelCore"}
         </label>
         <span className="catalog-filter-label supporting-label">Категории</span>
         <CategoryFilter items={categories} value={category} onChange={next => { setCategory(next); setOffset(0); }} />
@@ -529,7 +530,7 @@ export function Catalog({
         >
           <p>
             {compatibleOnly
-              ? `Для VoxelCore ${catalogEngine} ничего не найдено. Можно выключить фильтр совместимости.`
+              ? `Для VoxelCore ${versionLabel(catalogEngine)} ничего не найдено. Можно выключить фильтр совместимости.`
               : query || category.length
                 ? "Попробуйте другое название или выберите все категории."
                 : "Здесь появятся опубликованные и проверенные проекты."}
@@ -583,7 +584,7 @@ export function Catalog({
                     project.project?.latest_release?.attestation?.assertion?.manifest?.voxelcore_main;
                   return requirement && (!latestVoxelCore || compareSemVer(latestVoxelCore, requirement.target_version) < 0)
                     ? <span className="catalog-main-warning" title={`Минимальный коммит ${requirement.min_commit}`}>
-                        <Icon name="warning" size={15} /> Требует экспериментальный VoxelCore {requirement.target_version}
+                        <Icon name="warning" size={15} /> Требует экспериментальный VoxelCore {formatVoxelCoreVersion(requirement.target_version)}
                       </span>
                     : null;
                 })()}
@@ -1273,15 +1274,17 @@ export function ProjectView({
           throw new Error("Для DEV-версии нужно один раз подключить GitHub. Откройте предложенную настройку, затем повторите установку.");
         }
         const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
-        const build = catalog.builds.find((item) => item.engine_version === requirement.target_version);
-        if (!build) throw new Error(`Для VoxelCore ${requirement.target_version} сейчас нет доступной DEV-сборки для этой системы.`);
+        const build = catalog.builds.find(
+          (item) => formatVoxelCoreVersion(item.engine_version ?? "") === formatVoxelCoreVersion(requirement.target_version),
+        );
+        if (!build) throw new Error(`Для VoxelCore ${formatVoxelCoreVersion(requirement.target_version)} сейчас нет доступной DEV-сборки для этой системы.`);
         return invoke<MainBuild>("resolve_mainline_version", { build });
       };
       if (
         mainRequirement &&
         !targetIsStable &&
         project.type !== "modpack" &&
-        targetProfile?.main_build?.engine_version !== mainRequirement.target_version
+        formatVoxelCoreVersion(targetProfile?.main_build?.engine_version ?? "") !== formatVoxelCoreVersion(mainRequirement.target_version)
       ) {
         selectedMainBuild = await recommendedMainBuild(mainRequirement);
         runtime = mainRuntimeContext(selectedMainBuild);
@@ -1337,7 +1340,7 @@ export function ProjectView({
         }
       }
       const automaticProfileName = createProjectProfile
-        ? `VoxelCore ${voxelcoreVersion}${selectedMainBuild ? " DEV" : ""}`
+        ? `VoxelCore ${formatVoxelCoreVersion(voxelcoreVersion)}${selectedMainBuild ? " DEV" : ""}`
         : undefined;
       preview({
         mainBuild: selectedMainBuild,
@@ -1502,7 +1505,7 @@ export function ProjectView({
                 </p>
               )}
               <div className="release-info">
-                <span>VoxelCore {release?.voxelcore}</span>
+                <span>VoxelCore {normalizeVersionRequirement(release?.voxelcore ?? "")}</span>
                 <span>
                   {release?.artifact_size != null
                     ? formatBytes(release.artifact_size + releaseComponents.reduce((sum, item) => sum + item.artifact_size, 0))
@@ -1522,8 +1525,8 @@ export function ProjectView({
                   <strong>Экспериментальная версия VoxelCore</strong>
                   <span>
                     {createsProjectProfile
-                      ? `Нажмите «Создать профиль и установить» — лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${mainRequirement.target_version}.`
-                      : `После выбора профиля лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${mainRequirement.target_version}.`}
+                      ? `Нажмите «Создать профиль и установить» — лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
+                      : `После выбора профиля лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`}
                   </span>
                   {!mainlineStatus.authenticated && (
                     <button type="button" onClick={openExperimentalSettings}>

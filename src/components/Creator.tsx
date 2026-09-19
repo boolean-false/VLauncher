@@ -1060,12 +1060,14 @@ export function Creator({
   const validMainCommit = /^[a-f0-9]{40}$/.test(mainMinCommit);
   const validVoxelcoreRequirement = isVersionRequirementValid(voxelcoreRequirement);
   const compatibleMainBuilds = mainBuilds.filter(
-    (build) => build.engine_version === mainTargetVersion,
+    (build) => normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
   );
   const loadCompatibleMainBuilds = async () => {
     const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
     setMainBuilds(catalog.builds);
-    const matching = catalog.builds.filter((build) => build.engine_version === mainTargetVersion);
+    const matching = catalog.builds.filter(
+      (build) => normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
+    );
     if (!matching.length) throw new Error(`Для VoxelCore ${mainTargetVersion} нет доступных DEV-сборок`);
     if (!matching.some((build) => build.sha === mainMinCommit)) setMainMinCommit(matching[0].sha);
   };

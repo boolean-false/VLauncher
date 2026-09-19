@@ -299,7 +299,7 @@ export function Settings({
             return (
               <section className="setting-row" key={`available-${release.version}`}>
                 <div>
-                  <h3>VoxelCore {release.version}</h3>
+                  <h3>VoxelCore {versionLabel(release.version)}</h3>
                   <p>
                     {release.channel === "stable" ? "Стабильная версия" : release.channel} ·{" "}
                     {formatBytes(release.artifact_size)}
