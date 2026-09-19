@@ -155,14 +155,16 @@ const translatedErrors: Record<string, string> = {
   github_oauth_not_configured: "Вход через GitHub пока не настроен на сервере.",
   release_exists: "Версия с таким номером уже существует.",
   project_slug_reserved: "Этот идентификатор зарезервирован после удаления проекта. Для нового проекта выберите другой идентификатор.",
-  project_slug_taken: "Этот идентификатор проекта уже занят.",
+  reservation_protected: "Адрес используется в зависимостях и пока не может быть освобождён.",
+  published_reservation_confirmation_required: "Подтвердите риск освобождения ранее опубликованного адреса.",
+  project_slug_taken: "Этот короткий адрес уже занят другим проектом или контент-паком.",
   package_identifier_pending: "Дождитесь проверки первой версии контент-пака.",
   invalid_image: "Файл не удалось распознать как подходящее изображение.",
   image_too_large: "Изображение превышает ограничение 10 МБ.",
   session_expired: "Сессия завершена. Войдите снова.",
   upload_quota_reached: "Достигнут лимит одновременных загрузок. Завершите или отмените старые.",
   rate_limited: "Слишком много запросов. Подождите немного и повторите.",
-  invalid_project_slug: "Идентификатор должен содержать строчные латинские буквы, цифры и подчёркивание.",
+  invalid_project_slug: "Адрес должен содержать от 2 до 48 строчных латинских букв, цифр, дефисов или подчёркиваний.",
   github_username_conflict: "Этот GitHub-профиль уже связан с другой учётной записью.",
 };
 
@@ -171,7 +173,10 @@ async function responseError(response: Response, fallback: string): Promise<Erro
     error?: { code?: string; message?: string };
   } | null;
   const code = data?.error?.code ?? "";
-  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), { status: response.status });
+  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), {
+    status: response.status,
+    code,
+  });
 }
 
 async function fetchRegistry<T>(
@@ -329,7 +334,7 @@ export const createCreatorProject = (
   project: Omit<
     Pick<CreatorProject, "type" | "title" | "summary" | "description" | "license" | "categories">,
     "type"
-  > & { type: Exclude<Project["type"], "runtime"> },
+  > & { type: Exclude<Project["type"], "runtime">; slug?: string },
 ) =>
   registryRequest<CreatorProject>(
     "/creator/projects",

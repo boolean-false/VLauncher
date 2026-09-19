@@ -1,5 +1,5 @@
 import { Catalog } from "./Catalog";
-import type { LocalProfile, RunTask } from "../model";
+import type { LocalProfile, MainBuild, RunTask } from "../model";
 import type { SignedInstallPlan } from "../api";
 
 // The profile uses the same catalog; only its target profile and quick actions differ.
@@ -13,6 +13,7 @@ export function ProfileContentPicker({
   close,
   refreshProfiles,
   openProfile,
+  openExperimentalSettings,
 }: {
   profile: LocalProfile;
   active: boolean;
@@ -20,6 +21,7 @@ export function ProfileContentPicker({
   running: boolean;
   run: RunTask;
   preview: (value: {
+    mainBuild?: MainBuild | null;
     profile: LocalProfile;
     plan: SignedInstallPlan;
     title: string;
@@ -27,6 +29,7 @@ export function ProfileContentPicker({
   close: () => void;
   refreshProfiles: () => Promise<void>;
   openProfile: (id: string) => void;
+  openExperimentalSettings: () => void;
 }) {
   return (
     <Catalog
@@ -44,6 +47,7 @@ export function ProfileContentPicker({
       refreshProfiles={refreshProfiles}
       profileContext={{ close }}
       openProfile={openProfile}
+      openExperimentalSettings={openExperimentalSettings}
     />
   );
 }

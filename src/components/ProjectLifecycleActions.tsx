@@ -15,6 +15,7 @@ export function ProjectLifecycleActions({
 }: {
   project: {
     slug: string;
+    package_id?: string | null;
     title: string;
     archived_at?: string | null;
     can_manage_lifecycle?: boolean;
@@ -30,6 +31,7 @@ export function ProjectLifecycleActions({
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const path = `/creator/projects/${encodeURIComponent(project.slug)}`;
+  const publicIdentifier = project.package_id || project.slug;
   // Иначе новый callback родителя повторяет запрос.
   useEffect(() => {
     if (action !== "delete") return;
@@ -132,7 +134,7 @@ export function ProjectLifecycleActions({
                 установленные файлы останутся у игроков.
               </p>
               <p>
-                Адрес <strong>{project.slug}</strong> нельзя будет занять снова.
+                Адрес <strong>{publicIdentifier}</strong> нельзя будет занять снова.
                 Запись об удалении останется у модераторов.
               </p>
               {!impact && !error && (
@@ -157,7 +159,7 @@ export function ProjectLifecycleActions({
                     </p>
                   )}
                   <label>
-                    Для подтверждения введите {project.slug}
+                    Для подтверждения введите {publicIdentifier}
                     <input
                       value={confirmation}
                       disabled={busy || !!impact.active_uploads}
@@ -197,7 +199,7 @@ export function ProjectLifecycleActions({
                 (action === "delete" &&
                   (!impact ||
                     !!impact.active_uploads ||
-                    confirmation !== project.slug))
+                    confirmation !== publicIdentifier))
               }
               onClick={() => void run()}
             >

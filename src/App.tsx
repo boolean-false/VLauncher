@@ -614,7 +614,10 @@ export default function App() {
     });
 
   return (
-    <VoxelCoreVersionProvider latestVersion={latestVoxelCoreVersion}>
+    <VoxelCoreVersionProvider
+      latestVersion={latestVoxelCoreVersion}
+      versions={availableRuntimes.map((item) => item.version)}
+    >
     <div className="app-shell workbench" data-screen={screen}>
       <aside className="sidebar">
         <div className="brand">
@@ -1152,6 +1155,10 @@ export default function App() {
               active={screen === "content-picker"} refreshProfiles={refresh}
               busy={busy} running={running.has(pickerProfileId)} run={run} preview={setPendingPlan}
               openProfile={(id) => { setSelected(id); setScreen("library"); }}
+              openExperimentalSettings={() => {
+                sessionStorage.setItem("vlauncher.settings-tab", "experimental");
+                setScreen("settings");
+              }}
               close={() => { setSelected(pickerProfileId); setScreen("library"); }} />
           </div>}
           {visited.current.has("catalog") && (
@@ -1168,6 +1175,10 @@ export default function App() {
               resetDetail={catalogReset}
               create={() => setNewProfile(true)}
               openProfile={(id) => { setSelected(id); setScreen("library"); }}
+              openExperimentalSettings={() => {
+                sessionStorage.setItem("vlauncher.settings-tab", "experimental");
+                setScreen("settings");
+              }}
               refreshProfiles={refresh}
             /></div>
           )}
@@ -1355,6 +1366,19 @@ export default function App() {
                 )
                   throw new Error("Сначала завершите игру");
                 stage("Загрузка, проверка и установка пакетов…");
+                if (
+                  pendingPlan.mainBuild &&
+                  !runtimes.some((runtime) => runtime.main_build?.artifact_id === pendingPlan.mainBuild!.artifact_id)
+                ) {
+                  stage("Загрузка и проверка подходящей DEV-сборки VoxelCore…");
+                  setOfficialTransfer(true);
+                  try {
+                    await invoke("install_mainline_build", { build: pendingPlan.mainBuild });
+                  } finally {
+                    setOfficialTransfer(false);
+                  }
+                  stage("Установка контента…");
+                }
                 let installedProfileId = pendingPlan.profile.id;
                 if (pendingPlan.newProfileName) {
                   const created = await invoke<LocalProfile>(

@@ -193,7 +193,7 @@ impl PackageManifest {
                 path: path.clone(),
                 source,
             })?;
-        let manifest = if value.get("schema_version").is_some() {
+        let mut manifest = if value.get("schema_version").is_some() {
             serde_json::from_value(value).map_err(|source| PackageProblem::Json {
                 path: path.clone(),
                 source,
@@ -201,6 +201,9 @@ impl PackageManifest {
         } else {
             Self::from_legacy(value)?
         };
+        // VoxelCore historically writes short versions such as `0.32`.
+        // Keep one canonical identity everywhere in the launcher and registry.
+        manifest.version = normalize_version(&manifest.version)?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -637,6 +640,28 @@ mod tests {
         .unwrap();
         manifest.validate().unwrap();
         assert_eq!(manifest.dependencies[0].id, "base");
+    }
+
+    #[test]
+    fn reads_short_version_from_current_manifest_as_semver() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "id": "wire_demo",
+                "type": "mod",
+                "title": "Wire demo",
+                "version": "0.32",
+                "creators": ["Dagger"],
+                "description": "Demo",
+                "license": "MIT"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let manifest = PackageManifest::read(temp.path()).unwrap();
+        assert_eq!(manifest.version, "0.32.0");
     }
 
     #[test]

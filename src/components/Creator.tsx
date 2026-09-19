@@ -15,6 +15,7 @@ import { ProjectAnalytics } from "./ProjectAnalytics";
 import { PlatformAdmin } from "./PlatformAdmin";
 import { CategoryPicker } from "./CategoryPicker";
 import { Select } from "./Select";
+import { VersionRequirementEditor } from "./VersionRequirementEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -54,7 +55,9 @@ import {
   type ProjectMember,
 } from "../api";
 import { compareSemVer, formatBytes, friendlyError, mainBuildLabel, profileModpack, type LocalProfile, type MainBuild } from "../model";
-import { useLatestPublishedVoxelCoreVersion } from "../VoxelCoreVersionContext";
+import { useLatestPublishedVoxelCoreVersion, usePublishedVoxelCoreVersions } from "../VoxelCoreVersionContext";
+import { isVersionRequirementValid, normalizeVersion, normalizeVersionRequirement, parseVersionRequirement } from "../versionRequirement";
+import { projectSlugFromTitle, validProjectSlug } from "../projectSlug";
 const storedToken = () => invoke<string | null>("load_access_token");
 const draftStorageKey = (kind: "project" | "release") =>
   `vlauncher.creator.${kind}-draft:${registryUrl.replace(/\/$/, "")}`;
@@ -74,10 +77,15 @@ type PreparedArtifact = {
     components?: { key: string; type: "world"; title: string }[];
   };
 };
-const minimumVoxelCoreVersion = (requirement: string) =>
-  requirement.match(/(?:^|[\s,])(?:>=|=)\s*(\d+\.\d+\.\d+)/)?.[1] ?? "";
+const minimumVoxelCoreVersion = (requirement: string) => {
+  const parsed = parseVersionRequirement(requirement);
+  if (parsed.minimum) return parsed.minimum;
+  return normalizeVersion(requirement.match(/^\s*(?:\^|~)\s*([^,\s]+)/)?.[1] ?? "");
+};
 const packageVoxelCoreRequirement = (artifact: PreparedArtifact) =>
-  artifact.manifest.dependencies?.find((dependency) => dependency.id === "base")?.requirement ?? "";
+  normalizeVersionRequirement(
+    artifact.manifest.dependencies?.find((dependency) => dependency.id === "base")?.requirement ?? "",
+  );
 type LocalWorld = {
   folder: string;
   name: string;
@@ -140,6 +148,7 @@ export function Creator({
   worldPublish?: { profileId: string; folder: string } | null;
 }) {
   const latestStableVoxelCore = useLatestPublishedVoxelCoreVersion();
+  const publishedVoxelCoreVersions = usePublishedVoxelCoreVersions();
   const [section, setSection] = useState("projects");
   const [working, setWorking] = useState(false);
   const alive = useRef(true);
@@ -194,6 +203,7 @@ export function Creator({
   const emptyProjectDraft: {
     type: Exclude<Project["type"], "runtime">;
     title: string;
+    slug: string;
     summary: string;
     description: string;
     license: string;
@@ -201,6 +211,7 @@ export function Creator({
   } = {
     type: "mod" as const,
     title: "",
+    slug: "",
     summary: "",
     description: "",
     license: "",
@@ -219,6 +230,11 @@ export function Creator({
       return {
         ...saved,
         type: savedType,
+        slug: savedType === "mod"
+          ? ""
+          : typeof saved.slug === "string" && saved.slug
+            ? saved.slug
+            : projectSlugFromTitle(saved.title, savedType),
       };
     })(),
   );
@@ -593,6 +609,7 @@ export function Creator({
     try {
       const created = await createCreatorProject(token, {
         type: draft.type,
+        ...(draft.type === "mod" ? {} : { slug: draft.slug }),
         title: draft.title,
         summary: draft.summary,
         description: draft.description,
@@ -768,6 +785,9 @@ export function Creator({
           setStatus(
             "Архив загружен. Проверка продолжается на сервере - результат появится в списке версий.",
           );
+          setPrepared(null);
+          setPreparedSource(null);
+          setChangelog("");
           break;
         }
         const upload = await loadUpload(token, receipt.id);
@@ -779,10 +799,16 @@ export function Creator({
         if (upload.status === "published") {
           invalidateRegistry(token);
           setStatus("Версия опубликована автоматически");
+          setPrepared(null);
+          setPreparedSource(null);
+          setChangelog("");
           break;
         }
         if (upload.status === "awaiting_moderation") {
           setStatus("Релиз проверен и ожидает модерации");
+          setPrepared(null);
+          setPreparedSource(null);
+          setChangelog("");
           break;
         }
         if (upload.status === "rejected")
@@ -1032,9 +1058,17 @@ export function Creator({
   const futureVoxelCore = !!mainTargetVersion && !!latestStableVoxelCore &&
     compareSemVer(mainTargetVersion, latestStableVoxelCore) > 0;
   const validMainCommit = /^[a-f0-9]{40}$/.test(mainMinCommit);
+  const validVoxelcoreRequirement = isVersionRequirementValid(voxelcoreRequirement);
   const compatibleMainBuilds = mainBuilds.filter(
     (build) => build.engine_version === mainTargetVersion,
   );
+  const loadCompatibleMainBuilds = async () => {
+    const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
+    setMainBuilds(catalog.builds);
+    const matching = catalog.builds.filter((build) => build.engine_version === mainTargetVersion);
+    if (!matching.length) throw new Error(`Для VoxelCore ${mainTargetVersion} нет доступных DEV-сборок`);
+    if (!matching.some((build) => build.sha === mainMinCommit)) setMainMinCommit(matching[0].sha);
+  };
   return (
     <>
       {editingImage && (
@@ -1076,8 +1110,36 @@ export function Creator({
           Обновить данные
         </button>
       </div>
-      {error && <div className="notice error compact">{error}</div>}
-      {status && <div className="notice success compact">{status}</div>}
+      {(error || status) && (
+        <div className="creator-notifications" aria-live="polite">
+          {error && (
+            <div className="notice error compact" role="alert">
+              <span>{error}</span>
+              <button
+                type="button"
+                className="creator-notification-close"
+                aria-label="Закрыть сообщение об ошибке"
+                onClick={() => setError("")}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {status && (
+            <div className="notice success compact" role="status">
+              <span>{status}</span>
+              <button
+                type="button"
+                className="creator-notification-close"
+                aria-label="Закрыть уведомление"
+                onClick={() => setStatus("")}
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       <nav className="workshop-nav" aria-label="Разделы мастерской">
         {[
           ["projects", "Мои проекты"],
@@ -1250,6 +1312,13 @@ export function Creator({
                 </p>
                 <h2>{current.title}</h2>
                 {current.summary && <p className="workshop-project-summary">{current.summary}</p>}
+                <p className="workshop-project-identifiers">
+                  {current.type === "mod" ? (
+                    <span>Публичный адрес: <code>{current.package_id || "появится после проверки package.json"}</code></span>
+                  ) : (
+                    <span>Публичный адрес: <code>{current.slug}</code></span>
+                  )}
+                </p>
               </div>
             </div>
             <div className="form-row">
@@ -1325,9 +1394,16 @@ export function Creator({
                       key={kind}
                       className={draft.type === kind ? "active" : ""}
                       aria-pressed={draft.type === kind}
-                      onClick={() =>
-                        setDraft({ ...draft, type: kind, categories: [] })
-                      }
+                      onClick={() => setDraft({
+                        ...draft,
+                        type: kind,
+                        slug: kind === "mod"
+                          ? ""
+                          : draft.type === "mod" || !draft.slug
+                            ? projectSlugFromTitle(draft.title, kind)
+                            : draft.slug,
+                        categories: [],
+                      })}
                     >
                       <span className={`workshop-kind-mark ${kind}`}>
                         <Icon name={info.icon} size={22} />
@@ -1347,11 +1423,46 @@ export function Creator({
                 aria-label="Название проекта"
                 placeholder={draftKind.titlePlaceholder}
                 value={draft.title}
-                onChange={(event) =>
-                  setDraft({ ...draft, title: event.target.value })
-                }
+                onChange={(event) => {
+                  const title = event.target.value;
+                  const previousAutomaticSlug = projectSlugFromTitle(draft.title, draft.type);
+                  const customSlug = !!draft.slug && draft.slug !== previousAutomaticSlug;
+                  setDraft({
+                    ...draft,
+                    title,
+                    slug: draft.type === "mod" || customSlug
+                      ? draft.slug
+                      : projectSlugFromTitle(title, draft.type),
+                  });
+                }}
               />
             </label>
+            {draft.type === "mod" ? (
+              <div className="notice compact">
+                <strong>Адрес будет взят из package.json</strong>
+                <span>После первой проверки ID пакета, например <code>wire_mod</code>, станет его постоянным адресом в каталоге.</span>
+              </div>
+            ) : (
+              <label>
+                Короткий адрес проекта
+                <div className="project-slug-field">
+                  <span>vlauncher.space/project/</span>
+                  <input
+                    aria-label="Короткий адрес проекта"
+                    maxLength={48}
+                    value={draft.slug}
+                    placeholder={draft.type === "world" ? "floating-islands" : "technical-adventures"}
+                    spellCheck={false}
+                    onChange={(event) => setDraft({ ...draft, slug: event.target.value.trim().toLowerCase() })}
+                  />
+                </div>
+                <small className={!draft.slug || validProjectSlug(draft.slug) ? undefined : "danger-text"}>
+                  {!draft.slug || validProjectSlug(draft.slug)
+                    ? "Можно продиктовать или отправить человеку. Допустимы латинские буквы, цифры, дефис и подчёркивание."
+                    : "Нужно от 2 до 48 символов; первый символ — латинская буква."}
+                </small>
+              </label>
+            )}
             <label>
               {draftKind.summaryLabel}
               <input
@@ -1393,7 +1504,8 @@ export function Creator({
               className="primary small"
               disabled={
                 !draft.title.trim() ||
-                !draft.summary.trim()
+                !draft.summary.trim() ||
+                (draft.type !== "mod" && !validProjectSlug(draft.slug))
               }
               onClick={() => void perform(createProject)}
             >
@@ -1434,7 +1546,7 @@ export function Creator({
               <section className="release-source-card">
                 <div>
                   <strong>Файлы контент-пака</strong>
-                  <span>Версия и совместимость будут прочитаны из package.json.</span>
+                  <span>Версия, ID и зависимости будут прочитаны из package.json. Необязательные зависимости тоже поддерживаются.</span>
                 </div>
                 <div className="form-row release-source-tabs" role="group" aria-label="Источник файлов">
                   <button
@@ -1687,19 +1799,11 @@ export function Creator({
                   <textarea aria-label="Список изменений" placeholder="Что изменилось в этой версии" value={changelog} onChange={(event) => setChangelog(event.target.value)} />
                 </label>
                 {prepared && (
-                  <label>
-                    Совместимость с VoxelCore
-                    <input
-                      aria-label="Совместимость с VoxelCore"
-                      value={voxelcoreRequirement}
-                      placeholder=">=0.31.4"
-                      spellCheck={false}
-                      onChange={(event) => setVoxelcoreRequirement(event.target.value)}
-                    />
-                    <small>
-                      Начальное значение берётся из зависимости <code>base</code>. Оно применяется только к этому релизу.
-                    </small>
-                  </label>
+                  <VersionRequirementEditor
+                    value={voxelcoreRequirement}
+                    versions={publishedVoxelCoreVersions}
+                    onChange={setVoxelcoreRequirement}
+                  />
                 )}
               </div>
             )}
@@ -1715,42 +1819,31 @@ export function Creator({
                   <input
                     type="checkbox"
                     checked={allowMain}
-                    onChange={(event) => setAllowMain(event.target.checked)}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAllowMain(checked);
+                      if (checked) void perform(loadCompatibleMainBuilds);
+                    }}
                   />
                   Разрешить установку на экспериментальные main-сборки
                 </label>
                 {allowMain && (
                   <div className="main-compatibility-fields">
-                    <label>
-                      Первый совместимый commit
-                      <input
-                        value={mainMinCommit}
-                        spellCheck={false}
-                        placeholder="Полный SHA из 40 символов"
-                        onChange={(event) => setMainMinCommit(event.target.value.trim().toLowerCase())}
-                      />
-                    </label>
                     <button
                       type="button"
                       disabled={working}
-                      onClick={() => void perform(async () => {
-                        const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
-                        setMainBuilds(catalog.builds);
-                        const matching = catalog.builds.filter((build) => build.engine_version === mainTargetVersion);
-                        if (!matching.length) throw new Error(`Для VoxelCore ${mainTargetVersion} нет доступных main-сборок`);
-                        if (!mainMinCommit) setMainMinCommit(matching[0].sha);
-                      })}
+                      onClick={() => void perform(loadCompatibleMainBuilds)}
                     >
-                      Загрузить сборки из GitHub
+                      {compatibleMainBuilds.length ? "Обновить список DEV-сборок" : "Подобрать DEV-сборку автоматически"}
                     </button>
                     {!!compatibleMainBuilds.length && (
                       <label>
-                        Выбрать сборку
+                        Первая проверенная сборка
                         <Select
                           value={compatibleMainBuilds.some((build) => build.sha === mainMinCommit) ? mainMinCommit : ""}
                           onChange={(event) => setMainMinCommit(event.target.value)}
                         >
-                          <option value="">Выберите первый совместимый commit</option>
+                          <option value="">Выберите проверенную сборку</option>
                           {compatibleMainBuilds.map((build) => (
                             <option key={build.sha} value={build.sha}>{mainBuildLabel(build)}</option>
                           ))}
@@ -1758,8 +1851,20 @@ export function Creator({
                       </label>
                     )}
                     <small>
-                      Подойдёт выбранный коммит или любой его потомок в официальной ветке VoxelCore.
+                      Лаунчер сохранит коммит выбранной сборки сам. Пользователю подойдёт она или любая более новая официальная сборка.
                     </small>
+                    <details className="version-requirement-advanced">
+                      <summary>Указать commit вручную</summary>
+                      <label>
+                        Полный SHA commit
+                        <input
+                          value={mainMinCommit}
+                          spellCheck={false}
+                          placeholder="40 символов"
+                          onChange={(event) => setMainMinCommit(event.target.value.trim().toLowerCase())}
+                        />
+                      </label>
+                    </details>
                   </div>
                 )}
               </section>
@@ -1770,6 +1875,22 @@ export function Creator({
                 <strong>
                   {prepared.manifest.title} {prepared.manifest.version}
                 </strong>
+                {current?.type === "mod" && (
+                  <span>
+                    ID пакета: <code>{prepared.manifest.id}</code>
+                    {current.package_id
+                      ? " · уже закреплён за этим проектом"
+                      : " · будет зарегистрирован после загрузки и проверки архива"}
+                  </span>
+                )}
+                {current?.type === "mod" && !current.package_id && (
+                  <div className="notice">
+                    <strong>Сейчас этот ID существует только в локальном package.json</strong>
+                    <span>
+                      Сервер и администраторы увидят его после загрузки и успешной проверки архива. Тогда он станет коротким публичным адресом мода. Если удалить проект до первой публикации, ID освободится автоматически.
+                    </span>
+                  </div>
+                )}
                 <ManifestContentLinks
                   manifest={prepared.manifest}
                   parent={prepared.manifest.title}
@@ -1792,9 +1913,9 @@ export function Creator({
                     ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
                     : "Без дополнительных разрешений"}
                 </span>
-                {!voxelcoreRequirement.trim() && (
+                {!validVoxelcoreRequirement && (
                   <span className="notice error" role="alert">
-                    Укажите совместимость с VoxelCore для этой версии.
+                    Выберите совместимость с VoxelCore или исправьте расширенное условие.
                   </span>
                 )}
                 {preparedVersionRelease && (
@@ -1840,7 +1961,7 @@ export function Creator({
               aria-describedby="release-publish-state"
               disabled={
                 working || !preparedMatchesProject || !!preparedVersionRelease ||
-                !voxelcoreRequirement.trim() ||
+                !validVoxelcoreRequirement ||
                 (futureVoxelCore && allowMain && !validMainCommit)
               }
               onClick={() => void perform(publish)}

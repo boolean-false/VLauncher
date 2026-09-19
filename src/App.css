@@ -1453,7 +1453,7 @@ main>div[hidden] {
 .main-commit-requirement {
   display: grid;
   gap: 6px;
-  border-color: color-mix(in srgb, var(--warning, #e0a53a) 55%, transparent);
+  border-color: var(--warning-line);
 }
 
 .main-commit-requirement span {
@@ -1474,7 +1474,7 @@ main>div[hidden] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--warning, #e0a53a);
+  color: var(--warning);
   font-size: 12px;
 }
 
@@ -2087,6 +2087,29 @@ main>div[hidden] {
 
 .form-card>button {
   align-self: flex-start;
+}
+
+.cleanup-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.cleanup-summary > div {
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+
+.cleanup-summary strong {
+  font-size: 20px;
+}
+
+.cleanup-summary span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .form-row {
@@ -2989,6 +3012,39 @@ select {
   color: var(--muted);
 }
 
+.workshop-project-identifiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.project-slug-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+
+.project-slug-field > span {
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+}
+
+.project-slug-field > input {
+  border: 0;
+  background: transparent;
+}
+
+.project-slug-field:focus-within {
+  border-color: var(--focus-ring);
+}
+
 .release-source-card {
   display: grid;
   gap: 14px;
@@ -3176,6 +3232,78 @@ select {
 
 .release-metadata-fields > label:last-child {
   grid-column: 1 / -1;
+}
+
+.release-metadata-fields > .version-requirement-editor {
+  grid-column: 1 / -1;
+}
+
+.version-requirement-editor {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+
+.version-requirement-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.version-requirement-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.version-requirement-heading span,
+.version-requirement-explanation {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.version-requirement-heading > code {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  white-space: nowrap;
+}
+
+.version-requirement-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.version-requirement-explanation {
+  margin: 0;
+}
+
+.version-requirement-advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.version-requirement-advanced > label {
+  margin-top: 10px;
+}
+
+@media (max-width: 700px) {
+  .version-requirement-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .version-requirement-heading > code {
+    white-space: normal;
+  }
+
+  .version-requirement-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .release-ready-card {
@@ -3874,6 +4002,53 @@ input[type="checkbox"]:disabled {
 
 .update-notice p {
   margin: 6px 0;
+}
+
+.creator-notifications {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  z-index: 40;
+  display: grid;
+  gap: 10px;
+  width: min(520px, calc(100vw - 44px));
+  pointer-events: none;
+}
+
+.creator-notifications .notice {
+  align-items: flex-start;
+  margin: 0;
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--bg) 62%, transparent);
+  pointer-events: auto;
+}
+
+.creator-notifications .notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.creator-notification-close {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.creator-notification-close:hover {
+  border-color: currentColor;
+  background: transparent;
+}
+
+@media (max-width: 640px) {
+  .creator-notifications {
+    top: 10px;
+    right: 10px;
+    width: calc(100vw - 20px);
+  }
 }
 
 .management-records {

@@ -183,7 +183,7 @@ export function ManagementPanel({
   const [refresh, setRefresh] = useState(0);
   const [deletedRecord, setDeletedRecord] = useState<{
     previous_deletions?: { id: number; record: unknown; reason: string; created_at: string }[];
-    slug: string; title: string; status: string; deleted_at: string;
+    slug: string; package_id?: string | null; title: string; status: string; deleted_at: string;
     snapshot: { releases: { id: string; version: string; status: string; review?: string }[];
       reports: { id: string; reason: string; details: string; status: string; resolution?: string }[] };
   } | null>(null);
@@ -517,7 +517,8 @@ export function ManagementPanel({
       </div>
       {deletedRecord && <Modal title={`Удалённый проект: ${deletedRecord.title}`} close={() => setDeletedRecord(null)}>
         {deletedRecord.previous_deletions?.map(entry => <details key={entry.id}><summary>Предыдущее удаление · {new Date(entry.created_at).toLocaleString("ru")}</summary><p>{entry.reason}</p><pre>{JSON.stringify(entry.record, null, 2)}</pre></details>)}
-        <p>{deletedRecord.slug} · {text(deletedRecord.status)} · {new Date(deletedRecord.deleted_at).toLocaleString("ru")}</p>
+        <p>{deletedRecord.package_id || deletedRecord.slug} · {text(deletedRecord.status)} · {new Date(deletedRecord.deleted_at).toLocaleString("ru")}</p>
+        {deletedRecord.package_id && <small>Внутренняя запись: {deletedRecord.slug}</small>}
         <h3>Версии</h3>
         {deletedRecord.snapshot.releases.map(release => <div key={release.id}><strong>{release.version} · {text(release.status)}</strong><p>{release.review || "Без решения модератора"}</p><small>{release.id}</small></div>)}
         <h3>Жалобы</h3>

@@ -2,6 +2,13 @@ import { useState } from "react";
 import { useContentInspector } from "./ContentInspector";
 import { isVoxelCoreBuiltin } from "../builtinContent";
 
+function relationLabel(relation: string) {
+  if (relation === "conflict") return "Конфликт";
+  if (relation === "optional") return "Необязательная зависимость";
+  if (relation === "weak") return "Загрузить после пакета";
+  return "Обязательная зависимость";
+}
+
 // Accepts local and moderation manifests without assuming that the project is published.
 export function ManifestContentLinks({
   manifest,
@@ -77,7 +84,7 @@ export function ManifestContentLinks({
             <strong>{ref.title}</strong>
             <span>{ref.version || ref.requirement}</span>
             <small>
-              VoxelCore · {ref.relation === "conflict" ? "Конфликт" : "Встроенный пакет"}
+              VoxelCore · {ref.relation === "conflict" ? "Конфликт" : relationLabel(ref.relation)}
             </small>
           </div>
         ) : (
@@ -89,8 +96,7 @@ export function ManifestContentLinks({
             <strong>{ref.title}</strong>
             <span>{ref.version || ref.requirement}</span>
             <small>
-              {ref.source} ·{" "}
-              {ref.relation === "conflict" ? "Конфликт" : "Связанный пакет"}
+              {ref.source} · {relationLabel(ref.relation)}
             </small>
           </button>
         ),

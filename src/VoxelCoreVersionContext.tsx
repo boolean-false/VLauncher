@@ -1,24 +1,26 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { voxelCoreVersionLabel } from "./model";
 
-const LatestPublishedVoxelCoreVersion = createContext("");
+const VoxelCoreVersions = createContext({ latestVersion: "", versions: [] as string[] });
 
 export function VoxelCoreVersionProvider({
   latestVersion,
+  versions = [],
   children,
 }: {
   latestVersion: string;
+  versions?: string[];
   children: ReactNode;
 }) {
   return (
-    <LatestPublishedVoxelCoreVersion.Provider value={latestVersion}>
+    <VoxelCoreVersions.Provider value={{ latestVersion, versions }}>
       {children}
-    </LatestPublishedVoxelCoreVersion.Provider>
+    </VoxelCoreVersions.Provider>
   );
 }
 
 export function useVoxelCoreVersionLabel() {
-  const latestVersion = useContext(LatestPublishedVoxelCoreVersion);
+  const { latestVersion } = useContext(VoxelCoreVersions);
   return useMemo(
     () => (version: string) => voxelCoreVersionLabel(version, latestVersion),
     [latestVersion],
@@ -26,5 +28,9 @@ export function useVoxelCoreVersionLabel() {
 }
 
 export function useLatestPublishedVoxelCoreVersion() {
-  return useContext(LatestPublishedVoxelCoreVersion);
+  return useContext(VoxelCoreVersions).latestVersion;
+}
+
+export function usePublishedVoxelCoreVersions() {
+  return useContext(VoxelCoreVersions).versions;
 }
