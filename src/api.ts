@@ -170,12 +170,13 @@ const translatedErrors: Record<string, string> = {
 
 async function responseError(response: Response, fallback: string): Promise<Error> {
   const data = (await response.json().catch(() => null)) as {
-    error?: { code?: string; message?: string };
+    error?: { code?: string; message?: string; details?: unknown };
   } | null;
   const code = data?.error?.code ?? "";
   return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), {
     status: response.status,
     code,
+    details: data?.error?.details,
   });
 }
 

@@ -20,6 +20,7 @@ import {
   type ProjectDetail,
   type Release,
   type SignedInstallPlan,
+  type VoxelCoreMainRequirement,
 } from "../api";
 import {
   engineVersion,
@@ -42,6 +43,7 @@ import { catalogProjectKeys } from "../catalogIdentity";
 import { isVoxelCoreBuiltin } from "../builtinContent";
 import { useLatestPublishedVoxelCoreVersion, usePublishedVoxelCoreVersions, useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
 import { parseVersionRequirement } from "../versionRequirement";
+import { mainRequirementFromResolutionError } from "../resolutionRequirement";
 import { useMainlineStatus } from "./Mainline";
 import {
   mergeModCategories,
@@ -1259,14 +1261,13 @@ export function ProjectView({
       let runtime = project.type === "modpack"
         ? { kind: "stable" as const, version: modpackEngine }
         : profileRuntimeContext(targetProfile);
-      const recommendedMainBuild = async () => {
-        if (!mainRequirement) throw new Error("У релиза не указана DEV-совместимость");
+      const recommendedMainBuild = async (requirement: VoxelCoreMainRequirement) => {
         if (!mainlineStatus.authenticated) {
           throw new Error("Для DEV-версии нужно один раз подключить GitHub. Откройте предложенную настройку, затем повторите установку.");
         }
         const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
-        const build = catalog.builds.find((item) => item.engine_version === mainRequirement.target_version);
-        if (!build) throw new Error(`Для VoxelCore ${mainRequirement.target_version} сейчас нет доступной DEV-сборки для этой системы.`);
+        const build = catalog.builds.find((item) => item.engine_version === requirement.target_version);
+        if (!build) throw new Error(`Для VoxelCore ${requirement.target_version} сейчас нет доступной DEV-сборки для этой системы.`);
         return invoke<MainBuild>("resolve_mainline_version", { build });
       };
       if (
@@ -1275,7 +1276,7 @@ export function ProjectView({
         project.type !== "modpack" &&
         targetProfile?.main_build?.engine_version !== mainRequirement.target_version
       ) {
-        selectedMainBuild = await recommendedMainBuild();
+        selectedMainBuild = await recommendedMainBuild(mainRequirement);
         runtime = mainRuntimeContext(selectedMainBuild);
         voxelcoreVersion = selectedMainBuild.engine_version ?? mainRequirement.target_version;
       }
@@ -1308,18 +1309,23 @@ export function ProjectView({
             lastError = reason;
           }
         }
-        if (!plan) throw lastError;
+        if (!plan) {
+          const dependencyRequirement = mainRequirementFromResolutionError(lastError);
+          if (!dependencyRequirement) throw lastError;
+          selectedMainBuild = await recommendedMainBuild(dependencyRequirement);
+          runtime = mainRuntimeContext(selectedMainBuild);
+          voxelcoreVersion = selectedMainBuild.engine_version ?? dependencyRequirement.target_version;
+          plan = await makePlan();
+        }
       } else {
         try {
           plan = await makePlan();
         } catch (reason) {
-          const code = reason && typeof reason === "object" && "code" in reason
-            ? String((reason as { code?: unknown }).code ?? "")
-            : "";
-          if (code !== "voxelcore_main_commit_required" || !mainRequirement || targetIsStable || project.type === "modpack") throw reason;
-          selectedMainBuild = await recommendedMainBuild();
+          const dependencyRequirement = mainRequirementFromResolutionError(reason);
+          if (!dependencyRequirement || project.type === "modpack") throw reason;
+          selectedMainBuild = await recommendedMainBuild(dependencyRequirement);
           runtime = mainRuntimeContext(selectedMainBuild);
-          voxelcoreVersion = selectedMainBuild.engine_version ?? mainRequirement.target_version;
+          voxelcoreVersion = selectedMainBuild.engine_version ?? dependencyRequirement.target_version;
           plan = await makePlan();
         }
       }
