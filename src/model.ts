@@ -73,6 +73,8 @@ export type Task = {
   detail: string;
   status: "working" | "done" | "error";
   time: string;
+  completed?: number;
+  total?: number;
 };
 export type RunTask = (
   title: string,

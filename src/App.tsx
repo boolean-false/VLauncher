@@ -215,7 +215,9 @@ export default function App() {
       setTasks((items) => {
         const index = items.findIndex((item) => item.status === "working");
         if (index < 0) return items;
-        return items.map((item, current) => current === index ? { ...item, detail } : item);
+        return items.map((item, current) => current === index
+          ? { ...item, detail, completed: payload.completed, total: payload.total }
+          : item);
       });
     });
     return () => { void subscription.then((unlisten) => unlisten()); };
@@ -291,11 +293,11 @@ export default function App() {
         items.map((item) => (item.id === id ? { ...item, ...data } : item)),
       );
     try {
-      await work((detail) => update({ detail }));
-      update({ status: "done", detail: "Готово" });
+      await work((detail) => update({ detail, completed: undefined, total: undefined }));
+      update({ status: "done", detail: "Готово", completed: undefined, total: undefined });
       return true;
     } catch (e) {
-      update({ status: "error", detail: friendlyError(e) });
+      update({ status: "error", detail: friendlyError(e), completed: undefined, total: undefined });
       return false;
     } finally {
       taskLock.current = false;
@@ -1336,6 +1338,7 @@ export default function App() {
         <InstallPreview
           {...pendingPlan}
           busy={busy}
+          task={currentTask?.status === "working" ? currentTask : undefined}
           close={() => setPendingPlan(null)}
           skipVersion={
             pendingPlan.allowVersionSkips

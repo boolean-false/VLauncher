@@ -37,6 +37,7 @@ import {
   type LocalProfile,
   type MainBuild,
   type RunTask,
+  type Task,
 } from "../model";
 import { Empty, ErrorNotice, Icon, Modal } from "./ui";
 import { useJointCatalogEnabled } from "../experimental";
@@ -136,6 +137,11 @@ export function Catalog({
   const jointCatalog = jointCatalogEnabled && kind === "mod";
   const [source, setSource] = useState<CatalogSource>("all");
   const [offset, setOffset] = useState(0);
+  const changePage = useCallback((nextOffset: number) => {
+    setOffset(nextOffset);
+    const scroller = document.querySelector<HTMLElement>("main");
+    if (scroller) scroller.scrollTop = 0;
+  }, []);
   const [sort, setSort] = useState("updated");
   const [compatibleOnly, setCompatibleOnly] = useState(false);
   const [category, setCategory] = useState<string[]>([]);
@@ -618,13 +624,13 @@ export function Catalog({
             <div className="actions">
               <button
                 disabled={offset === 0}
-                onClick={() => setOffset((n) => Math.max(0, n - 24))}
+                onClick={() => changePage(Math.max(0, offset - 24))}
               >
                 Назад
               </button>
               <button
                 disabled={offset + 24 >= page.total}
-                onClick={() => setOffset((n) => n + 24)}
+                onClick={() => changePage(offset + 24)}
               >
                 Далее
               </button>
@@ -1692,11 +1698,13 @@ export function InstallPreview({
   title,
   newProfileName,
   busy,
+  task,
   close,
   apply,
   skipVersion,
 }: Preview & {
   busy: boolean;
+  task?: Task;
   close: () => void;
   apply: () => Promise<boolean>;
   skipVersion?: (id: string, version: string) => Promise<boolean>;
@@ -1870,8 +1878,17 @@ export function InstallPreview({
         </ErrorNotice>
       )}
       {busy && (
-        <div className="notice">
-          Загружаем и проверяем архивы… Профиль изменится только после успешной проверки всего набора.
+        <div className="notice install-progress" role="status" aria-live="polite">
+          <strong>{task?.title ?? "Установка"}</strong>
+          <span>{task?.detail ?? "Подготовка…"}</span>
+          {!!task?.total && (
+            <progress
+              max={task.total}
+              value={Math.min(task.completed ?? 0, task.total)}
+              aria-label="Прогресс загрузки"
+            />
+          )}
+          <small>Профиль изменится только после успешной проверки всего набора.</small>
         </div>
       )}
       <div className="modal-actions">
