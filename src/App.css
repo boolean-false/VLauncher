@@ -1444,6 +1444,25 @@ main>div[hidden] {
   gap: 12px;
 }
 
+.install-new-profile {
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-height: 72px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+
+.install-new-profile span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.install-new-profile strong {
+  font-size: 13px;
+}
+
 .modpack-profile-notice {
   display: grid;
   gap: 4px;

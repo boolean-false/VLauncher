@@ -43,7 +43,6 @@ export function ProfileContentPicker({
       preview={preview}
       deepLink=""
       resetDetail={0}
-      create={close}
       refreshProfiles={refreshProfiles}
       profileContext={{ close }}
       openProfile={openProfile}

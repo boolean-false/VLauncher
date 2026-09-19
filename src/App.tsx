@@ -616,7 +616,9 @@ export default function App() {
   return (
     <VoxelCoreVersionProvider
       latestVersion={latestVoxelCoreVersion}
-      versions={availableRuntimes.map((item) => item.version)}
+      versions={availableRuntimes
+        .filter((item) => item.channel === "stable")
+        .map((item) => item.version)}
     >
     <div className="app-shell workbench" data-screen={screen}>
       <aside className="sidebar">
@@ -1173,7 +1175,6 @@ export default function App() {
               preview={setPendingPlan}
               deepLink={deepLink}
               resetDetail={catalogReset}
-              create={() => setNewProfile(true)}
               openProfile={(id) => { setSelected(id); setScreen("library"); }}
               openExperimentalSettings={() => {
                 sessionStorage.setItem("vlauncher.settings-tab", "experimental");

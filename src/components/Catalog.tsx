@@ -40,7 +40,8 @@ import { Empty, ErrorNotice, Icon, Modal } from "./ui";
 import { useJointCatalogEnabled } from "../experimental";
 import { catalogProjectKeys } from "../catalogIdentity";
 import { isVoxelCoreBuiltin } from "../builtinContent";
-import { useLatestPublishedVoxelCoreVersion, useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
+import { useLatestPublishedVoxelCoreVersion, usePublishedVoxelCoreVersions, useVoxelCoreVersionLabel } from "../VoxelCoreVersionContext";
+import { parseVersionRequirement } from "../versionRequirement";
 import { useMainlineStatus } from "./Mainline";
 import {
   mergeModCategories,
@@ -103,7 +104,6 @@ export function Catalog({
   preview,
   deepLink,
   resetDetail,
-  create,
   refreshProfiles,
   profileContext,
   openProfile,
@@ -119,7 +119,6 @@ export function Catalog({
   preview: (value: Preview) => void;
   deepLink: string;
   resetDetail: number;
-  create: () => void;
   refreshProfiles: () => Promise<void>;
   profileContext?: { close: () => void };
   openProfile: (id: string) => void;
@@ -380,7 +379,6 @@ export function Catalog({
         run={run}
         preview={preview}
         close={closeDetail}
-        create={create}
         openProfile={openProfile}
         openExperimentalSettings={openExperimentalSettings}
       />
@@ -1161,7 +1159,6 @@ export function ProjectView({
   run,
   preview,
   close,
-  create,
   openProfile,
   openExperimentalSettings,
 }: {
@@ -1174,12 +1171,12 @@ export function ProjectView({
   run: RunTask;
   preview: (value: Preview) => void;
   close: () => void;
-  create: () => void;
   openProfile: (id: string) => void;
   openExperimentalSettings: () => void;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
   const latestVoxelCore = useLatestPublishedVoxelCoreVersion();
+  const publishedVoxelCoreVersions = usePublishedVoxelCoreVersions();
   const { status: mainlineStatus } = useMainlineStatus();
   const inspect = useContentInspector();
   const projectResult = useRegistryResource<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
@@ -1217,6 +1214,7 @@ export function ProjectView({
   const installed = profile?.packages.find((p) => p.id === installIdentity);
   const manualCollision = project?.type === "mod" && !!project.package_id &&
     (profile?.manual_packages?.includes(project.package_id) ?? false);
+  const createsProjectProfile = project?.type !== "modpack" && !profiles.length;
   const install = () => {
     if (!release || !project) return;
     void run(`Проверка · ${project.title}`, async () => {
@@ -1226,24 +1224,41 @@ export function ProjectView({
       if (project.type === "modpack" && !modpackEngine) {
         throw new Error("Сборка не закрепляет точную версию VoxelCore. Автору нужно выпустить исправленную версию.");
       }
-      if (project.type !== "modpack" && !profile) return;
-      const targetProfile = project.type === "modpack" ? installedModpackProfile : profile;
+      const createProjectProfile = project.type !== "modpack" && !profile && !profiles.length;
+      if (project.type !== "modpack" && !profile && !createProjectProfile) return;
+      const pendingProfile: LocalProfile | undefined = createProjectProfile
+        ? {
+            id: "pending-project",
+            name: project.title,
+            icon: null,
+            active_revision: null,
+            voxelcore_version: null,
+            roots: [],
+            root_requirements: {},
+            packages: [],
+            external_packages: [],
+            manual_packages: [],
+          }
+        : undefined;
+      const targetProfile = project.type === "modpack"
+        ? installedModpackProfile
+        : profile ?? pendingProfile;
       const directProject = project.type === "modpack" || project.type === "world";
       if (!directProject && !project.package_id) {
         throw new Error("Контент-пак ещё не получил идентификатор из package.json.");
       }
       const roots = directProject
         ? (targetProfile?.roots ?? []).filter((root) => root !== project.id)
-        : [...new Set([...profile!.roots, project.package_id!])];
+        : [...new Set([...(targetProfile?.roots ?? []), project.package_id!])];
       const requirements = { ...(targetProfile?.root_requirements ?? {}) };
       delete requirements[project.id];
       if (!directProject) requirements[project.package_id!] = `=${version}`;
       const channels = release.channel === "stable" ? ["stable"] : ["stable", release.channel];
-      let voxelcoreVersion = project.type === "modpack" ? modpackEngine : engineVersion(profile);
+      let voxelcoreVersion = project.type === "modpack" ? modpackEngine : engineVersion(targetProfile);
       let selectedMainBuild: MainBuild | null = null;
       let runtime = project.type === "modpack"
         ? { kind: "stable" as const, version: modpackEngine }
-        : profileRuntimeContext(profile);
+        : profileRuntimeContext(targetProfile);
       const recommendedMainBuild = async () => {
         if (!mainRequirement) throw new Error("У релиза не указана DEV-совместимость");
         if (!mainlineStatus.authenticated) {
@@ -1258,7 +1273,7 @@ export function ProjectView({
         mainRequirement &&
         !targetIsStable &&
         project.type !== "modpack" &&
-        profile?.main_build?.engine_version !== mainRequirement.target_version
+        targetProfile?.main_build?.engine_version !== mainRequirement.target_version
       ) {
         selectedMainBuild = await recommendedMainBuild();
         runtime = mainRuntimeContext(selectedMainBuild);
@@ -1273,18 +1288,40 @@ export function ProjectView({
         directProject ? { id: project.id, version } : undefined,
         runtime,
       );
-      let plan;
-      try {
-        plan = await makePlan();
-      } catch (reason) {
-        const code = reason && typeof reason === "object" && "code" in reason
-          ? String((reason as { code?: unknown }).code ?? "")
-          : "";
-        if (code !== "voxelcore_main_commit_required" || !mainRequirement || targetIsStable || project.type === "modpack") throw reason;
-        selectedMainBuild = await recommendedMainBuild();
-        runtime = mainRuntimeContext(selectedMainBuild);
-        voxelcoreVersion = selectedMainBuild.engine_version ?? mainRequirement.target_version;
-        plan = await makePlan();
+      let plan: SignedInstallPlan | undefined;
+      if (createProjectProfile && !selectedMainBuild) {
+        const requirementMinimum = parseVersionRequirement(release.voxelcore).minimum;
+        const candidates = [...new Set([
+          exactVoxelCoreVersion(release.voxelcore),
+          ...publishedVoxelCoreVersions,
+          requirementMinimum ?? "",
+          latestVoxelCore,
+        ].filter(Boolean))].sort((left, right) => compareSemVer(right, left));
+        let lastError: unknown = new Error("Для этого проекта не найдена совместимая версия VoxelCore.");
+        for (const candidate of candidates) {
+          voxelcoreVersion = candidate;
+          runtime = { kind: "stable", version: candidate };
+          try {
+            plan = await makePlan();
+            break;
+          } catch (reason) {
+            lastError = reason;
+          }
+        }
+        if (!plan) throw lastError;
+      } else {
+        try {
+          plan = await makePlan();
+        } catch (reason) {
+          const code = reason && typeof reason === "object" && "code" in reason
+            ? String((reason as { code?: unknown }).code ?? "")
+            : "";
+          if (code !== "voxelcore_main_commit_required" || !mainRequirement || targetIsStable || project.type === "modpack") throw reason;
+          selectedMainBuild = await recommendedMainBuild();
+          runtime = mainRuntimeContext(selectedMainBuild);
+          voxelcoreVersion = selectedMainBuild.engine_version ?? mainRequirement.target_version;
+          plan = await makePlan();
+        }
       }
       preview({
         mainBuild: selectedMainBuild,
@@ -1303,15 +1340,19 @@ export function ProjectView({
             }
           : targetProfile!,
         plan,
-        title: project.type === "modpack"
-          ? targetProfile
-            ? `${project.title} · ${installedModpack?.version} → ${version}`
-            : `Новый профиль · ${project.title}`
-          : `Установка ${project.title}`,
-        coverUrl: project.type === "modpack" && !targetProfile
+        title: createProjectProfile
+          ? `Новый профиль · ${project.title}`
+          : project.type === "modpack"
+            ? targetProfile
+              ? `${project.title} · ${installedModpack?.version} → ${version}`
+              : `Новый профиль · ${project.title}`
+            : `Установка ${project.title}`,
+        coverUrl: (project.type === "modpack" && !targetProfile) || createProjectProfile
           ? project.cover_url ?? release.preview_url ?? undefined
           : undefined,
-        newProfileName: project.type === "modpack" && !targetProfile ? project.title : undefined,
+        newProfileName: (project.type === "modpack" && !targetProfile) || createProjectProfile
+          ? project.title
+          : undefined,
       });
       close();
     }).then((ok) => setFailed(!ok));
@@ -1407,23 +1448,31 @@ export function ProjectView({
                     ))}
                   </Select>
                 </label>
-                {project.type !== "modpack" && <label>
-                  Установить в профиль
-                  <Select
-                    value={selected}
-                    onChange={(e) => select(e.target.value)}
-                    disabled={!profiles.length}
-                  >
-                    <option value="" disabled>
-                      Выберите профиль
-                    </option>
-                    {profiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} · {engineVersion(p) ? versionLabel(engineVersion(p)) : "версия не выбрана"}
-                      </option>
-                    ))}
-                  </Select>
-                </label>}
+                {project.type !== "modpack" && (
+                  profiles.length ? (
+                    <label>
+                      Установить в профиль
+                      <Select
+                        value={selected}
+                        onChange={(e) => select(e.target.value)}
+                      >
+                        <option value="" disabled>
+                          Выберите профиль
+                        </option>
+                        {profiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} · {engineVersion(p) ? versionLabel(engineVersion(p)) : "версия не выбрана"}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                  ) : (
+                    <div className="install-new-profile">
+                      <span>Профиль</span>
+                      <strong>Будет создан «{project.title}»</strong>
+                    </div>
+                  )
+                )}
               </div>
               {project.type === "modpack" && (
                 <div className="notice modpack-profile-notice">
@@ -1456,7 +1505,9 @@ export function ProjectView({
                 <div className="notice main-commit-requirement" role="status">
                   <strong>Экспериментальная версия VoxelCore</strong>
                   <span>
-                    Требуется VoxelCore {mainRequirement.target_version}. Лаунчер сам подберёт, проверит и установит подходящую официальную DEV-сборку.
+                    {createsProjectProfile
+                      ? `Нажмите «Создать профиль и установить» — лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${mainRequirement.target_version}.`
+                      : `После выбора профиля лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${mainRequirement.target_version}.`}
                   </span>
                   {!mainlineStatus.authenticated && (
                     <button type="button" onClick={openExperimentalSettings}>
@@ -1578,22 +1629,12 @@ export function ProjectView({
                   >
                     Открыть профиль · {installedModpackProfile.name}
                   </button>
-                ) : project.type !== "modpack" && !profiles.length ? (
-                  <button
-                    className="primary"
-                    onClick={() => {
-                      close();
-                      create();
-                    }}
-                  >
-                    Создать профиль
-                  </button>
                 ) : (
                   <button
                     className="primary"
                     disabled={
                       busy ||
-                      (project.type !== "modpack" && (!profile || !engineVersion(profile))) ||
+                      (project.type !== "modpack" && !createsProjectProfile && (!profile || !engineVersion(profile))) ||
                       (project.type === "modpack" && !exactVoxelCoreVersion(release?.voxelcore ?? "")) ||
                       (project.type === "modpack" && !!installedModpackProfile && running.has(installedModpackProfile.id)) ||
                       (project.type !== "modpack" && manualCollision) ||
@@ -1608,7 +1649,9 @@ export function ProjectView({
                         ? installedModpackProfile
                           ? `Обновить до ${version}`
                           : "Установить сборку"
-                        : "Посмотреть состав установки"}
+                        : createsProjectProfile
+                          ? "Создать профиль и установить"
+                          : "Посмотреть состав установки"}
                   </button>
                 )}
               </div>
@@ -1822,7 +1865,7 @@ export function InstallPreview({
             disabled={busy || (!!mainBuild && mainBuild.artifact_id !== profile.main_build?.artifact_id && !acceptedMainRisk)}
             onClick={() => void apply().then((ok) => setFailed(!ok))}
           >
-            {busy ? "Устанавливаем…" : newProfileName ? "Создать профиль" : "Применить изменения"}
+            {busy ? "Устанавливаем…" : newProfileName ? "Создать и установить" : "Применить изменения"}
           </button>
         )}
       </div>
