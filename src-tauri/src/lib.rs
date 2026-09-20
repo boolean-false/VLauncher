@@ -1903,7 +1903,6 @@ pub fn run() {
         ))
         .manage(presence::Presence::new())
         .manage(GameProcesses::default())
-        .manage(mainline::GithubState::default())
         .manage(TransferControl::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
@@ -1937,9 +1936,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             mainline::mainline_status,
             mainline::set_mainline_enabled,
-            mainline::github_logout,
-            mainline::github_device_start,
-            mainline::github_device_poll,
             mainline::list_mainline_builds,
             mainline::install_mainline_build,
             mainline::select_mainline_build,

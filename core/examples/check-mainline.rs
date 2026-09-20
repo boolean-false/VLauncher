@@ -1,14 +1,13 @@
-//! VLAUNCHER_GITHUB_TOKEN=... cargo run --manifest-path core/Cargo.toml --example check-mainline
+//! cargo run --manifest-path core/Cargo.toml --example check-mainline
 use vlauncher_core::{ProfileStore, mainline};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let token = std::env::var("VLAUNCHER_GITHUB_TOKEN")?;
-    let catalog = mainline::list(&token)?;
+    let catalog = mainline::list()?;
     let build = catalog.builds.first().ok_or("No available main build")?;
     println!("Main HEAD: {}; selected: {}", catalog.head_sha, build.sha);
     let temporary = tempfile::tempdir()?;
     let store = ProfileStore::open(temporary.path().join("library"))?;
-    let runtime = mainline::install(&store, build, &token, |_, _| true)?;
+    let runtime = mainline::install(&store, build, |_, _| true)?;
     assert_eq!(runtime.main_build.as_ref(), Some(build));
     let profile = store.create_initialized("Integration main", "0.31.4")?;
     store.select_main_build(profile.id, Some(build.clone()))?;

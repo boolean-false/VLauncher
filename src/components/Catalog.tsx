@@ -1276,8 +1276,8 @@ export function ProjectView({
         ? { kind: "stable" as const, version: modpackEngine }
         : profileRuntimeContext(targetProfile);
       const recommendedMainBuild = async (requirement: VoxelCoreMainRequirement) => {
-        if (!mainlineStatus.authenticated) {
-          throw new Error("Для DEV-версии нужно один раз подключить GitHub. Откройте предложенную настройку, затем повторите установку.");
+        if (!mainlineStatus.enabled) {
+          throw new Error("Для DEV-версии включите экспериментальные сборки в настройках, затем повторите установку.");
         }
         const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
         const build = catalog.builds.find(
@@ -1534,9 +1534,9 @@ export function ProjectView({
                       ? `Нажмите «Создать профиль и установить» — лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
                       : `После выбора профиля лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`}
                   </span>
-                  {!mainlineStatus.authenticated && (
+                  {!mainlineStatus.enabled && (
                     <button type="button" onClick={openExperimentalSettings}>
-                      Подключить DEV-сборки
+                      Включить DEV-сборки
                     </button>
                   )}
                 </div>
