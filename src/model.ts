@@ -11,7 +11,7 @@ export type LocalProfile = {
   root_requirements?: Record<string, string>;
   packages: {
     id: string;
-    kind: "mod" | "library" | "modpack" | "world" | "runtime";
+    kind: "mod" | "library" | "modpack" | "project" | "world" | "runtime";
     version: string;
     title?: string | null;
   }[];
@@ -34,6 +34,7 @@ export type LocalProfile = {
     executable: string;
     resources: string;
   } | null;
+  external_project_path?: string | null;
 };
 export type Runtime = {
   main_build?: MainBuild | null;
@@ -159,6 +160,12 @@ export const voxelCoreVersionLabel = (version: string, latestPublishedVersion: s
 export const profileModpack = (profile?: LocalProfile) =>
   profile?.packages.find((pkg) => pkg.kind === "modpack");
 
+export const profileProject = (profile?: LocalProfile) =>
+  profile?.packages.find((pkg) => pkg.kind === "project");
+
+export const isProjectProfile = (profile?: LocalProfile) =>
+  !!profile?.external_project_path || !!profileProject(profile);
+
 export const exactVoxelCoreVersion = (requirement: string) => {
   const match = requirement.trim().match(/^=?\s*(v?\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?)$/);
   return match ? normalizeVersion(match[1]) : "";
@@ -187,12 +194,16 @@ export const friendlyError = (value: unknown) => {
     ["profile does not exist", "Профиль больше не существует."],
     ["runtime package is incompatible", "Эта сборка VoxelCore предназначена для другой системы."],
     ["VoxelCore runtime is not installed", "Нужная версия VoxelCore не установлена."],
+    ["local project profiles cannot", "В локальный проект нельзя устанавливать контент из каталога."],
+    ["project profiles cannot", "Состав проекта задаётся автором и не может изменяться отдельными пакетами."],
+    ["a project must be installed as an atomic package", "Проект устанавливается целиком, без отдельных пакетов."],
     ["a modpack cannot use a temporary main build", "Сборку нельзя создать из временной версии main. Выберите стабильный выпуск VoxelCore."],
     ["a modpack cannot include manually installed packages", "В профиле есть пакеты, добавленные вручную. Удалите или опубликуйте их перед созданием сборки."],
     ["reinstall VoxelWorld packages before creating a modpack", "Переустановите пакеты VoxelWorld, чтобы зафиксировать их размер и контрольную сумму."],
     ["a profile cannot contain multiple modpacks", "В одном профиле не может быть несколько сборок."],
     ["a modpack must be a profile root", "Сборка должна определять профиль целиком."],
     ["a modpack must be installed as a separate profile", "Сборка устанавливается как отдельный профиль, а не как контент существующего профиля."],
+    ["a project or modpack must be installed as a separate profile", "Проект или сборка устанавливаются в отдельный профиль."],
   ];
   return translations.find(([fragment]) => text.includes(fragment))?.[1] ?? text;
 };
@@ -205,6 +216,7 @@ export const formatBytes = (bytes: number) =>
 export const kinds: Record<string, string> = {
   mod: "Контент-пак",
   modpack: "Сборка",
+  project: "Проект",
   world: "Карта",
   runtime: "VoxelCore",
 };

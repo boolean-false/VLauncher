@@ -26,7 +26,8 @@ use walkdir::WalkDir;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    DependencyKind, PackageKind, PackageManifest, PackageProblem, PreparedArtifact, prepare_package,
+    DependencyKind, PackageKind, PackageManifest, PackageProblem, PreparedArtifact,
+    VoxelCoreProject, prepare_package,
 };
 
 const MAX_FILES: usize = 100_000;
@@ -57,6 +58,8 @@ pub struct Profile {
     pub external_game_path: Option<PathBuf>,
     #[serde(default)]
     pub external_runtime: Option<ExternalRuntime>,
+    #[serde(default)]
+    pub external_project_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -436,6 +439,10 @@ impl ProfileStore {
                 "ALTER TABLE profiles ADD COLUMN external_runtime_json TEXT",
                 [],
             );
+            let _ = database.execute(
+                "ALTER TABLE profiles ADD COLUMN external_project_path TEXT",
+                [],
+            );
             database.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS profiles_external_game_path
                  ON profiles(external_game_path) WHERE external_game_path IS NOT NULL",
@@ -486,6 +493,7 @@ impl ProfileStore {
             problem: None,
             external_game_path: None,
             external_runtime: None,
+            external_project_path: None,
         };
         let profile_path = self.root.join("profiles").join(&folder_name);
         fs::create_dir(&profile_path).map_err(|source| io_error(&profile_path, source))?;
@@ -622,6 +630,38 @@ impl ProfileStore {
             return Err(error);
         }
         self.profile(profile.id)
+    }
+
+    pub fn create_local_project(
+        &self,
+        name: &str,
+        project_path: impl AsRef<Path>,
+        voxelcore_version: &str,
+        main_build: Option<crate::mainline::MainBuild>,
+    ) -> Result<Profile, PackageProblem> {
+        let project_path = dunce::canonicalize(project_path.as_ref())
+            .map_err(|source| io_error(project_path.as_ref(), source))?;
+        let project = VoxelCoreProject::read(&project_path)?;
+        let profile = self.create_initialized_with_main(name, voxelcore_version, main_build)?;
+        if let Err(error) = self.with_database(|database| {
+            database.execute(
+                "UPDATE profiles SET external_project_path = ?1 WHERE id = ?2",
+                params![project_path.to_string_lossy(), profile.id.to_string()],
+            )?;
+            Ok(())
+        }) {
+            let _ = self.delete_profile(profile.id);
+            return Err(error);
+        }
+        let mut profile = self.profile(profile.id)?;
+        profile.external_project_path = Some(project_path);
+        profile.packages.push(InstalledPackage {
+            id: project.name,
+            kind: PackageKind::Project,
+            version: "local".into(),
+            title: Some(project.title),
+        });
+        Ok(profile)
     }
 
     pub fn create_with_signed_remote(
@@ -908,7 +948,7 @@ impl ProfileStore {
             let mut statement = database.prepare(
                 "SELECT id, name, active_revision, voxelcore_version, roots_json,
                         root_requirements_json, created_at, external_game_path,
-                        external_runtime_json
+                        external_runtime_json, external_project_path
                  FROM profiles ORDER BY created_at",
             )?;
             let rows = statement.query_map([], |row| {
@@ -922,6 +962,7 @@ impl ProfileStore {
                     row.get::<_, i64>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()
@@ -939,6 +980,7 @@ impl ProfileStore {
                     created_at,
                     external_game_path,
                     external_runtime_json,
+                    external_project_path,
                 )| {
                     let id = Uuid::parse_str(&id).ok()?;
                     let roots = serde_json::from_str(&roots_json).unwrap_or_default();
@@ -975,6 +1017,9 @@ impl ProfileStore {
                             .map(PathBuf::from)
                             .map(compatible_path),
                         external_runtime,
+                        external_project_path: external_project_path
+                            .map(PathBuf::from)
+                            .map(compatible_path),
                     })
                 },
             )
@@ -1018,6 +1063,7 @@ impl ProfileStore {
                     let folder = match package.kind {
                         PackageKind::Mod | PackageKind::Library => "content",
                         PackageKind::Modpack => "modpacks",
+                        PackageKind::Project => "projects",
                         PackageKind::World => "world-templates",
                         PackageKind::Runtime => "runtimes",
                     };
@@ -1025,17 +1071,28 @@ impl ProfileStore {
                         .parent()
                         .expect("snapshot directory")
                         .join(folder)
-                        .join(&package.id)
-                        .join("package.json");
-                    let title = fs::read(manifest)
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                        .and_then(|value| {
-                            value
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .map(str::to_owned)
+                        .join(if package.kind == PackageKind::Project {
+                            "project.toml"
+                        } else {
+                            "package.json"
                         });
+                    let title = if package.kind == PackageKind::Project {
+                        VoxelCoreProject::read(manifest.parent().unwrap())
+                            .ok()
+                            .map(|project| project.title)
+                    } else {
+                        fs::read(manifest)
+                            .ok()
+                            .and_then(|bytes| {
+                                serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+                            })
+                            .and_then(|value| {
+                                value
+                                    .get("title")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_owned)
+                            })
+                    };
                     InstalledPackage {
                         id: package.id,
                         kind: package.kind,
@@ -1069,6 +1126,14 @@ impl ProfileStore {
                 .unwrap_or_else(|| profile_path.join("game"));
             if !game.is_dir() {
                 profile.problem = Some("Подключённая папка игры недоступна".into());
+                continue;
+            }
+            if profile
+                .external_project_path
+                .as_ref()
+                .is_some_and(|path| !path.join("project.toml").is_file())
+            {
+                profile.problem = Some("Подключённая папка проекта недоступна".into());
                 continue;
             }
             if let Ok(materialized_revision) = fs::read_to_string(game.join(".vlauncher-revision"))
@@ -1144,12 +1209,17 @@ impl ProfileStore {
             self.with_database(|database| {
                 database.execute(
                     "UPDATE profiles SET active_revision = ?1, voxelcore_version = ?2,
-                     roots_json = ?3, root_requirements_json = ?4 WHERE id = ?5",
+                     roots_json = ?3, root_requirements_json = ?4, external_project_path = ?5
+                     WHERE id = ?6",
                     params![
                         source.active_revision,
                         source.voxelcore_version,
                         roots,
                         root_requirements,
+                        source
+                            .external_project_path
+                            .as_ref()
+                            .map(|path| path.to_string_lossy()),
                         cloned.id.to_string()
                     ],
                 )?;
@@ -1213,6 +1283,14 @@ impl ProfileStore {
             return invalid("external install contains no packages");
         }
         let profile = self.profile(profile_id)?;
+        if profile.external_project_path.is_some()
+            || profile
+                .packages
+                .iter()
+                .any(|package| package.kind == PackageKind::Project)
+        {
+            return invalid("project profiles cannot install separate content packages");
+        }
         if profile.active_revision.is_none() {
             return invalid("profile is not initialized");
         }
@@ -1409,6 +1487,15 @@ impl ProfileStore {
         profile_id: Uuid,
         id: &str,
     ) -> Result<(), PackageProblem> {
+        let profile = self.profile(profile_id)?;
+        if profile.external_project_path.is_some()
+            || profile
+                .packages
+                .iter()
+                .any(|package| package.kind == PackageKind::Project)
+        {
+            return invalid("project profiles cannot change separate content packages");
+        }
         let _operation_lock = self.lock_profile(profile_id)?;
         let existing = self.read_external_packages(profile_id)?;
         if !existing.iter().any(|package| package.id == id) {
@@ -1458,6 +1545,31 @@ impl ProfileStore {
     ) -> Result<(), PackageProblem> {
         if plan.revision.is_empty() {
             return invalid("install plan revision is empty");
+        }
+        let current = self.profile(profile_id)?;
+        if current.external_project_path.is_some() {
+            return invalid("local project profiles cannot install catalog content");
+        }
+        let incoming_projects = plan
+            .packages
+            .iter()
+            .filter(|package| package.kind == PackageKind::Project)
+            .collect::<Vec<_>>();
+        if incoming_projects.len() > 1
+            || incoming_projects.first().is_some() && plan.packages.len() != 1
+        {
+            return invalid("a project must be installed as an atomic package");
+        }
+        if let Some(installed_project) = current
+            .packages
+            .iter()
+            .find(|package| package.kind == PackageKind::Project)
+        {
+            if incoming_projects.first().map(|package| package.id.as_str())
+                != Some(installed_project.id.as_str())
+            {
+                return invalid("project profiles can only update their installed project");
+            }
         }
         let operation_id = Uuid::new_v4();
         let profile_path = self.profile_path(profile_id);
@@ -2716,12 +2828,39 @@ impl ProfileStore {
         let logs = self.profile_path(profile_id).join("logs");
         fs::create_dir_all(&logs).map_err(|source| io_error(&logs, source))?;
         // Для неизвестной версии запускаем без дополнительных аргументов.
-        let arguments = vec![
+        let mut arguments = vec![
             "--res".into(),
             runtime_path.join(&resources).to_string_lossy().into_owned(),
             "--dir".into(),
             user_folder.to_string_lossy().into_owned(),
         ];
+        let project_path = if let Some(path) = profile.external_project_path.as_ref() {
+            VoxelCoreProject::read(path)?;
+            Some(path.clone())
+        } else {
+            let mut projects = profile
+                .packages
+                .iter()
+                .filter(|package| package.kind == PackageKind::Project);
+            let first = projects.next();
+            if projects.next().is_some() {
+                return invalid("a profile cannot contain multiple projects");
+            }
+            first.map(|package| {
+                self.profile_path(profile_id)
+                    .join("snapshots")
+                    .join(&revision)
+                    .join("projects")
+                    .join(&package.id)
+            })
+        };
+        if let Some(project_path) = project_path {
+            if !project_path.join("project.toml").is_file() {
+                return invalid("VoxelCore project is unavailable");
+            }
+            arguments.push("--project".into());
+            arguments.push(project_path.to_string_lossy().into_owned());
+        }
         Ok(LaunchSpec {
             executable: runtime_path.join(executable),
             arguments,
@@ -3002,6 +3141,7 @@ impl ProfileStore {
                     staging.join("content").join(&package.id)
                 }
                 PackageKind::Modpack => staging.join("modpacks").join(&package.id),
+                PackageKind::Project => staging.join("projects").join(&package.id),
                 PackageKind::World => staging.join("world-templates").join(&package.id),
                 PackageKind::Runtime => {
                     return invalid("runtime packages cannot be installed into a profile");
@@ -3011,13 +3151,17 @@ impl ProfileStore {
             let archive =
                 fs::File::open(&cache_path).map_err(|source| io_error(&cache_path, source))?;
             extract_archive(archive, &destination)?;
-            let manifest = PackageManifest::read(&destination)?;
-            if (matches!(package.kind, PackageKind::Mod | PackageKind::Library)
-                && manifest.id != package.id)
-                || manifest.version != package.version
-                || manifest.kind != package.kind
-            {
-                return invalid(format!("artifact identity mismatch for '{}'", package.id));
+            if package.kind == PackageKind::Project {
+                VoxelCoreProject::read(&destination)?;
+            } else {
+                let manifest = PackageManifest::read(&destination)?;
+                if (matches!(package.kind, PackageKind::Mod | PackageKind::Library)
+                    && manifest.id != package.id)
+                    || manifest.version != package.version
+                    || manifest.kind != package.kind
+                {
+                    return invalid(format!("artifact identity mismatch for '{}'", package.id));
+                }
             }
             if matches!(package.kind, PackageKind::World)
                 && !destination.join("world/world.json").is_file()
@@ -4657,6 +4801,91 @@ mod tests {
         assert!(store.profile_path(profile.id).join("game/content").is_dir());
         assert!(spec.log_path.ends_with("logs/latest.log"));
         assert!(!spec.arguments.iter().any(|arg| arg == "--log"));
+
+        let source = temp.path().join("source-project");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("project.toml"),
+            "name = \"demo-project\"\ntitle = \"Demo\"\n",
+        )
+        .unwrap();
+        let project_profile = store
+            .create_local_project("Demo", &source, "0.31.4", None)
+            .unwrap();
+        let project_spec = store.launch_spec(project_profile.id, "0.31.4").unwrap();
+        let project_argument = project_spec
+            .arguments
+            .iter()
+            .position(|arg| arg == "--project")
+            .unwrap();
+        assert_eq!(
+            Path::new(&project_spec.arguments[project_argument + 1]),
+            dunce::canonicalize(&source).unwrap()
+        );
+        assert!(!project_spec.arguments.iter().any(|arg| arg == "--script"));
+        assert!(store.clear_profile(project_profile.id).is_err());
+
+        let artifact = crate::prepare_project(
+            &source,
+            temp.path().join("prepared"),
+            "1.0.0",
+            "Tester",
+            "MIT",
+        )
+        .unwrap();
+        let published = store.create_initialized("Published", "0.31.4").unwrap();
+        store
+            .apply(
+                published.id,
+                &InstallPlan {
+                    revision: "published-project".into(),
+                    packages: vec![InstallPackage {
+                        id: "11111111-1111-1111-1111-111111111111".into(),
+                        kind: PackageKind::Project,
+                        version: "1.0.0".into(),
+                        artifact_sha256: artifact.sha256,
+                        artifact_size: artifact.size,
+                        archive_path: artifact.path,
+                        dependencies: Vec::new(),
+                    }],
+                },
+            )
+            .unwrap();
+        let published_spec = store.launch_spec(published.id, "0.31.4").unwrap();
+        let argument = published_spec
+            .arguments
+            .iter()
+            .position(|arg| arg == "--project")
+            .unwrap();
+        assert!(
+            published_spec.arguments[argument + 1]
+                .ends_with("projects/11111111-1111-1111-1111-111111111111")
+        );
+        assert!(store.clear_profile(published.id).is_err());
+        let mixed_plan = InstallPlan {
+            revision: "mixed-project".into(),
+            packages: vec![
+                InstallPackage {
+                    id: "11111111-1111-1111-1111-111111111111".into(),
+                    kind: PackageKind::Project,
+                    version: "1.0.0".into(),
+                    artifact_sha256: String::new(),
+                    artifact_size: 0,
+                    archive_path: PathBuf::new(),
+                    dependencies: Vec::new(),
+                },
+                InstallPackage {
+                    id: "extra_mod".into(),
+                    kind: PackageKind::Mod,
+                    version: "1.0.0".into(),
+                    artifact_sha256: String::new(),
+                    artifact_size: 0,
+                    archive_path: PathBuf::new(),
+                    dependencies: Vec::new(),
+                },
+            ],
+        };
+        assert!(store.apply(published.id, &mixed_plan).is_err());
     }
 
     #[test]

@@ -32,7 +32,7 @@ import {
   compareSemVer,
   mainBuildLabel,
   mainRuntimeContext,
-  profileModpack,
+  isProjectProfile,
   profileRuntimeContext,
   type LocalProfile,
   type MainBuild,
@@ -433,6 +433,7 @@ export function Catalog({
           {[
             ["mod", "Контент-паки"],
             ["modpack", "Сборки"],
+            ["project", "Проекты"],
             ["world", "Карты"],
           ].map(([id, name]) => (
             <button
@@ -666,7 +667,7 @@ function ProjectIcon({ project }: { project: Project & { description?: string } 
   ) : (
     <span className={`project-icon ${project.type}`}>
       <Icon
-        name={project.type === "world" ? "world" : project.type === "modpack" ? "catalog" : "package"}
+        name={project.type === "world" ? "world" : project.type === "modpack" ? "catalog" : project.type === "project" ? "terminal" : "package"}
         size={26}
       />
     </span>
@@ -811,7 +812,8 @@ function VoxelWorldProjectView({
   const project = result.data;
   const versionsResult = useVoxelWorldVersions(slug);
   const versions = versionsResult.data ?? [];
-  const profile = profiles.find((item) => item.id === selected);
+  const installableProfiles = profiles.filter((item) => !isProjectProfile(item));
+  const profile = installableProfiles.find((item) => item.id === selected) ?? installableProfiles[0];
   const profileEngine = engineVersion(profile);
   const [versionId, setVersionId] = useState(0);
   const [compatibilityWarning, setCompatibilityWarning] =
@@ -958,16 +960,16 @@ function VoxelWorldProjectView({
                 <label>
                   Установить в профиль
                   <Select
-                    value={selected}
+                    value={profile?.id ?? ""}
                     onChange={(event) => {
                       select(event.target.value);
                       setCompatibilityWarning(undefined);
                       setCompatibilityError("");
                     }}
-                    disabled={!profiles.length || checkingCompatibility}
+                    disabled={!installableProfiles.length || checkingCompatibility}
                   >
                     <option value="" disabled>Выберите профиль</option>
-                    {profiles.map((item) => (
+                    {installableProfiles.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.name} · {engineVersion(item) ? versionLabel(engineVersion(item)) : "версия не выбрана"}
                       </option>
@@ -1220,28 +1222,30 @@ export function ProjectView({
   const targetIsStable = !!mainRequirement && !!latestVoxelCore &&
     compareSemVer(latestVoxelCore, mainRequirement.target_version) >= 0;
   const releaseComponents = release?.attestation?.assertion?.manifest?.components ?? [];
-  const profile = profiles.find((p) => p.id === selected);
-  const installedModpackProfile = project?.type === "modpack"
-    ? profiles.find((item) => profileModpack(item)?.id === project.id)
+  const installableProfiles = profiles.filter((item) => !isProjectProfile(item));
+  const profile = installableProfiles.find((item) => item.id === selected) ?? installableProfiles[0];
+  const standalone = project?.type === "modpack" || project?.type === "project";
+  const installedModpackProfile = standalone
+    ? profiles.find((item) => item.packages.some((pkg) => pkg.id === project?.id && (pkg.kind === "modpack" || pkg.kind === "project")))
     : undefined;
-  const installedModpack = profileModpack(installedModpackProfile);
+  const installedModpack = installedModpackProfile?.packages.find((pkg) => pkg.id === project?.id);
   const selectedModpackIsInstalled = installedModpack?.version === version;
   const installIdentity = project?.type === "mod" ? project.package_id : project?.id;
   const installed = profile?.packages.find((p) => p.id === installIdentity);
   const manualCollision = project?.type === "mod" && !!project.package_id &&
     (profile?.manual_packages?.includes(project.package_id) ?? false);
-  const createsProjectProfile = project?.type !== "modpack" && !profiles.length;
+  const createsProjectProfile = !standalone && !installableProfiles.length;
   const install = () => {
     if (!release || !project) return;
     void run(`Проверка · ${project.title}`, async () => {
-      const modpackEngine = project.type === "modpack"
+      const modpackEngine = standalone
         ? exactVoxelCoreVersion(release.voxelcore)
         : "";
-      if (project.type === "modpack" && !modpackEngine) {
-        throw new Error("Сборка не закрепляет точную версию VoxelCore. Автору нужно выпустить исправленную версию.");
+      if (standalone && !modpackEngine) {
+        throw new Error("Проект не закрепляет точную версию VoxelCore. Автору нужно выпустить исправленную версию.");
       }
-      const createProjectProfile = project.type !== "modpack" && !profile && !profiles.length;
-      if (project.type !== "modpack" && !profile && !createProjectProfile) return;
+      const createProjectProfile = !standalone && !profile && !installableProfiles.length;
+      if (!standalone && !profile && !createProjectProfile) return;
       const pendingProfile: LocalProfile | undefined = createProjectProfile
         ? {
             id: "pending-project",
@@ -1256,10 +1260,10 @@ export function ProjectView({
             manual_packages: [],
           }
         : undefined;
-      const targetProfile = project.type === "modpack"
+      const targetProfile = standalone
         ? installedModpackProfile
         : profile ?? pendingProfile;
-      const directProject = project.type === "modpack" || project.type === "world";
+      const directProject = standalone || project.type === "world";
       if (!directProject && !project.package_id) {
         throw new Error("Контент-пак ещё не получил идентификатор из package.json.");
       }
@@ -1270,9 +1274,9 @@ export function ProjectView({
       delete requirements[project.id];
       if (!directProject) requirements[project.package_id!] = `=${version}`;
       const channels = release.channel === "stable" ? ["stable"] : ["stable", release.channel];
-      let voxelcoreVersion = project.type === "modpack" ? modpackEngine : engineVersion(targetProfile);
+      let voxelcoreVersion = standalone ? modpackEngine : engineVersion(targetProfile);
       let selectedMainBuild: MainBuild | null = null;
-      let runtime = project.type === "modpack"
+      let runtime = standalone
         ? { kind: "stable" as const, version: modpackEngine }
         : profileRuntimeContext(targetProfile);
       const recommendedMainBuild = async (requirement: VoxelCoreMainRequirement) => {
@@ -1289,7 +1293,7 @@ export function ProjectView({
       if (
         mainRequirement &&
         !targetIsStable &&
-        project.type !== "modpack" &&
+        !standalone &&
         formatVoxelCoreVersion(targetProfile?.main_build?.engine_version ?? "") !== formatVoxelCoreVersion(mainRequirement.target_version)
       ) {
         selectedMainBuild = await recommendedMainBuild(mainRequirement);
@@ -1338,7 +1342,7 @@ export function ProjectView({
           plan = await makePlan();
         } catch (reason) {
           const dependencyRequirement = mainRequirementFromResolutionError(reason);
-          if (!dependencyRequirement || project.type === "modpack") throw reason;
+          if (!dependencyRequirement || standalone) throw reason;
           selectedMainBuild = await recommendedMainBuild(dependencyRequirement);
           runtime = mainRuntimeContext(selectedMainBuild);
           voxelcoreVersion = selectedMainBuild.engine_version ?? dependencyRequirement.target_version;
@@ -1350,7 +1354,7 @@ export function ProjectView({
         : undefined;
       preview({
         mainBuild: selectedMainBuild,
-        profile: project.type === "modpack" && !targetProfile
+        profile: standalone && !targetProfile
           ? {
               id: "pending-modpack",
               name: project.title,
@@ -1367,15 +1371,15 @@ export function ProjectView({
         plan,
         title: createProjectProfile
           ? `Новый профиль · ${automaticProfileName}`
-          : project.type === "modpack"
+          : standalone
             ? targetProfile
               ? `${project.title} · ${installedModpack?.version} → ${version}`
               : `Новый профиль · ${project.title}`
             : `Установка ${project.title}`,
-        coverUrl: project.type === "modpack" && !targetProfile
+        coverUrl: standalone && !targetProfile
           ? project.cover_url ?? release.preview_url ?? undefined
           : undefined,
-        newProfileName: project.type === "modpack" && !targetProfile
+        newProfileName: standalone && !targetProfile
           ? project.title
           : automaticProfileName,
       });
@@ -1454,10 +1458,10 @@ export function ProjectView({
           </button>
             </div>
             <aside className="project-install-panel">
-              <h2>{project.type === "modpack" ? (installedModpackProfile ? "Профиль сборки" : "Создать профиль") : "Установка"}</h2>
+              <h2>{standalone ? (installedModpackProfile ? "Профиль проекта" : "Создать профиль") : "Установка"}</h2>
           {releases.length ? (
             <>
-              <div className={project.type === "modpack" ? "form-columns single" : "form-columns"}>
+              <div className={standalone ? "form-columns single" : "form-columns"}>
                 <label>
                   Версия проекта
                   <Select
@@ -1473,18 +1477,18 @@ export function ProjectView({
                     ))}
                   </Select>
                 </label>
-                {project.type !== "modpack" && (
-                  profiles.length ? (
+                {!standalone && (
+                  installableProfiles.length ? (
                     <label>
                       Установить в профиль
                       <Select
-                        value={selected}
+                        value={profile?.id ?? ""}
                         onChange={(e) => select(e.target.value)}
                       >
                         <option value="" disabled>
                           Выберите профиль
                         </option>
-                        {profiles.map((p) => (
+                        {installableProfiles.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name} · {engineVersion(p) ? versionLabel(engineVersion(p)) : "версия не выбрана"}
                           </option>
@@ -1499,10 +1503,10 @@ export function ProjectView({
                   )
                 )}
               </div>
-              {project.type === "modpack" && (
+              {standalone && (
                 <div className="notice modpack-profile-notice">
-                  <strong>{installedModpackProfile ? `Сборка управляет профилем «${installedModpackProfile.name}»` : "Сборка создаст отдельный профиль"}</strong>
-                  <span>{installedModpackProfile ? "Выбранная версия VoxelCore и весь состав сборки обновятся одной операцией. Пользовательские дополнения сохранятся, если они совместимы." : "VoxelCore, контент и зависимости установятся автоматически. Существующие профили не изменятся."}</span>
+                  <strong>{installedModpackProfile ? `Проект управляет профилем «${installedModpackProfile.name}»` : "Проект создаст отдельный профиль"}</strong>
+                  <span>{project.type === "project" ? "Код и встроенный контент обновляются атомарно. Миры и настройки пользователя сохраняются отдельно." : installedModpackProfile ? "Выбранная версия VoxelCore и весь состав сборки обновятся одной операцией. Пользовательские дополнения сохранятся, если они совместимы." : "VoxelCore, контент и зависимости установятся автоматически. Существующие профили не изменятся."}</span>
                 </div>
               )}
               {installedModpackProfile && (
@@ -1518,7 +1522,7 @@ export function ProjectView({
                     : "Размер не указан"}
                 </span>
               </div>
-              {project.type !== "modpack" && profile && !engineVersion(profile) && (
+              {!standalone && profile && !engineVersion(profile) && (
                 <p role="status">Перед установкой выберите версию VoxelCore в разделе «Управление» профиля.</p>
               )}
               {release?.deprecated && (
@@ -1547,7 +1551,7 @@ export function ProjectView({
                   <p className="preserve-lines">{release.changelog}</p>
                 </details>
               )}
-              {project.type !== "modpack" && !!release?.dependencies?.length && (
+              {!standalone && !!release?.dependencies?.length && (
                 <section className="release-dependencies">
                   <h3>Зависимости</h3>
                   {release.dependencies.map((dependency) => (
@@ -1596,22 +1600,22 @@ export function ProjectView({
                     )}
                   </div>
                 )}
-              {project.type !== "modpack" && installed && (
+              {!standalone && installed && (
                 <p className="muted">
                   В выбранном профиле установлена версия {installed.version}.
                 </p>
               )}
-              {project.type !== "modpack" && manualCollision && (
+              {!standalone && manualCollision && (
                 <ErrorNotice>
                   В папке уже есть добавленный вручную пакет <strong>{project.package_id}</strong>. Переместите или переименуйте его и повторите установку.
                 </ErrorNotice>
               )}
-              {project.type !== "modpack" && profile && running.has(profile.id) && (
+              {!standalone && profile && running.has(profile.id) && (
                 <div className="notice">
                   Завершите игру, чтобы изменить её контент.
                 </div>
               )}
-              {project.type === "modpack" && installedModpackProfile && running.has(installedModpackProfile.id) && (
+              {standalone && installedModpackProfile && running.has(installedModpackProfile.id) && (
                 <div className="notice">Завершите игру в профиле «{installedModpackProfile.name}», чтобы обновить сборку.</div>
               )}
               {failed && (
@@ -1659,21 +1663,21 @@ export function ProjectView({
                     className="primary"
                     disabled={
                       busy ||
-                      (project.type !== "modpack" && !createsProjectProfile && (!profile || !engineVersion(profile))) ||
-                      (project.type === "modpack" && !exactVoxelCoreVersion(release?.voxelcore ?? "")) ||
-                      (project.type === "modpack" && !!installedModpackProfile && running.has(installedModpackProfile.id)) ||
-                      (project.type !== "modpack" && manualCollision) ||
-                      (project.type !== "modpack" && !!profile && running.has(profile.id)) ||
+                      (!standalone && !createsProjectProfile && (!profile || !engineVersion(profile))) ||
+                      (standalone && !exactVoxelCoreVersion(release?.voxelcore ?? "")) ||
+                      (standalone && !!installedModpackProfile && running.has(installedModpackProfile.id)) ||
+                      (!standalone && manualCollision) ||
+                      (!standalone && !!profile && running.has(profile.id)) ||
                       !release?.download_url
                     }
                     onClick={install}
                   >
                     {busy
                       ? "Проверяем…"
-                      : project.type === "modpack"
+                      : standalone
                         ? installedModpackProfile
                           ? `Обновить до ${version}`
-                          : "Установить сборку"
+                          : project.type === "project" ? "Установить проект" : "Установить сборку"
                         : createsProjectProfile
                           ? "Создать профиль и установить"
                           : "Посмотреть состав установки"}
@@ -1713,12 +1717,12 @@ export function InstallPreview({
   const inspect = useContentInspector();
   const [failed, setFailed] = useState(false);
   const [acceptedMainRisk, setAcceptedMainRisk] = useState(false);
-  const modpack = plan.plan.packages.find((pkg) => pkg.type === "modpack");
+  const modpack = plan.plan.packages.find((pkg) => pkg.type === "modpack" || pkg.type === "project");
   const installedModpack = modpack
-    ? profile.packages.find((pkg) => pkg.id === modpack.id && pkg.kind === "modpack")
+    ? profile.packages.find((pkg) => pkg.id === modpack.id && (pkg.kind === "modpack" || pkg.kind === "project"))
     : undefined;
   const modpackChanged = !!modpack && installedModpack?.version !== modpack.version;
-  const contentPackages = plan.plan.packages.filter((pkg) => pkg.type !== "modpack");
+  const contentPackages = plan.plan.packages.filter((pkg) => pkg.type !== "modpack" && pkg.type !== "project");
   const changes = contentPackages.map((pkg) => {
     const old = profile.packages.find((p) => p.id === pkg.id);
     return {
@@ -1737,7 +1741,7 @@ export function InstallPreview({
       oldVersion: old?.version,
     };
   });
-  for (const pkg of profile.packages.filter((pkg) => pkg.kind !== "modpack"))
+  for (const pkg of profile.packages.filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "project"))
     if (!contentPackages.some((p) => p.id === pkg.id))
       changes.push({ ...pkg, title: pkg.title || pkg.id, status: "Удалить", dependency: false, oldVersion: pkg.version });
   const externalChanges = (plan.plan.external_packages ?? []).map((pkg) => {
@@ -1786,10 +1790,16 @@ export function InstallPreview({
       </p>
       {modpack && (
         <p className="install-modpack-version">
-          Версия сборки · {installedModpack && installedModpack.version !== modpack.version
+          Версия {modpack.type === "project" ? "проекта" : "сборки"} · {installedModpack && installedModpack.version !== modpack.version
             ? `${installedModpack.version} → ${modpack.version}`
             : modpack.version}
         </p>
+      )}
+      {!!modpack?.project_permissions?.length && (
+        <div className="notice" role="status">
+          <strong>Разрешения проекта</strong>
+          <span>{modpack.project_permissions.join(", ")}</span>
+        </div>
       )}
       {!!changes.length && (
         <div className="install-changes">

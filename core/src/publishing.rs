@@ -13,7 +13,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::{PackageManifest, PackageProblem};
+use crate::{Capability, PackageKind, PackageManifest, PackageProblem, VoxelCoreProject};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreparedArtifact {
@@ -136,6 +136,121 @@ pub fn prepare_package(
         size,
         manifest,
     })
+}
+
+pub fn prepare_project(
+    folder: impl AsRef<Path>,
+    output_folder: impl AsRef<Path>,
+    version: &str,
+    creator: &str,
+    license: &str,
+) -> Result<PreparedArtifact, PackageProblem> {
+    let folder = folder.as_ref();
+    if !folder.is_dir() {
+        return Err(problem("Для проекта выберите папку с project.toml"));
+    }
+    let project = VoxelCoreProject::read(folder)?;
+    let version = crate::manifest::normalize_version(version)?;
+    let capabilities = project
+        .permissions
+        .iter()
+        .flat_map(|permission| match permission.as_str() {
+            "debugging" => vec![Capability::Debugging],
+            "network" => vec![Capability::NetworkClient, Capability::NetworkServer],
+            "record-audio" => vec![Capability::Microphone],
+            "write-to-user" => vec![Capability::WriteUserFiles],
+            "sub-instances" => vec![Capability::Subprocess],
+            _ => Vec::new(),
+        })
+        .collect();
+    let manifest = PackageManifest {
+        schema_version: 1,
+        id: project.name.clone(),
+        kind: PackageKind::Project,
+        title: project.title,
+        version,
+        creators: vec![creator.trim().to_owned()],
+        description: String::new(),
+        license: if license.trim().is_empty() {
+            "LicenseRef-Proprietary".into()
+        } else {
+            license.trim().into()
+        },
+        source: None,
+        dependencies: Vec::new(),
+        conflicts: Vec::new(),
+        provides: Vec::new(),
+        capabilities,
+        environments: vec![crate::PackageEnvironment::Client],
+        external_packages: Vec::new(),
+        components: Vec::new(),
+    };
+    manifest.validate()?;
+    fs::create_dir_all(output_folder.as_ref()).map_err(|source| PackageProblem::Io {
+        path: output_folder.as_ref().to_owned(),
+        source,
+    })?;
+    let target = output_folder.as_ref().join(format!(
+        "{}-{}-{}.zip",
+        manifest.id,
+        manifest.version,
+        Uuid::new_v4()
+    ));
+    write_project_archive(folder, &target)?;
+    let (sha256, size) = hash_file(&target)?;
+    Ok(PreparedArtifact {
+        path: target,
+        sha256,
+        size,
+        manifest,
+    })
+}
+
+fn write_project_archive(folder: &Path, target: &Path) -> Result<(), PackageProblem> {
+    let file = fs::File::create(target).map_err(|source| PackageProblem::Io {
+        path: target.to_owned(),
+        source,
+    })?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    for entry in WalkDir::new(folder).follow_links(false).sort_by_file_name() {
+        let entry = entry.map_err(|error| problem(error.to_string()))?;
+        if entry.file_type().is_symlink() {
+            return Err(problem(format!(
+                "symbolic links are forbidden: {}",
+                entry.path().display()
+            )));
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(folder)
+            .map_err(|error| problem(error.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if matches!(relative.split('/').next(), Some(".git" | "user")) {
+            continue;
+        }
+        archive
+            .start_file(&relative, options)
+            .map_err(|error| problem(error.to_string()))?;
+        let mut input = fs::File::open(entry.path()).map_err(|source| PackageProblem::Io {
+            path: entry.path().to_owned(),
+            source,
+        })?;
+        std::io::copy(&mut input, &mut archive).map_err(|source| PackageProblem::Io {
+            path: target.to_owned(),
+            source,
+        })?;
+    }
+    archive
+        .finish()
+        .map_err(|error| problem(error.to_string()))?;
+    Ok(())
 }
 
 fn prepare_zip_package(source: &Path, output: &Path) -> Result<PreparedArtifact, PackageProblem> {
@@ -651,5 +766,29 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("changed after preview"));
+    }
+
+    #[test]
+    fn project_archive_uses_project_toml_and_excludes_user_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("project");
+        fs::create_dir_all(source.join("modules")).unwrap();
+        fs::create_dir_all(source.join("user/worlds")).unwrap();
+        fs::write(
+            source.join("project.toml"),
+            "name = \"demo-project\"\ntitle = \"Demo\"\npermissions = [\"network\"]\n",
+        )
+        .unwrap();
+        fs::write(source.join("modules/main.lua"), "print('hello')").unwrap();
+        fs::write(source.join("user/worlds/private.dat"), "private").unwrap();
+        let artifact =
+            prepare_project(&source, temp.path().join("out"), "1.2", "Tester", "MIT").unwrap();
+        assert_eq!(artifact.manifest.kind, PackageKind::Project);
+        assert_eq!(artifact.manifest.version, "1.2.0");
+        let archive = fs::File::open(artifact.path).unwrap();
+        let mut zip = ZipArchive::new(archive).unwrap();
+        assert!(zip.by_name("project.toml").is_ok());
+        assert!(zip.by_name("modules/main.lua").is_ok());
+        assert!(zip.by_name("user/worlds/private.dat").is_err());
     }
 }

@@ -15,10 +15,12 @@ export function VersionRequirementEditor({
   value,
   versions,
   onChange,
+  exactOnly = false,
 }: {
   value: string;
   versions: string[];
   onChange: (value: string) => void;
+  exactOnly?: boolean;
 }) {
   const parsed = parseVersionRequirement(value);
   const [advancedOpen, setAdvancedOpen] = useState(parsed.mode === "advanced");
@@ -59,7 +61,7 @@ export function VersionRequirementEditor({
       <div className="version-requirement-heading">
         <div>
           <strong>Какие версии VoxelCore поддерживаются?</strong>
-          <span>Лаунчер прочитал начальную версию из зависимости <code>base</code>.</span>
+          <span>{exactOnly ? "Проект запускается на закреплённой версии движка." : <>Лаунчер прочитал начальную версию из зависимости <code>base</code>.</>}</span>
         </div>
         <code>{value || "не выбрано"}</code>
       </div>
@@ -68,14 +70,15 @@ export function VersionRequirementEditor({
           Правило совместимости
           <Select
             aria-label="Правило совместимости VoxelCore"
-            value={displayedMode}
+            value={exactOnly ? "exact" : displayedMode}
+            disabled={exactOnly}
             onChange={(event) => setMode(event.target.value as VersionRequirementMode)}
           >
-            <option value="minimum">Эта версия и новее</option>
+            {!exactOnly && <option value="minimum">Эта версия и новее</option>}
             <option value="exact">Только эта версия</option>
-            <option value="range">Диапазон версий</option>
-            <option value="any">Любая версия</option>
-            <option value="advanced">Расширенное условие</option>
+            {!exactOnly && <option value="range">Диапазон версий</option>}
+            {!exactOnly && <option value="any">Любая версия</option>}
+            {!exactOnly && <option value="advanced">Расширенное условие</option>}
           </Select>
         </label>
         {displayedMode !== "any" && displayedMode !== "advanced" && (
@@ -114,7 +117,7 @@ export function VersionRequirementEditor({
           Условие не закончено или записано неверно.
         </p>
       )}
-      <details
+      {!exactOnly && <details
         className="version-requirement-advanced"
         open={advancedOpen}
         onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
@@ -130,7 +133,7 @@ export function VersionRequirementEditor({
             onChange={(event) => onChange(event.target.value)}
           />
         </label>
-      </details>
+      </details>}
     </section>
   );
 }

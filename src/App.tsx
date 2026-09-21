@@ -27,6 +27,7 @@ import {
   latestPublishedVoxelCoreVersion,
   voxelCoreVersionLabel,
   profileModpack,
+  profileProject,
   profileRuntimeContext,
   mainRuntimeContext,
   type MainBuild,
@@ -93,6 +94,12 @@ type ExistingGameAnalysis = {
   world_count: number;
   has_config: boolean;
 };
+type LocalProjectInfo = {
+  name: string;
+  title: string;
+  base_packs: string[];
+  permissions: string[];
+};
 const navigation: { id: Screen; title: string; icon: IconName }[] = [
   { id: "library", title: "Библиотека", icon: "library" },
   { id: "catalog", title: "Каталог", icon: "catalog" },
@@ -153,6 +160,7 @@ export default function App() {
     path: string;
     analysis: ExistingGameAnalysis;
   } | null>(null);
+  const [localProject, setLocalProject] = useState<{ path: string; info: LocalProjectInfo } | null>(null);
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [deepLink, setDeepLink] = useState("");
@@ -178,6 +186,8 @@ export default function App() {
   }, []);
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
   const installedModpack = profileModpack(profile);
+  const installedProject = profileProject(profile);
+  const projectProfile = !!profile?.external_project_path || !!installedProject;
   const latestVoxelCoreVersion =
     latestPublishedVoxelCoreVersion(
       availableRuntimes
@@ -405,6 +415,14 @@ export default function App() {
       stage("Проверяем папку VoxelCore…");
       const analysis = await invoke<ExistingGameAnalysis>("analyze_existing_game", { path });
       setExistingGame({ path, analysis });
+    });
+  };
+  const chooseLocalProject = async () => {
+    const path = await open({ directory: true, multiple: false, title: "Выберите папку с project.toml" });
+    if (!path) return;
+    await run("Проверка проекта VoxelCore", async () => {
+      const info = await invoke<LocalProjectInfo>("inspect_local_project", { path });
+      setLocalProject({ path, info });
     });
   };
   const launchProfile = (profile: LocalProfile | null) => {
@@ -765,14 +783,27 @@ export default function App() {
                   <h1>Библиотека</h1>
                 </div>
                 <div className="actions">
-                  <button
-                    disabled={busy || !!loadError}
-                    title="Использовать существующую папку игры без переноса файлов"
-                    onClick={() => void chooseExistingGame()}
-                  >
-                    <Icon name="plus" size={16} />
-                    Подключить папку
-                  </button>
+                  <div className="attach-folder-menu">
+                    <button
+                      disabled={busy || !!loadError}
+                      title="Подключить существующую игру или проект VoxelCore"
+                      onClick={() => void chooseExistingGame()}
+                    >
+                      <Icon name="plus" size={16} />
+                      Подключить папку
+                      <span aria-hidden="true">▾</span>
+                    </button>
+                    <div className="attach-folder-options">
+                      <button onClick={() => void chooseExistingGame()}>
+                        <Icon name="library" size={16} />
+                        <span><strong>Папка игры</strong><small>Миры, настройки и контент</small></span>
+                      </button>
+                      <button onClick={() => void chooseLocalProject()}>
+                        <Icon name="terminal" size={16} />
+                        <span><strong>Проект VoxelCore</strong><small>Папка с project.toml</small></span>
+                      </button>
+                    </div>
+                  </div>
                   <button
                     disabled={busy || !!loadError}
                     title="Создать профиль из файла с версией VoxelCore и списком пакетов"
@@ -828,6 +859,11 @@ export default function App() {
                         {profile.external_game_path && (
                           <span className="attached-profile-path selectable" title={profile.external_game_path}>
                             Подключённая папка · {profile.external_game_path}
+                          </span>
+                        )}
+                        {profile.external_project_path && (
+                          <span className="attached-profile-path selectable" title={profile.external_project_path}>
+                            Локальный проект · {profile.external_project_path}
                           </span>
                         )}
                         {installedModpack && (
@@ -912,7 +948,7 @@ export default function App() {
                       aria-label="Профиль"
                     >
                       {[
-                        ["content", "Контент"],
+                        ["content", projectProfile ? "Проект" : "Контент"],
                         ["worlds", "Миры"],
                         ["logs", "Логи"],
                         ["manage", "Управление"],
@@ -925,9 +961,9 @@ export default function App() {
                           onClick={() => setTab(id)}
                         >
                           {title}
-                          {id === "content" && (
+                          {id === "content" && !projectProfile && (
                             <span className="count">
-                              {profile.packages.filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "world").length + (profile.external_packages?.length ?? 0)}
+                              {profile.packages.filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "project" && pkg.kind !== "world").length + (profile.external_packages?.length ?? 0)}
                             </span>
                           )}
                           {id === "logs" && logs.some((item) => item.profile_id === profile.id) && (
@@ -958,7 +994,38 @@ export default function App() {
                               : "Управление"
                       }
                     >
-                      {tab === "content" && (
+                      {tab === "content" && projectProfile && (
+                        <div className="project-profile-overview">
+                          <div className="project-profile-mark" aria-hidden="true">
+                            <Icon name="folder" size={24} />
+                          </div>
+                          <div className="project-profile-copy">
+                            <span className="supporting-label">
+                              {profile.external_project_path ? "Локальный проект VoxelCore" : "Проект VSpace"}
+                            </span>
+                            <h3>{installedProject?.title || profile.name}</h3>
+                            <p>
+                              {profile.external_project_path
+                                ? "В будущем будет какой нибудь текст"
+                                : "Код и встроенный контент установлены одной версией и обновляются вместе."}
+                            </p>
+                            {profile.external_project_path && (
+                              <code className="project-profile-path selectable" title={profile.external_project_path}>
+                                {profile.external_project_path}
+                              </code>
+                            )}
+                            {installedProject && (
+                              <button
+                                className="project-profile-link"
+                                onClick={() => inspect({ source: "vspace", slug: installedProject.id, title: installedProject.title || installedProject.id, version: installedProject.version, parent: profile.name, engine: engineVersion(profile) })}
+                              >
+                                Открыть страницу проекта · {installedProject.version}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {tab === "content" && !projectProfile && (
                         <>
                           <div className="section-heading">
                             <div>
@@ -993,7 +1060,7 @@ export default function App() {
                               </button>
                             </div>
                           </div>
-                          {!profile.packages.some((pkg) => pkg.kind !== "modpack" && pkg.kind !== "world") && !profile.external_packages?.length && !profile.manual_packages?.length ? (
+                          {!profile.packages.some((pkg) => pkg.kind !== "modpack" && pkg.kind !== "project" && pkg.kind !== "world") && !profile.external_packages?.length && !profile.manual_packages?.length ? (
                             <Empty title="Чистая игра">
                               <p>
                                 Контент-паков пока нет. Можно играть сразу
@@ -1013,7 +1080,7 @@ export default function App() {
                                 <span />
                               </div>
                               {[...profile.packages]
-                                .filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "world")
+                                .filter((pkg) => pkg.kind !== "modpack" && pkg.kind !== "project" && pkg.kind !== "world")
                                 .sort(
                                   (a, b) =>
                                     Number(profile.roots.includes(b.id)) -
@@ -1325,6 +1392,27 @@ export default function App() {
           }}
         />
       )}
+      {localProject && (
+        <ConnectLocalProject
+          project={localProject}
+          runtimes={runtimes}
+          availableRuntimes={availableRuntimes}
+          busy={busy}
+          close={() => setLocalProject(null)}
+          submit={async (name, version, mainBuild) => {
+            const ok = await run("Подключение проекта", async () => {
+              const created = await invoke<LocalProfile>("create_local_project_profile", {
+                path: localProject.path, name, version, mainBuild: mainBuild ?? null,
+              });
+              await refresh();
+              setSelected(created.id);
+              setScreen("library");
+            });
+            if (ok) setLocalProject(null);
+            return ok;
+          }}
+        />
+      )}
       {closeWithGame && (
         <Modal title="VoxelCore ещё работает" close={() => setCloseWithGame(false)} busy={false}>
           <p>Игру можно оставить запущенной, но управлять ей из лаунчера уже не получится.</p>
@@ -1605,6 +1693,64 @@ function ImportExistingGame({
   );
 }
 
+function ConnectLocalProject({
+  project,
+  runtimes,
+  availableRuntimes,
+  busy,
+  close,
+  submit,
+}: {
+  project: { path: string; info: LocalProjectInfo };
+  runtimes: Runtime[];
+  availableRuntimes: RuntimeRelease[];
+  busy: boolean;
+  close: () => void;
+  submit: (name: string, version: string, mainBuild?: MainBuild) => Promise<boolean>;
+}) {
+  const versions = [...new Set([
+    ...availableRuntimes.filter((item) => item.channel === "stable").map((item) => item.version),
+    ...runtimes.filter((item) => !item.main_build).map((item) => item.version),
+  ])];
+  const [name, setName] = useState(project.info.title);
+  const mainBuilds = runtimes.flatMap((runtime) => runtime.main_build ? [runtime.main_build] : []);
+  const [selection, setSelection] = useState(versions[0] ?? (mainBuilds[0] ? mainRuntimeId(mainBuilds[0]) : ""));
+  const selectedMain = mainBuilds.find((build) => mainRuntimeId(build) === selection);
+  const version = selectedMain?.engine_version ?? selection;
+  const [acceptedRisk, setAcceptedRisk] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <Modal title="Подключить проект VoxelCore" close={close} busy={busy}>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        if (name.trim() && version && (!selectedMain || acceptedRisk)) void submit(name.trim(), version, selectedMain).then((ok) => setFailed(!ok));
+      }}>
+        <p>Лаунчер будет запускать эту папку напрямую через <code>--project</code>. Изменения исходников подхватятся при следующем запуске.</p>
+        <label>Название профиля<input autoFocus value={name} maxLength={80} onChange={(event) => setName(event.target.value)} /></label>
+        <label>Папка<input value={project.path} readOnly /></label>
+        <label>Версия VoxelCore
+          <Select value={selection} onChange={(event) => { setSelection(event.target.value); setAcceptedRisk(false); }}>
+            {mainBuilds.map((build) => <option key={mainRuntimeId(build)} value={mainRuntimeId(build)}>{mainBuildLabel(build)} · установлена</option>)}
+            {versions.map((item) => <option key={item} value={item}>{item}{runtimes.some((runtime) => runtime.version === item) ? " · установлена" : ""}</option>)}
+          </Select>
+        </label>
+        {selectedMain && <div className="notice main-commit-requirement">
+          <strong>Экспериментальная сборка VoxelCore</strong>
+          <span>{mainBuildLabel(selectedMain)}</span>
+          <label className="checkbox-row"><input type="checkbox" checked={acceptedRisk} onChange={(event) => setAcceptedRisk(event.target.checked)} />Понимаю, что DEV-сборка может содержать ошибки и повредить мир</label>
+        </div>}
+        {!!project.info.permissions.length && <div className="notice"><strong>Разрешения проекта</strong><span>{project.info.permissions.join(", ")}</span></div>}
+        <p className="muted">Пользовательские миры и настройки останутся в профиле лаунчера; папка исходников не копируется.</p>
+        {failed && <ErrorNotice>Не удалось подключить проект. Подробности в журнале.</ErrorNotice>}
+        <div className="modal-actions">
+          <button type="button" disabled={busy} onClick={close}>Отмена</button>
+          <button className="primary" disabled={busy || !name.trim() || !version || (!!selectedMain && !acceptedRisk)}>{busy ? "Подключаем…" : "Подключить и запускать"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function CreateProfile({
   runtimes,
   availableRuntimes,
@@ -1837,6 +1983,8 @@ function ProfileSettings({
   const versionLabel = useVoxelCoreVersionLabel();
   const [name, setName] = useState(profile.name);
   const modpack = profileModpack(profile);
+  const project = profileProject(profile);
+  const managedRelease = modpack || project;
   const { status: mainlineStatus } = useMainlineStatus();
   const mainBuilds = runtimes.flatMap((runtime) => runtime.main_build ? [runtime.main_build] : []);
   const [runtimeVersion, setRuntimeVersion] = useState(profileRuntimeId(profile));
@@ -1852,13 +2000,13 @@ function ProfileSettings({
       <section className="setting-row">
         <div>
           <h3>Версия VoxelCore</h3>
-          <p>{modpack ? `Определяется сборкой ${modpack.title || modpack.id} ${modpack.version}. Меняется вместе с версией сборки.` : profile.external_runtime ? "Используется VoxelCore из подключённой папки. Версия задаёт совместимость с контент-паками." : "Перед сменой лаунчер проверит совместимость всех выбранных контент-паков."}</p>
+          <p>{managedRelease ? `Определяется ${project ? "проектом" : "сборкой"} ${managedRelease.title || managedRelease.id} ${managedRelease.version}. Меняется вместе с его версией.` : profile.external_runtime ? "Используется VoxelCore из подключённой папки. Версия задаёт совместимость с контент-паками." : profile.external_project_path ? "Версия среды для запуска локального проекта. Её можно менять независимо от исходников." : "Перед сменой лаунчер проверит совместимость всех выбранных контент-паков."}</p>
         </div>
-        {modpack ? (
+        {managedRelease ? (
           <div className="profile-managed-value">
             <span>VoxelCore</span>
             <strong>{versionLabel(engineVersion(profile))}</strong>
-            <small>Управляется сборкой</small>
+            <small>Управляется {project ? "проектом" : "сборкой"}</small>
           </div>
         ) : profile.external_runtime ? (
           <div className="profile-managed-value">

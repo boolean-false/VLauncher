@@ -5382,6 +5382,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.20",
+ "toml 0.9.12+spec-1.1.0",
  "uuid 1.26.1",
  "walkdir",
  "zip 2.4.2",

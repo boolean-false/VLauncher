@@ -1,5 +1,5 @@
 import { Catalog } from "./Catalog";
-import type { LocalProfile, MainBuild, RunTask } from "../model";
+import { isProjectProfile, type LocalProfile, type MainBuild, type RunTask } from "../model";
 import type { SignedInstallPlan } from "../api";
 
 // The profile uses the same catalog; only its target profile and quick actions differ.
@@ -31,6 +31,17 @@ export function ProfileContentPicker({
   openProfile: (id: string) => void;
   openExperimentalSettings: () => void;
 }) {
+  if (isProjectProfile(profile)) {
+    return (
+      <div className="catalog-page">
+        <div className="notice">
+          <strong>Состав проекта задаётся его автором</strong>
+          <span>Добавлять отдельные контент-паки в профиль проекта нельзя.</span>
+        </div>
+        <button onClick={close}>Вернуться в профиль</button>
+      </div>
+    );
+  }
   return (
     <Catalog
       active={active}

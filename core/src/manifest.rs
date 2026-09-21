@@ -40,8 +40,59 @@ pub enum PackageKind {
     Mod,
     Library,
     Modpack,
+    Project,
     World,
     Runtime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VoxelCoreProject {
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub base_packs: Vec<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+impl VoxelCoreProject {
+    pub fn read(folder: impl AsRef<Path>) -> Result<Self, PackageProblem> {
+        let path = folder.as_ref().join("project.toml");
+        let source = fs::read_to_string(&path).map_err(|source| PackageProblem::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let project: Self = toml::from_str(&source)
+            .map_err(|error| PackageProblem::Invalid(format!("invalid project.toml: {error}")))?;
+        validate_project_id(&project.name)?;
+        if project.title.trim().is_empty() || project.title.chars().count() > 128 {
+            return invalid("project title must contain 1 to 128 characters");
+        }
+        let allowed = [
+            "debugging",
+            "network",
+            "record-audio",
+            "write-to-user",
+            "sub-instances",
+        ];
+        let mut permissions = HashSet::new();
+        if project
+            .permissions
+            .iter()
+            .any(|value| !allowed.contains(&value.as_str()) || !permissions.insert(value))
+        {
+            return invalid("project.toml contains an unknown or duplicate permission");
+        }
+        if project
+            .base_packs
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            return invalid("project.toml contains an empty base pack");
+        }
+        Ok(project)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -281,7 +332,11 @@ impl PackageManifest {
         if self.schema_version != 1 {
             return invalid("schema_version must equal 1");
         }
-        validate_id(&self.id)?;
+        if self.kind == PackageKind::Project {
+            validate_project_id(&self.id)?;
+        } else {
+            validate_id(&self.id)?;
+        }
         Version::parse(&self.version)
             .map_err(|error| PackageProblem::Invalid(format!("invalid version: {error}")))?;
         if self.title.trim().is_empty() || self.title.chars().count() > 128 {
@@ -546,7 +601,7 @@ fn normalize_requirement(input: &str) -> String {
     format!("={}", normalize_version_lossy(input))
 }
 
-fn normalize_version(input: &str) -> Result<String, PackageProblem> {
+pub(crate) fn normalize_version(input: &str) -> Result<String, PackageProblem> {
     let normalized = normalize_version_lossy(input);
     Version::parse(&normalized)
         .map_err(|error| PackageProblem::Invalid(format!("invalid version '{input}': {error}")))?;
@@ -580,6 +635,19 @@ fn validate_id(id: &str) -> Result<(), PackageProblem> {
         || RESERVED_IDS.contains(&id)
     {
         return invalid(format!("invalid or reserved package id '{id}'"));
+    }
+    Ok(())
+}
+
+fn validate_project_id(id: &str) -> Result<(), PackageProblem> {
+    if id.len() < 2
+        || id.len() > 48
+        || !id.starts_with(|c: char| c.is_ascii_lowercase())
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+    {
+        return invalid(format!("invalid project id '{id}'"));
     }
     Ok(())
 }

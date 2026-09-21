@@ -211,6 +211,55 @@
 .library-page .section-heading .actions { justify-content: flex-end; }
 .library-page .section-heading button { background: var(--surface-2); border-color: var(--line); }
 .library-page .content-list { border-radius: var(--radius); border-color: var(--line); }
+.library-page .project-profile-overview {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) minmax(260px, 0.7fr);
+  gap: 18px;
+  align-items: start;
+  padding: 22px;
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+}
+.library-page .project-profile-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--accent-text);
+}
+.library-page .project-profile-copy h3 { margin: 5px 0 8px; font: 400 19px/1.3 var(--mono); }
+.library-page .project-profile-copy p { max-width: 620px; font-size: 12px; }
+.library-page .project-profile-path {
+  display: block;
+  max-width: 100%;
+  margin-top: 14px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-page .project-profile-link {
+  min-height: 0;
+  margin-top: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: 12px;
+}
+.library-page .project-profile-link:hover { background: transparent; text-decoration: underline; }
+.library-page .project-profile-rule {
+  display: grid;
+  gap: 7px;
+  padding: 14px 16px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-2);
+}
+.library-page .project-profile-rule strong { font-size: 12px; }
+.library-page .project-profile-rule span { color: var(--muted); font-size: 11px; line-height: 1.55; }
 .library-page .list-heading {
   grid-template-columns: minmax(0, 1fr) 80px 30px;
   gap: 14px;
@@ -278,6 +327,8 @@
 .library-welcome .empty > p { line-height: 1.9; margin-bottom: 26px; }
 .library-welcome .empty .primary { font: 12px var(--mono); min-height: 44px; padding-inline: 22px; }
 @media (max-width: 1100px) {
+  .library-page .project-profile-overview { grid-template-columns: 48px minmax(0, 1fr); }
+  .library-page .project-profile-rule { grid-column: 2; }
   .workbench .sidebar { width: 192px; padding-inline: 10px; }
   .workbench .brand { padding-inline: 4px; }
   .workbench[data-screen="library"] main { padding: 24px; }
@@ -331,4 +382,61 @@
   background: var(--panel);
   border-color: var(--line);
   border-radius: var(--radius);
+}
+.workbench .attach-folder-menu {
+  position: relative;
+}
+
+.workbench .attach-folder-menu > button {
+  height: 100%;
+}
+
+.workbench .attach-folder-options {
+  position: absolute;
+  z-index: 30;
+  top: 100%;
+  left: 0;
+  display: none;
+  width: 250px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 12px 32px var(--overlay);
+}
+
+.workbench .attach-folder-menu:hover .attach-folder-options,
+.workbench .attach-folder-menu:focus-within .attach-folder-options {
+  display: grid;
+}
+
+.workbench .library-page .page-heading .attach-folder-options button {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  align-items: start;
+  border: 0;
+  background: var(--panel);
+  color: var(--text);
+  text-align: left;
+}
+
+.workbench .library-page .page-heading .attach-folder-options button:hover,
+.workbench .library-page .page-heading .attach-folder-options button:focus-visible {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.workbench .attach-folder-options button:hover strong,
+.workbench .attach-folder-options button:focus-visible strong {
+  color: var(--accent-hover);
+}
+
+.workbench .attach-folder-options span {
+  display: grid;
+  gap: 2px;
+}
+
+.workbench .attach-folder-options small {
+  color: var(--muted);
 }

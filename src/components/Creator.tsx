@@ -224,7 +224,7 @@ export function Creator({
         emptyProjectDraft,
       );
       const savedType: Exclude<Project["type"], "runtime"> =
-        saved.type === "modpack" || saved.type === "world"
+        saved.type === "modpack" || saved.type === "project" || saved.type === "world"
           ? saved.type
           : "mod";
       return {
@@ -335,6 +335,7 @@ export function Creator({
   const [modpackWorldsLoading, setModpackWorldsLoading] = useState(false);
   const [modpackVersion, setModpackVersion] = useState("1.0.0");
   const [worldVersion, setWorldVersion] = useState("1.0.0");
+  const [projectVersion, setProjectVersion] = useState("1.0.0");
   const [worldProfile, setWorldProfile] = useState("");
   const [worldFolder, setWorldFolder] = useState("");
   const [worlds, setWorlds] = useState<LocalWorld[]>([]);
@@ -482,7 +483,11 @@ export function Creator({
 
   useEffect(() => {
     if (!prepared) return;
-    setVoxelcoreRequirement(packageVoxelCoreRequirement(prepared));
+    setVoxelcoreRequirement(
+      prepared.manifest.type === "project"
+        ? `=${latestStableVoxelCore}`
+        : packageVoxelCoreRequirement(prepared),
+    );
     setAllowMain(false);
     setMainMinCommit("");
     setMainBuilds([]);
@@ -692,9 +697,13 @@ export function Creator({
     setPrepared(null);
     setPreparedSource(null);
     try {
-      setPrepared(
-        await invoke<PreparedArtifact>("prepare_release", { path: folder }),
-      );
+      const project = projects.find((item) => item.slug === selectedProject);
+      setPrepared(await invoke<PreparedArtifact>(
+        project?.type === "project" ? "prepare_project_release" : "prepare_release",
+        project?.type === "project"
+          ? { path: folder, version: projectVersion, creator: account?.username ?? "", license: project.license ?? "" }
+          : { path: folder },
+      ));
     } catch (reason) {
       setError(String(reason));
     }
@@ -1046,7 +1055,9 @@ export function Creator({
     : prepared?.manifest.type;
   const preparedMatchesProject = !!prepared && !!current &&
     preparedKind === current.type &&
-    (current.type !== "mod" || !current.package_id || prepared.manifest.id === current.package_id);
+    (current.type === "project"
+      ? prepared.manifest.id === current.slug
+      : current.type !== "mod" || !current.package_id || prepared.manifest.id === current.package_id);
   const preparedVersionRelease = prepared
     ? releases.find(
       (release) =>
@@ -1388,7 +1399,7 @@ export function Creator({
               <legend>Что вы создаёте?</legend>
               <p>Тип определяет раздел каталога и способ подготовки версий.</p>
               <div>
-                {(["mod", "modpack", "world"] as const).map((kind) => {
+                {(["mod", "modpack", "project", "world"] as const).map((kind) => {
                   const info = projectKindInfo(kind);
                   return (
                     <button
@@ -1448,14 +1459,16 @@ export function Creator({
                     aria-label="Короткий адрес проекта"
                     maxLength={48}
                     value={draft.slug}
-                    placeholder={draft.type === "world" ? "floating-islands" : "technical-adventures"}
+                    placeholder={draft.type === "world" ? "floating-islands" : draft.type === "project" ? "my-game" : "technical-adventures"}
                     spellCheck={false}
                     onChange={(event) => setDraft({ ...draft, slug: event.target.value.trim().toLowerCase() })}
                   />
                 </div>
                 <small className={!draft.slug || validProjectSlug(draft.slug) ? undefined : "danger-text"}>
                   {!draft.slug || validProjectSlug(draft.slug)
-                    ? "Можно продиктовать или отправить человеку. Допустимы латинские буквы, цифры, дефис и подчёркивание."
+                    ? draft.type === "project"
+                      ? "Должен совпадать с name в project.toml. Это постоянный адрес проекта."
+                      : "Можно продиктовать или отправить человеку. Допустимы латинские буквы, цифры, дефис и подчёркивание."
                     : "Нужно от 2 до 48 символов; первый символ — латинская буква."}
                 </small>
               </label>
@@ -1517,6 +1530,8 @@ export function Creator({
                   ? "Загрузите исходную папку или готовый ZIP контент-пака."
                   : current?.type === "modpack"
                     ? "Зафиксируйте текущее состояние игрового профиля как новую версию сборки."
+                    : current?.type === "project"
+                      ? "Выберите папку с project.toml. Проект публикуется и обновляется как единое целое."
                     : current?.type === "world"
                       ? "Выберите установленный профиль и мир, который нужно опубликовать."
                       : "Сначала выберите проект для публикации."}</p>
@@ -1539,13 +1554,15 @@ export function Creator({
                 </Select>
               </label>
             )}
-            {current?.type === "mod" && (
+            {(current?.type === "mod" || current?.type === "project") && (
               <section className="release-source-card">
                 <div>
-                  <strong>Файлы контент-пака</strong>
-                  <span>Версия, ID и зависимости будут прочитаны из package.json. Необязательные зависимости тоже поддерживаются.</span>
+                  <strong>{current.type === "project" ? "Папка проекта" : "Файлы контент-пака"}</strong>
+                  <span>{current.type === "project"
+                    ? "ID, название и разрешения будут прочитаны из project.toml. Версия хранится в VSpace."
+                    : "Версия, ID и зависимости будут прочитаны из package.json. Необязательные зависимости тоже поддерживаются."}</span>
                 </div>
-                <div className="form-row release-source-tabs" role="group" aria-label="Источник файлов">
+                {current.type === "mod" && <div className="form-row release-source-tabs" role="group" aria-label="Источник файлов">
                   <button
                     type="button"
                     aria-pressed={releaseSource === "local"}
@@ -1560,8 +1577,12 @@ export function Creator({
                   >
                     GitHub
                   </button>
-                </div>
-                {releaseSource === "local" ? (
+                </div>}
+                {current.type === "project" && <label>
+                  Версия проекта
+                  <input value={projectVersion} onChange={(event) => { setProjectVersion(event.target.value); setPrepared(null); }} placeholder="1.0.0" />
+                </label>}
+                {releaseSource === "local" || current.type === "project" ? (
                   <>
                     <label>
                       Папка или ZIP-архив
@@ -1800,11 +1821,12 @@ export function Creator({
                     value={voxelcoreRequirement}
                     versions={publishedVoxelCoreVersions}
                     onChange={setVoxelcoreRequirement}
+                    exactOnly={current.type === "modpack" || current.type === "project"}
                   />
                 )}
               </div>
             )}
-            {prepared && futureVoxelCore && prepared.manifest.type !== "modpack" && (
+            {prepared && futureVoxelCore && !["modpack", "project"].includes(prepared.manifest.type) && (
               <section className="main-compatibility-editor">
                 <div className="notice">
                   <strong>VoxelCore {mainTargetVersion} ещё не выпущен</strong>
@@ -1877,10 +1899,13 @@ export function Creator({
                     ID пакета: <code>{prepared.manifest.id}</code>
                   </span>
                 )}
+                {current?.type === "project" && (
+                  <span>ID проекта: <code>{prepared.manifest.id}</code> · адрес каталога: <code>{current.slug}</code></span>
+                )}
                 <ManifestContentLinks
                   manifest={prepared.manifest}
                   parent={prepared.manifest.title}
-                  compact={prepared.manifest.type === "modpack"}
+                  compact={["modpack", "project"].includes(prepared.manifest.type)}
                 />
                 <span>
                   {(prepared.size / 1024 / 1024).toFixed(2)} MiB ·{" "}
@@ -1905,6 +1930,11 @@ export function Creator({
                     Выберите другой релиз или измените версию пакета.
                   </span>
                 )}
+                {current?.type === "project" && prepared.manifest.id !== current.slug && (
+                  <span className="notice error" role="alert">
+                    Поле <code>name</code> в project.toml должно совпадать с адресом проекта: <code>{current.slug}</code>.
+                  </span>
+                )}
               </div>
             )}
             <p id="release-publish-state" role="status" className="release-publish-state">
@@ -1915,6 +1945,8 @@ export function Creator({
                   : !prepared
                     ? current?.type === "mod"
                       ? "Выберите файлы контент-пака и проверьте пакет."
+                      : current?.type === "project"
+                        ? "Выберите папку проекта и проверьте её."
                       : current?.type === "modpack"
                         ? "Выберите профиль и подготовьте сборку."
                         : "Выберите профиль, мир и подготовьте карту."
@@ -2435,6 +2467,19 @@ const projectKinds: Record<Project["type"], ProjectKindInfo> = {
     summaryPlaceholder: "Какой игровой опыт она предлагает",
     descriptionLabel: "Описание сборки",
     createLabel: "Создать сборку",
+  },
+  project: {
+    name: "Проект",
+    newTitle: "Новый проект VoxelCore",
+    description: "Самостоятельное приложение VoxelCore с собственным project.toml и встроенным контентом.",
+    choiceDescription: "Цельный проект или игра",
+    icon: "terminal",
+    titleLabel: "Название проекта",
+    titlePlaceholder: "Как проект будет называться в каталоге",
+    summaryLabel: "Коротко о проекте",
+    summaryPlaceholder: "Что это за приложение или игра",
+    descriptionLabel: "Описание проекта",
+    createLabel: "Создать проект",
   },
   world: {
     name: "Карта",

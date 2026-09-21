@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { engineVersion, exactVoxelCoreVersion, formatVoxelCoreVersion, isDevelopmentVoxelCoreVersion, latestPublishedVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileEngineLabel, profileModpack, profileRuntimeId, voxelCoreVersionLabel, type LocalProfile, type MainBuild } from "../src/model.ts";
+import { engineVersion, exactVoxelCoreVersion, formatVoxelCoreVersion, isDevelopmentVoxelCoreVersion, isProjectProfile, latestPublishedVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileEngineLabel, profileModpack, profileRuntimeId, voxelCoreVersionLabel, type LocalProfile, type MainBuild } from "../src/model.ts";
 
 test("сборка main хранит свою версию движка", () => {
   const build: MainBuild = {
@@ -59,4 +59,21 @@ test("сборка определяет профиль и точную верс�
     packages: [{ id: "starter_pack", kind: "modpack", version: "2.0.0" }],
   };
   assert.equal(profileModpack(profile)?.version, "2.0.0");
+});
+
+test("локальный и опубликованный проекты определяются как атомарные профили", () => {
+  const profile: LocalProfile = {
+    id: "project",
+    name: "Project",
+    active_revision: null,
+    voxelcore_version: "0.32.0",
+    roots: [],
+    packages: [],
+  };
+  assert.equal(isProjectProfile(profile), false);
+  assert.equal(isProjectProfile({ ...profile, external_project_path: "/projects/demo" }), true);
+  assert.equal(isProjectProfile({
+    ...profile,
+    packages: [{ id: "project-id", kind: "project", version: "1.0.0" }],
+  }), true);
 });

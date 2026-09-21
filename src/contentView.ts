@@ -16,7 +16,7 @@ export type ContentInfo = {
   title: string;
   description: string;
   iconUrl?: string;
-  type?: "mod" | "modpack" | "world" | "runtime";
+  type?: "mod" | "modpack" | "project" | "world" | "runtime";
   version?: string;
   note?: string;
   versions?: string[];

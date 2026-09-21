@@ -44,7 +44,7 @@ export type Project = {
   id: string;
   slug: string;
   package_id: string | null;
-  type: "mod" | "modpack" | "world" | "runtime";
+  type: "mod" | "modpack" | "project" | "world" | "runtime";
   title: string;
   summary: string;
   license: string | null;
@@ -106,6 +106,8 @@ export type ResolvedPackage = {
   artifact_size: number;
   download_url: string;
   dependencies: string[];
+  capabilities?: string[];
+  project_permissions?: string[];
 };
 
 export type ExternalPackageLock = {

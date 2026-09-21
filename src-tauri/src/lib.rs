@@ -27,7 +27,8 @@ use vlauncher_core::{
     CacheStatus, DeliveryManifest, ExistingGameAnalysis, InstallPlan, InstalledRuntime,
     PackageKind, PackageManifest, PreparedArtifact, Profile, ProfileDefinition, ProfileStorage,
     ProfileStore, RemoteInstallPlan, SignedRemoteInstallPlan, UploadReceipt,
-    VoxelCoreMainRequirement, prepare_package, upload_package_with_progress,
+    VoxelCoreMainRequirement, VoxelCoreProject, prepare_package, prepare_project,
+    upload_package_with_progress,
 };
 
 #[cfg(windows)]
@@ -57,15 +58,15 @@ fn plan_modpack(plan: &RemoteInstallPlan) -> Result<Option<&str>, String> {
     let mut modpacks = plan
         .packages
         .iter()
-        .filter(|package| package.kind == PackageKind::Modpack);
+        .filter(|package| matches!(package.kind, PackageKind::Modpack | PackageKind::Project));
     let first = modpacks.next().map(|package| package.id.as_str());
     if modpacks.next().is_some() {
-        return Err("a profile cannot contain multiple modpacks".into());
+        return Err("a profile cannot contain multiple projects or modpacks".into());
     }
     if let Some(id) = first
         && !plan.roots.iter().any(|root| root == id)
     {
-        return Err("a modpack must be a profile root".into());
+        return Err("a project or modpack must be a profile root".into());
     }
     Ok(first)
 }
@@ -85,7 +86,7 @@ fn ensure_profile_modpack_unchanged(
     let current = profile
         .packages
         .iter()
-        .find(|package| package.kind == PackageKind::Modpack)
+        .find(|package| matches!(package.kind, PackageKind::Modpack | PackageKind::Project))
         .map(|package| package.id.as_str());
     ensure_modpack_transition(current, next)
 }
@@ -94,7 +95,7 @@ fn ensure_modpack_transition(current: Option<&str>, next: Option<&str>) -> Resul
     if current == next || (current.is_none() && next.is_none()) {
         Ok(())
     } else {
-        Err("a modpack must be installed as a separate profile".into())
+        Err("a project or modpack must be installed as a separate profile".into())
     }
 }
 
@@ -429,6 +430,23 @@ async fn prepare_release(app: tauri::AppHandle, path: String) -> Result<Prepared
 }
 
 #[tauri::command]
+async fn prepare_project_release(
+    app: tauri::AppHandle,
+    path: String,
+    version: String,
+    creator: String,
+    license: String,
+) -> Result<PreparedArtifact, String> {
+    let output = application_cache_dir(&app)?.join("prepared-uploads");
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_project(path, output, &version, &creator, &license)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn prepare_profile_modpack(
     app: tauri::AppHandle,
     profile_id: String,
@@ -658,6 +676,24 @@ fn create_initialized_profile(
     }
     profile_store(&app)?
         .create_initialized_with_main(&name, &version, main_build)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn inspect_local_project(path: String) -> Result<VoxelCoreProject, String> {
+    VoxelCoreProject::read(path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_local_project_profile(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+    version: String,
+    main_build: Option<vlauncher_core::mainline::MainBuild>,
+) -> Result<Profile, String> {
+    profile_store(&app)?
+        .create_local_project(&name, path, &version, main_build)
         .map_err(|error| error.to_string())
 }
 
@@ -1963,6 +1999,7 @@ pub fn run() {
             validate_package,
             preview_delivery,
             prepare_release,
+            prepare_project_release,
             prepare_profile_modpack,
             prepare_profile_world,
             publish_release,
@@ -1971,6 +2008,8 @@ pub fn run() {
             list_profiles,
             create_profile,
             create_initialized_profile,
+            inspect_local_project,
+            create_local_project_profile,
             create_profile_from_plan,
             initialize_vanilla,
             change_vanilla_runtime,

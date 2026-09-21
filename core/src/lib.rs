@@ -7,7 +7,7 @@ pub mod publishing;
 pub use manifest::{
     Capability, DeliveryFile, DeliveryManifest, Dependency, DependencyKind, ExternalPackageLock,
     LockedPackage, Lockfile, PackageComponent, PackageEnvironment, PackageKind, PackageManifest,
-    PackageProblem,
+    PackageProblem, VoxelCoreProject,
 };
 pub use profile::{
     CacheStatus, ExistingGameAnalysis, ExistingRuntimeKind, ExternalInstallPackage,
@@ -17,6 +17,6 @@ pub use profile::{
     VoxelCoreRuntimeContext, VoxelCoreRuntimeKind, trusted_signing_public_key,
 };
 pub use publishing::{
-    PreparedArtifact, UploadReceipt, VoxelCoreMainRequirement, prepare_package, upload_package,
-    upload_package_with_progress,
+    PreparedArtifact, UploadReceipt, VoxelCoreMainRequirement, prepare_package, prepare_project,
+    upload_package, upload_package_with_progress,
 };
