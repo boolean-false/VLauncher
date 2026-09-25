@@ -176,7 +176,7 @@ export default function App() {
   const [pickerProfileId, setPickerProfileId] = useState("");
   const [transferActive, setTransferActive] = useState(false);
   const [officialTransfer, setOfficialTransfer] = useState(false);
-  const [worldPublish, setWorldPublish] = useState<{ profileId: string; folder: string } | null>(null);
+  const [worldPublish, setWorldPublish] = useState<{ profileId: string; folder: string; name: string; originProjectId?: string } | null>(null);
   const [closeWithGame, setCloseWithGame] = useState(false);
   const [tab, setTab] = useState("content");
   const openCatalog = useCallback(() => {
@@ -725,7 +725,7 @@ export default function App() {
         <div className="sidebar-bottom">
           <button
             className={screen === "creator" ? "active" : ""}
-            onClick={() => setScreen("creator")}
+            onClick={() => { setWorldPublish(null); setScreen("creator"); }}
           >
             <Icon name="workshop" />
             Мастерская
@@ -1183,8 +1183,8 @@ export default function App() {
                           catalog={openCatalog}
                           busy={busy}
                           run={run}
-                          publish={(worldFolder) => {
-                            setWorldPublish({ profileId: profile.id, folder: worldFolder });
+                          publish={(worldFolder, worldName, originProjectId) => {
+                            setWorldPublish({ profileId: profile.id, folder: worldFolder, name: worldName, originProjectId });
                             setScreen("creator");
                           }}
                         />
@@ -1262,7 +1262,7 @@ export default function App() {
             />
           )}
           <div hidden={screen !== "creator"}>
-            {visited.current.has("creator") && <Creator active={screen === "creator"} worldPublish={worldPublish} />}
+            {visited.current.has("creator") && <Creator active={screen === "creator"} worldPublish={worldPublish} clearWorldPublish={() => setWorldPublish(null)} />}
           </div>
           {screen === "settings" && (
             <Settings
@@ -2283,7 +2283,7 @@ function Worlds({
   catalog: () => void;
   busy: boolean;
   run: RunTask;
-  publish: (folder: string) => void;
+  publish: (folder: string, name: string, originProjectId?: string) => void;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
@@ -2293,12 +2293,16 @@ function Worlds({
       name: string;
       origin_title?: string;
       origin_version?: string;
+      origin_project_id?: string;
       bundled: boolean;
       modified: number;
       voxelcore_version?: string;
       compatible?: boolean;
       dependencies: string[];
       missing_dependencies: string[];
+      publication_missing_dependencies: string[];
+      embedded_packages: { id: string; title: string; version?: string | null }[];
+      embedded_error?: string | null;
       preview_data?: string;
     }[]
 >("list_worlds", {profileId:profile.id});
@@ -2365,6 +2369,23 @@ function Worlds({
                     {world.origin_version && ` ${world.origin_version}`}
                   </small>
                 )}
+                {world.embedded_error && <small className="danger-text">Ошибка в папке content: {world.embedded_error}</small>}
+                {!!world.publication_missing_dependencies?.length && (
+                  <small className="danger-text">Для публикации не хватает: {world.publication_missing_dependencies.join(", ")}</small>
+                )}
+                {!!world.embedded_packages?.length && (
+                  <details className="world-packages">
+                    <summary>Внутри карты: {world.embedded_packages.length} контент-пак(ов)</summary>
+                    <div className="world-package-list">
+                      {world.embedded_packages.map((pack) => (
+                        <span className="world-package" key={pack.id}>
+                          <span>{pack.title}</span>
+                          <small>{pack.id}{pack.version ? ` · ${pack.version}` : ""}</small>
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 {!!world.dependencies.length && (
                   <details className={`world-packages${world.missing_dependencies.length ? " has-missing" : ""}`}>
                     <summary>
@@ -2419,7 +2440,7 @@ function Worlds({
               >
                 Экспортировать
               </button>
-              <button disabled={busy} onClick={() => publish(world.folder)}>
+              <button disabled={busy} onClick={() => publish(world.folder, world.name, world.origin_project_id)}>
                 Опубликовать…
               </button>
             </div>

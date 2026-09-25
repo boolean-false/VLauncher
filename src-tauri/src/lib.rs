@@ -24,11 +24,11 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use vlauncher_core::{
-    CacheStatus, DeliveryManifest, ExistingGameAnalysis, InstallPlan, InstalledRuntime,
-    PackageKind, PackageManifest, PreparedArtifact, Profile, ProfileDefinition, ProfileStorage,
-    ProfileStore, RemoteInstallPlan, SignedRemoteInstallPlan, UploadReceipt,
-    VoxelCoreMainRequirement, VoxelCoreProject, prepare_package, prepare_project,
-    upload_package_with_progress,
+    CacheStatus, DeliveryManifest, EmbeddedWorldPackage, ExistingGameAnalysis, InstallPlan,
+    InstalledRuntime, PackageKind, PackageManifest, PreparedArtifact, Profile, ProfileDefinition,
+    ProfileStorage, ProfileStore, RemoteInstallPlan, SignedRemoteInstallPlan, UploadReceipt,
+    VoxelCoreMainRequirement, VoxelCoreProject, embedded_world_packages, prepare_package,
+    prepare_project, upload_package_with_progress,
 };
 
 #[cfg(windows)]
@@ -457,6 +457,7 @@ fn prepare_profile_modpack(
     license: String,
     worlds: Vec<String>,
 ) -> Result<PreparedArtifact, String> {
+    ensure_stopped(&app, &profile_id)?;
     let id = profile_id
         .parse()
         .map_err(|_| "invalid profile id".to_owned())?;
@@ -479,6 +480,7 @@ fn prepare_profile_world(
     creator: String,
     license: String,
 ) -> Result<PreparedArtifact, String> {
+    ensure_stopped(&app, &profile_id)?;
     let id = profile_id
         .parse()
         .map_err(|_| "invalid profile id".to_owned())?;
@@ -904,12 +906,16 @@ struct LocalWorld {
     name: String,
     origin_title: Option<String>,
     origin_version: Option<String>,
+    origin_project_id: Option<String>,
     bundled: bool,
     modified: u64,
     voxelcore_version: Option<String>,
     compatible: Option<bool>,
     dependencies: Vec<String>,
     missing_dependencies: Vec<String>,
+    publication_missing_dependencies: Vec<String>,
+    embedded_packages: Vec<EmbeddedWorldPackage>,
+    embedded_error: Option<String>,
     preview_data: Option<String>,
 }
 
@@ -935,6 +941,12 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
         )
         .chain(profile.manual_packages.iter().cloned())
         .chain(["base".to_owned()])
+        .collect::<HashSet<_>>();
+    let publishable = profile
+        .packages
+        .iter()
+        .filter(|package| matches!(package.kind, PackageKind::Mod | PackageKind::Library))
+        .map(|package| package.id.as_str())
         .collect::<HashSet<_>>();
     let path = store
         .game_directory(id)
@@ -971,6 +983,11 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
         let origin_version = origin
             .as_ref()
             .and_then(|value| value.get("package_version"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let origin_project_id = origin
+            .as_ref()
+            .and_then(|value| value.get("package_id"))
             .and_then(|value| value.as_str())
             .map(str::to_owned);
         let bundled = origin
@@ -1013,9 +1030,28 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let (embedded_packages, embedded_error) = match embedded_world_packages(&entry.path()) {
+            Ok(packages) => (packages, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        let embedded_ids = embedded_packages
+            .iter()
+            .map(|package| package.id.as_str())
+            .collect::<HashSet<_>>();
         let missing_dependencies = dependencies
             .iter()
-            .filter(|dependency| !installed.contains(*dependency))
+            .filter(|dependency| {
+                !installed.contains(*dependency) && !embedded_ids.contains(dependency.as_str())
+            })
+            .cloned()
+            .collect();
+        let publication_missing_dependencies = dependencies
+            .iter()
+            .filter(|dependency| {
+                dependency.as_str() != "base"
+                    && !publishable.contains(dependency.as_str())
+                    && !embedded_ids.contains(dependency.as_str())
+            })
             .cloned()
             .collect();
         let preview_path = [
@@ -1062,12 +1098,16 @@ fn list_worlds(app: tauri::AppHandle, profile_id: String) -> Result<Vec<LocalWor
             name,
             origin_title,
             origin_version,
+            origin_project_id,
             bundled,
             modified,
             voxelcore_version,
             compatible,
             dependencies,
             missing_dependencies,
+            publication_missing_dependencies,
+            embedded_packages,
+            embedded_error,
             preview_data,
         });
     }

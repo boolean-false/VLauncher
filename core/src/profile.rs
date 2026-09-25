@@ -72,6 +72,87 @@ pub struct InstalledPackage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EmbeddedWorldPackage {
+    pub id: String,
+    pub title: String,
+    pub version: Option<String>,
+}
+
+pub fn embedded_world_packages(world: &Path) -> Result<Vec<EmbeddedWorldPackage>, PackageProblem> {
+    let content = world.join("content");
+    if !content.exists() {
+        return Ok(Vec::new());
+    }
+    if !content.is_dir() {
+        return invalid("world content must be a directory");
+    }
+    let mut packages = Vec::new();
+    let mut ids = HashSet::new();
+    for entry in fs::read_dir(&content).map_err(|source| io_error(&content, source))? {
+        let entry = entry.map_err(|source| io_error(&content, source))?;
+        if !entry
+            .file_type()
+            .map_err(|source| io_error(&entry.path(), source))?
+            .is_dir()
+        {
+            return invalid(format!(
+                "world content contains a non-package: {}",
+                entry.path().display()
+            ));
+        }
+        let manifest_path = entry.path().join("package.json");
+        let bytes = fs::read(&manifest_path).map_err(|source| io_error(&manifest_path, source))?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|source| PackageProblem::Json {
+                path: manifest_path.clone(),
+                source,
+            })?;
+        let id = manifest
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if id.is_empty() || !ids.insert(id.to_owned()) {
+            return invalid(format!(
+                "world content has a missing or duplicate package id in {}",
+                manifest_path.display()
+            ));
+        }
+        packages.push(EmbeddedWorldPackage {
+            id: id.to_owned(),
+            title: manifest
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or(id)
+                .to_owned(),
+            version: manifest
+                .get("version")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
+        });
+    }
+    packages.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(packages)
+}
+
+fn world_required_pack_ids(world: &Path) -> Result<Vec<String>, PackageProblem> {
+    let packs_list = world.join("packs.list");
+    let references = match fs::read_to_string(&packs_list) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => return Err(io_error(&packs_list, source)),
+    };
+    let mut ids = references
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && *line != "base")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalPackage {
     pub id: String,
     pub source: String,
@@ -1953,15 +2034,16 @@ impl ProfileStore {
                 if !world.join("world.json").is_file() {
                     return invalid(format!("world '{folder}' does not contain world.json"));
                 }
-                let mut component_dependencies = fs::read_to_string(world.join("packs.list"))
-                    .unwrap_or_default()
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty() && !line.starts_with('#') && *line != "base")
-                    .collect::<HashSet<_>>()
+                let embedded = embedded_world_packages(&world)?;
+                let embedded_ids = embedded
+                    .iter()
+                    .map(|package| package.id.as_str())
+                    .collect::<HashSet<_>>();
+                let mut component_dependencies = world_required_pack_ids(&world)?
                     .into_iter()
+                    .filter(|id| !embedded_ids.contains(id.as_str()))
                     .map(|id| {
-                        let version = installed.get(id).ok_or_else(|| {
+                        let version = installed.get(id.as_str()).ok_or_else(|| {
                             PackageProblem::Invalid(format!(
                                 "world '{folder}' requires '{id}', which is not managed by this profile"
                             ))
@@ -2110,20 +2192,29 @@ impl ProfileStore {
         let installed = profile
             .packages
             .iter()
+            .filter(|package| matches!(package.kind, PackageKind::Mod | PackageKind::Library))
             .map(|package| (package.id.as_str(), package.version.as_str()))
             .collect::<HashMap<_, _>>();
-        let mut dependencies = fs::read_to_string(world.join("packs.list"))
-            .unwrap_or_default()
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .filter_map(|id| installed.get(id).map(|version| (id, *version)))
-            .map(|(id, version)| {
-                serde_json::json!({
-                    "id": id, "requirement": format!("={version}"), "kind": "required"
-                })
-            })
-            .collect::<Vec<_>>();
+        let embedded = embedded_world_packages(&world)?;
+        let embedded_ids = embedded
+            .iter()
+            .map(|package| package.id.as_str())
+            .collect::<HashSet<_>>();
+        let required_ids = world_required_pack_ids(&world)?;
+        let mut dependencies = Vec::new();
+        for id in required_ids {
+            if embedded_ids.contains(id.as_str()) {
+                continue;
+            }
+            let Some(version) = installed.get(id.as_str()) else {
+                return invalid(format!(
+                    "Карта требует контент-пак '{id}', которого нет внутри карты или среди пакетов VSpace в профиле. Добавьте его в папку карты content, если можете распространять, либо установите его версию из VSpace."
+                ));
+            };
+            dependencies.push(serde_json::json!({
+                "id": id, "requirement": format!("={version}"), "kind": "required"
+            }));
+        }
         dependencies.push(serde_json::json!({
             "id": "base", "requirement": format!("={engine}"), "kind": "required"
         }));
@@ -2135,7 +2226,7 @@ impl ProfileStore {
         let result = (|| {
             copy_world_for_publication(&world, &packaged_world)?;
             let manifest = serde_json::json!({
-                "schema_version": 1, "id": slug, "type": "world", "title": title,
+                "schema_version": 1, "id": world_package_id(slug), "type": "world", "title": title,
                 "version": version, "creators": [creator],
                 "description": format!("Карта из профиля {}", profile.name),
                 "license": license,
@@ -3834,6 +3925,19 @@ fn copy_world_for_publication(source: &Path, destination: &Path) -> Result<(), P
     Ok(())
 }
 
+fn world_package_id(slug: &str) -> String {
+    if (2..=24).contains(&slug.len())
+        && slug.starts_with(|character: char| character.is_ascii_lowercase() || character == '_')
+        && slug.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return slug.to_owned();
+    }
+    let digest = Sha256::digest(slug.as_bytes());
+    format!("world_{:x}", digest)[..22].to_owned()
+}
+
 fn world_folder_name(title: &str) -> String {
     let value = title
         .trim()
@@ -4182,6 +4286,13 @@ mod tests {
             .start_file("world/regions/0_0.bin", SimpleFileOptions::default())
             .unwrap();
         archive.write_all(b"original world").unwrap();
+        archive
+            .start_file(
+                "world/content/embedded-pack/package.json",
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.write_all(br#"{"id":"embedded_pack"}"#).unwrap();
         archive.finish().unwrap();
         let bytes = fs::read(&path).unwrap();
         InstallPackage {
@@ -5098,7 +5209,13 @@ mod tests {
         let world = store.profile_path(profile.id).join("game/worlds/starter");
         fs::create_dir_all(&world).unwrap();
         fs::write(world.join("world.json"), br#"{"name":"Starter world"}"#).unwrap();
-        fs::write(world.join("packs.list"), "demo_mod\n").unwrap();
+        fs::create_dir_all(world.join("content/embedded-folder")).unwrap();
+        fs::write(
+            world.join("content/embedded-folder/package.json"),
+            r#"{"id":"embedded_pack"}"#,
+        )
+        .unwrap();
+        fs::write(world.join("packs.list"), "demo_mod\nembedded_pack\n").unwrap();
         let artifact = store
             .prepare_modpack(
                 profile.id,
@@ -5129,6 +5246,7 @@ mod tests {
         assert_eq!(component.title, "Starter world");
         assert_eq!(component.strategy, "copy_once");
         assert_eq!(component.dependencies[0].id, "demo_mod");
+        assert_eq!(component.dependencies.len(), 1);
         let mut archive = ZipArchive::new(fs::File::open(artifact.path).unwrap()).unwrap();
         assert!(archive.by_name("icon.png").is_ok());
         let mut component_bytes = Vec::new();
@@ -5140,6 +5258,11 @@ mod tests {
         let mut component_archive = ZipArchive::new(std::io::Cursor::new(component_bytes)).unwrap();
         assert!(component_archive.by_name("world/world.json").is_ok());
         assert!(component_archive.by_name("world/packs.list").is_ok());
+        assert!(
+            component_archive
+                .by_name("world/content/embedded-folder/package.json")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -5152,11 +5275,20 @@ mod tests {
         fs::write(world.join("world.json"), "{}").unwrap();
         fs::write(world.join("player.json"), "private").unwrap();
         fs::write(world.join("regions/0_0.bin"), "terrain").unwrap();
+        let embedded = world.join("content/EmbeddedPack-folder");
+        fs::create_dir_all(&embedded).unwrap();
+        fs::write(
+            embedded.join("package.json"),
+            r#"{"id":"embedded_pack","title":"Embedded Pack","version":"1.0"}"#,
+        )
+        .unwrap();
+        fs::write(embedded.join("script.lua"), "return true").unwrap();
+        fs::write(world.join("packs.list"), "base\nembedded_pack\n").unwrap();
         let artifact = store
             .prepare_world_package(
                 profile.id,
                 "home",
-                "shared_world",
+                "shared-world",
                 "Shared world",
                 "1.0.0",
                 "Tester",
@@ -5164,11 +5296,49 @@ mod tests {
                 temp.path().join("output"),
             )
             .unwrap();
+        assert_eq!(artifact.manifest.id, world_package_id("shared-world"));
+        assert_eq!(artifact.manifest.dependencies.len(), 1);
+        assert_eq!(artifact.manifest.dependencies[0].id, "base");
         let file = fs::File::open(artifact.path).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();
         assert!(archive.by_name("world/world.json").is_ok());
         assert!(archive.by_name("world/regions/0_0.bin").is_ok());
+        assert!(
+            archive
+                .by_name("world/content/EmbeddedPack-folder/script.lua")
+                .is_ok()
+        );
         assert!(archive.by_name("world/player.json").is_err());
+    }
+
+    #[test]
+    fn world_publication_rejects_unavailable_pack_instead_of_dropping_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create_initialized("World source", "0.31.4").unwrap();
+        let world = store.profile_path(profile.id).join("game/worlds/home");
+        fs::create_dir_all(&world).unwrap();
+        fs::write(world.join("world.json"), "{}").unwrap();
+        fs::write(world.join("packs.list"), "unavailable_pack\n").unwrap();
+        let error = store
+            .prepare_world_package(
+                profile.id,
+                "home",
+                "shared-world",
+                "Shared world",
+                "1.0.0",
+                "Tester",
+                "MIT",
+                temp.path().join("output"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("unavailable_pack"));
+    }
+
+    #[test]
+    fn world_publication_keeps_valid_existing_package_ids() {
+        assert_eq!(world_package_id("shared_world"), "shared_world");
+        assert_eq!(world_package_id("shared-world").len(), 22);
     }
 
     #[test]
@@ -5409,6 +5579,7 @@ mod tests {
             .unwrap();
         let world = game.join("worlds/Demo-world");
         let region = world.join("regions/0_0.bin");
+        assert!(world.join("content/embedded-pack/package.json").is_file());
         let marker: serde_json::Value =
             serde_json::from_slice(&fs::read(world.join(".vlauncher-world.json")).unwrap())
                 .unwrap();

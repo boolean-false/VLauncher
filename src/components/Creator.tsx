@@ -95,6 +95,9 @@ type LocalWorld = {
   modified: number;
   voxelcore_version?: string;
   compatible?: boolean;
+  embedded_packages?: { id: string; title: string; version?: string | null }[];
+  embedded_error?: string | null;
+  publication_missing_dependencies?: string[];
 };
 type GithubReleaseAsset = {
   id: number;
@@ -143,9 +146,11 @@ const tokenSessionId = (token: string) => {
 export function Creator({
   active = true,
   worldPublish,
+  clearWorldPublish,
 }: {
   active?: boolean;
-  worldPublish?: { profileId: string; folder: string } | null;
+  worldPublish?: { profileId: string; folder: string; name: string; originProjectId?: string } | null;
+  clearWorldPublish?: () => void;
 }) {
   const latestStableVoxelCore = useLatestPublishedVoxelCoreVersion();
   const publishedVoxelCoreVersions = usePublishedVoxelCoreVersions();
@@ -365,24 +370,38 @@ export function Creator({
       setWorldSelectionPending(true);
       setWorldProfile(worldPublish.profileId);
       setWorldFolder(worldPublish.folder);
+      setPrepared(null);
+      setPreparedSource(null);
+      setDraft({
+        ...emptyProjectDraft,
+        type: "world",
+        title: worldPublish.name,
+        slug: projectSlugFromTitle(worldPublish.name, "world"),
+      });
       setStatus(
-        `Карта «${worldPublish.folder}» выбрана для публикации.`,
+        `Карта «${worldPublish.name}» выбрана для публикации.`,
       );
     }
   }, [worldPublish]);
   useEffect(() => {
-    if (!worldSelectionPending) return;
-    const selected = projects.find((project) => project.slug === selectedProject);
-    const target = selected?.type === "world"
-      ? selected
-      : projects.find((project) => project.type === "world" && !project.archived_at);
-    if (!target) return;
+    if (!worldSelectionPending || !account) return;
+    const worldProjects = projects.filter((project) => project.type === "world" && !project.archived_at);
+    const target = worldProjects.find((project) =>
+      project.package_id === worldPublish?.originProjectId
+      || project.id === worldPublish?.originProjectId
+      || project.slug === worldPublish?.originProjectId);
+    if (!target) {
+      setSelectedProject("");
+      setSection(worldProjects.length ? "release" : "create");
+      setWorldSelectionPending(false);
+      return;
+    }
     if (target.slug !== selectedProject) {
       setSelectedProject(target.slug);
-      setPrepared(null);
     }
+    setSection("release");
     setWorldSelectionPending(false);
-  }, [projects, selectedProject, worldSelectionPending]);
+  }, [account, projects, selectedProject, worldPublish, worldSelectionPending]);
   useEffect(() => {
     void invoke<LocalProfile[]>("list_profiles")
       .then((items) => {
@@ -509,13 +528,18 @@ export function Creator({
       owned.map((project) => [project.slug, JSON.stringify(project)]),
     );
     setOrganizations(ownOrganizations);
-    setSelectedProject((selected) =>
-      owned.some((project) => project.slug === selected)
+    setSelectedProject((selected) => {
+      if (worldPublish) {
+        return owned.some((project) => project.slug === selected && project.type === "world")
+          ? selected
+          : "";
+      }
+      return owned.some((project) => project.slug === selected)
         ? selected
-        : owned[0]?.slug || "",
-    );
+        : owned[0]?.slug || "";
+    });
     setError("");
-  }, []);
+  }, [worldPublish]);
 
   useEffect(() => {
     void (async () => {
@@ -764,7 +788,7 @@ export function Creator({
   };
   const publish = async () => {
     const project = projects.find((item) => item.slug === selectedProject);
-    const identityMatches = project?.type !== "mod" || !project.package_id ||
+    const identityMatches = !["mod", "world"].includes(project?.type || "") || !project?.package_id ||
       prepared?.manifest.id === project.package_id;
     const versionExists = !!prepared && releases.some(
       (release) =>
@@ -1043,6 +1067,7 @@ export function Creator({
       </>
     );
   const current = projects.find((item) => item.slug === selectedProject);
+  const selectedWorld = worlds.find((world) => world.folder === worldFolder);
   const currentImage = creatorProjectImage(current);
   const modpackProfiles = localProfiles.filter(
     (profile) => !profileModpack(profile) || profileModpack(profile)?.id === current?.id,
@@ -1057,7 +1082,7 @@ export function Creator({
     preparedKind === current.type &&
     (current.type === "project"
       ? prepared.manifest.id === current.slug
-      : current.type !== "mod" || !current.package_id || prepared.manifest.id === current.package_id);
+      : !["mod", "world"].includes(current.type) || !current.package_id || prepared.manifest.id === current.package_id);
   const preparedVersionRelease = prepared
     ? releases.find(
       (release) =>
@@ -1171,7 +1196,7 @@ export function Creator({
                 ? "active"
                 : ""
             }
-            onClick={() => setSection(id)}
+            onClick={() => { clearWorldPublish?.(); setSection(id); }}
           >
             {label}
           </button>
@@ -1546,13 +1571,18 @@ export function Creator({
                   onChange={(event) => selectProject(event.target.value)}
                 >
                   <option value="">Выберите проект</option>
-                  {projects.filter((project) => project.type !== "runtime").map((project) => (
+                  {projects.filter((project) => worldPublish
+                    ? project.type === "world" && !project.archived_at
+                    : project.type !== "runtime").map((project) => (
                     <option value={project.slug} key={project.id}>
                       {project.title} · {projectKindInfo(project.type).name}
                     </option>
                   ))}
                 </Select>
               </label>
+            )}
+            {!current && worldPublish && (
+              <button className="secondary" onClick={() => setSection("create")}>Создать проект карты</button>
             )}
             {(current?.type === "mod" || current?.type === "project") && (
               <section className="release-source-card">
@@ -1792,10 +1822,24 @@ export function Creator({
                     <input aria-label="Версия карты" value={worldVersion} onChange={(event) => { setWorldVersion(event.target.value); setPrepared(null); }} />
                   </label>
                 </div>
-                <button className="primary small" disabled={working || !worldProfile || !worldFolder || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(worldVersion)} onClick={() => void perform(async () => {
+                {selectedWorld?.embedded_error && <p className="notice error" role="alert">Папку content карты не удалось проверить: {selectedWorld.embedded_error}</p>}
+                {!!selectedWorld?.publication_missing_dependencies?.length && (
+                  <p className="notice error" role="alert">
+                    Для публикации не хватает контент-паков: {selectedWorld.publication_missing_dependencies.join(", ")}.
+                    Добавьте их в папку карты content, если можете распространять, или установите их версии из VSpace.
+                  </p>
+                )}
+                {!!selectedWorld?.embedded_packages?.length && (
+                  <div className="notice">
+                    <strong>Контент-паки внутри карты</strong>
+                    <span>{selectedWorld.embedded_packages.map((pack) => `${pack.title} (${pack.id}${pack.version ? ` ${pack.version}` : ""})`).join(", ")}</span>
+                    <span>Эти файлы войдут в архив карты. Проверьте условия их распространения перед отправкой.</span>
+                  </div>
+                )}
+                <button className="primary small" disabled={working || !worldProfile || !worldFolder || !!selectedWorld?.embedded_error || !!selectedWorld?.publication_missing_dependencies?.length || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(worldVersion)} onClick={() => void perform(async () => {
                   if (!account) return;
                   setPrepared(await invoke<PreparedArtifact>("prepare_profile_world", {
-                    profileId: worldProfile, folder: worldFolder, slug: current.slug,
+                    profileId: worldProfile, folder: worldFolder, slug: current.package_id || current.slug,
                     title: current.title, version: worldVersion, creator: account.username,
                     license: current.license || "",
                   }));
@@ -1919,11 +1963,13 @@ export function Creator({
                 {!!prepared.manifest.components?.length && (
                   <span>Стартовые карты: {prepared.manifest.components.map((item) => item.title).join(", ")}</span>
                 )}
-                <span>
-                  {prepared.manifest.capabilities?.length
-                    ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
-                    : "Без дополнительных разрешений"}
-                </span>
+                {(current?.type !== "world" || !selectedWorld?.embedded_packages?.length) && (
+                  <span>
+                    {prepared.manifest.capabilities?.length
+                      ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
+                      : "Без дополнительных разрешений"}
+                  </span>
+                )}
                 {preparedVersionRelease && (
                   <span className="notice error" role="alert">
                     Версия {prepared.manifest.version} уже добавлена в этот проект.
