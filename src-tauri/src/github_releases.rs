@@ -155,6 +155,20 @@ fn get_json<T: serde::de::DeserializeOwned>(http: &Client, url: &str) -> Result<
         .map_err(|_| "GitHub вернул некорректный ответ".into())
 }
 
+fn tagged_api_url(
+    owner: &str,
+    repo: &str,
+    endpoint: &str,
+    tag: &str,
+) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(&format!("{API}/repos/{owner}/{repo}/{endpoint}"))
+        .map_err(|error| error.to_string())?;
+    url.path_segments_mut()
+        .map_err(|_| "Некорректный адрес GitHub")?
+        .push(tag);
+    Ok(url)
+}
+
 #[tauri::command]
 pub async fn list_github_releases(
     repository: String,
@@ -300,23 +314,12 @@ pub async fn prepare_github_release(
             (url, Some(asset.size), ASSET_ACCEPT)
         } else {
             let tag = tag.unwrap();
-            let mut release_url =
-                reqwest::Url::parse(&format!("{API}/repos/{owner}/{repo}/releases/tags/"))
-                    .map_err(|error| error.to_string())?;
-            release_url
-                .path_segments_mut()
-                .map_err(|_| "Некорректный адрес GitHub")?
-                .push(&tag);
+            let release_url = tagged_api_url(&owner, &repo, "releases/tags", &tag)?;
             let release: ApiRelease = get_json(&http, release_url.as_str())?;
             if release.draft || release.published_at.is_none() || release.tag_name != tag {
                 return Err("Релиз GitHub недоступен".into());
             }
-            let mut zip_url = reqwest::Url::parse(&format!("{API}/repos/{owner}/{repo}/zipball/"))
-                .map_err(|error| error.to_string())?;
-            zip_url
-                .path_segments_mut()
-                .map_err(|_| "Некорректный адрес GitHub")?
-                .push(&tag);
+            let zip_url = tagged_api_url(&owner, &repo, "zipball", &tag)?;
             (zip_url.to_string(), None, API_ACCEPT)
         };
         let response = http
@@ -348,7 +351,21 @@ pub async fn prepare_github_release(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_repository;
+    use super::{parse_repository, tagged_api_url};
+
+    #[test]
+    fn github_tag_urls_have_one_separator_before_tag() {
+        for endpoint in ["releases/tags", "zipball"] {
+            let url =
+                tagged_api_url("Xertis", "Neutron-Server", endpoint, "0.4.0-pre-release").unwrap();
+            assert_eq!(
+                url.as_str(),
+                format!(
+                    "https://api.github.com/repos/Xertis/Neutron-Server/{endpoint}/0.4.0-pre-release"
+                )
+            );
+        }
+    }
 
     #[test]
     fn normalizes_public_repository_names() {
