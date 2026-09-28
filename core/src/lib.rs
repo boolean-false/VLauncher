@@ -14,8 +14,8 @@ pub use profile::{
     ExternalInstallPackage, ExternalPackage, ExternalRuntime, InstallPackage, InstallPlan,
     InstalledRuntime, LaunchSpec, Profile, ProfileDefinition, ProfileLockedPackage, ProfileStorage,
     ProfileStore, RemoteInstallPackage, RemoteInstallPlan, RuntimeManifest,
-    SignedRemoteInstallPlan, VoxelCoreRuntimeContext, VoxelCoreRuntimeKind,
-    embedded_world_packages, trusted_signing_public_key,
+    SignedRemoteInstallPlan, VoxelCoreRuntimeContext, VoxelCoreRuntimeKind, WorldSourceInspection,
+    embedded_world_packages, inspect_world_source, trusted_signing_public_key,
 };
 pub use publishing::{
     PreparedArtifact, UploadReceipt, VoxelCoreMainRequirement, prepare_package, prepare_project,

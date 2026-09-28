@@ -493,6 +493,52 @@ fn prepare_profile_world(
 }
 
 #[tauri::command]
+fn inspect_local_world_source(
+    path: String,
+) -> Result<vlauncher_core::WorldSourceInspection, String> {
+    vlauncher_core::inspect_world_source(std::path::Path::new(&path))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn prepare_local_world(
+    app: tauri::AppHandle,
+    profile_id: Option<String>,
+    voxelcore_version: String,
+    path: String,
+    slug: String,
+    title: String,
+    version: String,
+    creator: String,
+    license: String,
+) -> Result<PreparedArtifact, String> {
+    if let Some(profile_id) = &profile_id {
+        ensure_stopped(&app, profile_id)?;
+    }
+    let id = profile_id
+        .map(|profile_id| {
+            profile_id
+                .parse()
+                .map_err(|_| "invalid profile id".to_owned())
+        })
+        .transpose()?;
+    let output = application_cache_dir(&app)?.join("prepared-uploads");
+    profile_store(&app)?
+        .prepare_world_from_path(
+            id,
+            &voxelcore_version,
+            path,
+            &slug,
+            &title,
+            &version,
+            &creator,
+            &license,
+            output,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn publish_release(
     app: tauri::AppHandle,
     control: tauri::State<'_, TransferControl>,
@@ -2042,6 +2088,8 @@ pub fn run() {
             prepare_project_release,
             prepare_profile_modpack,
             prepare_profile_world,
+            inspect_local_world_source,
+            prepare_local_world,
             publish_release,
             cancel_transfer,
             exit_launcher,

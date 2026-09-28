@@ -78,6 +78,21 @@ pub struct EmbeddedWorldPackage {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldSourceInspection {
+    pub embedded_packages: Vec<EmbeddedWorldPackage>,
+    pub required_packages: Vec<String>,
+}
+
+pub fn inspect_world_source(source: &Path) -> Result<WorldSourceInspection, PackageProblem> {
+    with_world_directory(source, |world| {
+        Ok(WorldSourceInspection {
+            embedded_packages: embedded_world_packages(world)?,
+            required_packages: world_required_pack_ids(world)?,
+        })
+    })
+}
+
 pub fn embedded_world_packages(world: &Path) -> Result<Vec<EmbeddedWorldPackage>, PackageProblem> {
     let content = world.join("content");
     if !content.exists() {
@@ -90,6 +105,9 @@ pub fn embedded_world_packages(world: &Path) -> Result<Vec<EmbeddedWorldPackage>
     let mut ids = HashSet::new();
     for entry in fs::read_dir(&content).map_err(|source| io_error(&content, source))? {
         let entry = entry.map_err(|source| io_error(&content, source))?;
+        if entry.file_name() == ".DS_Store" || entry.file_name() == "Thumbs.db" {
+            continue;
+        }
         if !entry
             .file_type()
             .map_err(|source| io_error(&entry.path(), source))?
@@ -150,6 +168,42 @@ fn world_required_pack_ids(world: &Path) -> Result<Vec<String>, PackageProblem> 
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+fn with_world_directory<T>(
+    source: &Path,
+    action: impl FnOnce(&Path) -> Result<T, PackageProblem>,
+) -> Result<T, PackageProblem> {
+    let temporary;
+    let root = if source.is_dir() {
+        source
+    } else if source.is_file() {
+        temporary =
+            tempfile::tempdir().map_err(|error| PackageProblem::Invalid(error.to_string()))?;
+        let file = fs::File::open(source).map_err(|error| io_error(source, error))?;
+        extract_archive(file, temporary.path())?;
+        temporary.path()
+    } else {
+        return invalid("Выберите существующую папку карты или ZIP-архив");
+    };
+    let world = if root.join("world.json").is_file() {
+        root.to_owned()
+    } else if root.join("world/world.json").is_file() {
+        root.join("world")
+    } else {
+        let entries = fs::read_dir(root)
+            .map_err(|error| io_error(root, error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| io_error(root, error))?
+            .into_iter()
+            .filter(|entry| !matches!(entry.file_name().to_str(), Some(".DS_Store" | "__MACOSX")))
+            .collect::<Vec<_>>();
+        if entries.len() != 1 || !entries[0].path().join("world.json").is_file() {
+            return invalid("В выбранной папке или ZIP нет world.json в корне карты");
+        }
+        entries[0].path()
+    };
+    action(&world)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2177,21 +2231,79 @@ impl ProfileStore {
         if relative.components().count() != 1 {
             return invalid("world folder must be a single directory name");
         }
-        let profile = self.profile(profile_id)?;
         let world = self
             .game_directory(profile_id)?
             .join("worlds")
             .join(relative);
+        self.prepare_world_directory(
+            Some(profile_id),
+            None,
+            &world,
+            slug,
+            title,
+            version,
+            creator,
+            license,
+            output_folder,
+        )
+    }
+
+    pub fn prepare_world_from_path(
+        &self,
+        profile_id: Option<Uuid>,
+        voxelcore_version: &str,
+        source: impl AsRef<Path>,
+        slug: &str,
+        title: &str,
+        version: &str,
+        creator: &str,
+        license: &str,
+        output_folder: impl AsRef<Path>,
+    ) -> Result<PreparedArtifact, PackageProblem> {
+        with_world_directory(source.as_ref(), |world| {
+            self.prepare_world_directory(
+                profile_id,
+                Some(voxelcore_version),
+                world,
+                slug,
+                title,
+                version,
+                creator,
+                license,
+                output_folder,
+            )
+        })
+    }
+
+    fn prepare_world_directory(
+        &self,
+        profile_id: Option<Uuid>,
+        voxelcore_version: Option<&str>,
+        world: &Path,
+        slug: &str,
+        title: &str,
+        version: &str,
+        creator: &str,
+        license: &str,
+        output_folder: impl AsRef<Path>,
+    ) -> Result<PreparedArtifact, PackageProblem> {
         if !world.join("world.json").is_file() {
             return invalid("world does not contain world.json");
         }
+        let profile = profile_id.map(|id| self.profile(id)).transpose()?;
         let engine = profile
-            .voxelcore_version
-            .as_deref()
-            .ok_or_else(|| PackageProblem::Invalid("profile has no VoxelCore version".into()))?;
+            .as_ref()
+            .map_or(voxelcore_version, |profile| {
+                profile.voxelcore_version.as_deref()
+            })
+            .filter(|version| semver::Version::parse(version).is_ok())
+            .ok_or_else(|| {
+                PackageProblem::Invalid("Укажите точную версию VoxelCore, например 0.31.4".into())
+            })?;
         let installed = profile
-            .packages
-            .iter()
+            .as_ref()
+            .into_iter()
+            .flat_map(|profile| &profile.packages)
             .filter(|package| matches!(package.kind, PackageKind::Mod | PackageKind::Library))
             .map(|package| (package.id.as_str(), package.version.as_str()))
             .collect::<HashMap<_, _>>();
@@ -2228,7 +2340,10 @@ impl ProfileStore {
             let manifest = serde_json::json!({
                 "schema_version": 1, "id": world_package_id(slug), "type": "world", "title": title,
                 "version": version, "creators": [creator],
-                "description": format!("Карта из профиля {}", profile.name),
+                "description": profile.as_ref().map_or_else(
+                    || "Карта из выбранной папки или архива".to_owned(),
+                    |profile| format!("Карта из профиля {}", profile.name),
+                ),
                 "license": license,
                 "dependencies": dependencies, "capabilities": [], "environments": ["client"]
             });
@@ -3904,9 +4019,10 @@ fn copy_world_for_publication(source: &Path, destination: &Path) -> Result<(), P
                 Component::Normal(value) => value.to_str(),
                 _ => None,
             });
-        if first.is_some_and(|name| {
+        if relative.components().any(|component| {
+            matches!(component, Component::Normal(name) if name == ".DS_Store" || name == "Thumbs.db")
+        }) || first.is_some_and(|name| {
             name == "player.json"
-                || name == ".DS_Store"
                 || name.starts_with(".vlauncher")
                 || name.starts_with(".tmp")
         }) {
@@ -5309,6 +5425,122 @@ mod tests {
                 .is_ok()
         );
         assert!(archive.by_name("world/player.json").is_err());
+    }
+
+    #[test]
+    fn prepares_external_world_folder_and_wrapped_zip_with_embedded_packs() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create_initialized("World source", "0.31.4").unwrap();
+        let world = temp.path().join("separate-world");
+        fs::create_dir_all(world.join("content/QuickEdit-main")).unwrap();
+        fs::write(world.join("world.json"), "{}").unwrap();
+        fs::write(world.join("player.json"), "private").unwrap();
+        fs::write(world.join("packs.list"), "base\nquickedit\ncontour\n").unwrap();
+        fs::write(
+            world.join("content/QuickEdit-main/package.json"),
+            r#"{"id":"quickedit","title":"QuickEdit"}"#,
+        )
+        .unwrap();
+        fs::write(world.join("content/.DS_Store"), "metadata").unwrap();
+        let inspection = inspect_world_source(&world).unwrap();
+        assert_eq!(inspection.embedded_packages[0].id, "quickedit");
+        assert_eq!(inspection.required_packages, vec!["contour", "quickedit"]);
+        let error = store
+            .prepare_world_from_path(
+                Some(profile.id),
+                "0.31.4",
+                &world,
+                "separate-world",
+                "Separate world",
+                "1.0.0",
+                "Tester",
+                "MIT",
+                temp.path().join("out"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("contour"));
+
+        fs::create_dir_all(world.join("content/contour")).unwrap();
+        fs::write(
+            world.join("content/contour/package.json"),
+            r#"{"id":"contour"}"#,
+        )
+        .unwrap();
+        let folder_artifact = store
+            .prepare_world_from_path(
+                None,
+                "0.31.4",
+                &world,
+                "separate-world",
+                "Separate world",
+                "1.0.0",
+                "Tester",
+                "MIT",
+                temp.path().join("out"),
+            )
+            .unwrap();
+        let mut folder_archive =
+            ZipArchive::new(fs::File::open(folder_artifact.path).unwrap()).unwrap();
+        assert!(
+            folder_archive
+                .by_name("world/content/QuickEdit-main/package.json")
+                .is_ok()
+        );
+        assert!(
+            folder_archive
+                .by_name("world/content/contour/package.json")
+                .is_ok()
+        );
+        assert!(folder_archive.by_name("world/player.json").is_err());
+        assert!(folder_archive.by_name("world/content/.DS_Store").is_err());
+
+        let zip_path = temp.path().join("separate-world.zip");
+        let mut zip = ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        for relative in [
+            "world.json",
+            "packs.list",
+            "content/QuickEdit-main/package.json",
+            "content/contour/package.json",
+        ] {
+            zip.start_file(
+                format!("separate-world/{relative}"),
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(&fs::read(world.join(relative)).unwrap())
+                .unwrap();
+        }
+        zip.start_file(".DS_Store", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"metadata").unwrap();
+        zip.finish().unwrap();
+        assert_eq!(
+            inspect_world_source(&zip_path)
+                .unwrap()
+                .embedded_packages
+                .len(),
+            2
+        );
+        let zip_artifact = store
+            .prepare_world_from_path(
+                None,
+                "0.31.4",
+                &zip_path,
+                "separate-world",
+                "Separate world",
+                "1.0.0",
+                "Tester",
+                "MIT",
+                temp.path().join("out"),
+            )
+            .unwrap();
+        let mut archive = ZipArchive::new(fs::File::open(zip_artifact.path).unwrap()).unwrap();
+        assert!(
+            archive
+                .by_name("world/content/contour/package.json")
+                .is_ok()
+        );
     }
 
     #[test]

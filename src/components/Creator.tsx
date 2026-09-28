@@ -99,6 +99,10 @@ type LocalWorld = {
   embedded_error?: string | null;
   publication_missing_dependencies?: string[];
 };
+type WorldSourceInspection = {
+  embedded_packages: { id: string; title: string; version?: string | null }[];
+  required_packages: string[];
+};
 type GithubReleaseAsset = {
   id: number;
   name: string;
@@ -340,9 +344,18 @@ export function Creator({
   const [modpackWorldsLoading, setModpackWorldsLoading] = useState(false);
   const [modpackVersion, setModpackVersion] = useState("1.0.0");
   const [worldVersion, setWorldVersion] = useState("1.0.0");
+  const [worldEngineVersion, setWorldEngineVersion] = useState(latestStableVoxelCore);
   const [projectVersion, setProjectVersion] = useState("1.0.0");
   const [worldProfile, setWorldProfile] = useState("");
   const [worldFolder, setWorldFolder] = useState("");
+  const [worldSourceKind, setWorldSourceKind] = useState<"profile" | "folder" | "zip">("profile");
+  const [worldSourcePath, setWorldSourcePath] = useState("");
+  const [worldSourceInspection, setWorldSourceInspection] = useState<WorldSourceInspection | null>(null);
+  const [worldSourceError, setWorldSourceError] = useState("");
+  const [worldSourceLoading, setWorldSourceLoading] = useState(false);
+  useEffect(() => {
+    if (latestStableVoxelCore) setWorldEngineVersion((value) => value || latestStableVoxelCore);
+  }, [latestStableVoxelCore]);
   const [worlds, setWorlds] = useState<LocalWorld[]>([]);
   const [worldsLoading, setWorldsLoading] = useState(false);
   const [worldSelectionPending, setWorldSelectionPending] = useState(false);
@@ -370,6 +383,7 @@ export function Creator({
       setWorldSelectionPending(true);
       setWorldProfile(worldPublish.profileId);
       setWorldFolder(worldPublish.folder);
+      setWorldSourceKind("profile");
       setPrepared(null);
       setPreparedSource(null);
       setDraft({
@@ -466,6 +480,25 @@ export function Creator({
       });
     return () => { current = false; };
   }, [selectedProjectType, worldProfile, worldSelectionPending]);
+  useEffect(() => {
+    if (worldSourceKind === "profile" || !worldSourcePath.trim()) {
+      setWorldSourceInspection(null);
+      setWorldSourceError("");
+      setWorldSourceLoading(false);
+      return;
+    }
+    let active = true;
+    setWorldSourceInspection(null);
+    setWorldSourceError("");
+    setWorldSourceLoading(true);
+    const timer = window.setTimeout(() => {
+      void invoke<WorldSourceInspection>("inspect_local_world_source", { path: worldSourcePath.trim() })
+        .then((inspection) => { if (active) setWorldSourceInspection(inspection); })
+        .catch((reason) => { if (active) setWorldSourceError(friendlyError(reason)); })
+        .finally(() => { if (active) setWorldSourceLoading(false); });
+    }, 300);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [worldSourceKind, worldSourcePath]);
   useEffect(() => {
     const subscription = listen<typeof transfer>(
       "transfer-progress",
@@ -1068,6 +1101,22 @@ export function Creator({
     );
   const current = projects.find((item) => item.slug === selectedProject);
   const selectedWorld = worlds.find((world) => world.folder === worldFolder);
+  const worldEmbeddedPackages = worldSourceKind === "profile"
+    ? selectedWorld?.embedded_packages ?? []
+    : worldSourceInspection?.embedded_packages ?? [];
+  const worldMissingPackages = worldSourceKind === "profile"
+    ? selectedWorld?.publication_missing_dependencies ?? []
+    : worldSourceInspection?.required_packages.filter((id) =>
+      !worldEmbeddedPackages.some((pack) => pack.id === id)
+      && !localProfiles.find((profile) => profile.id === worldProfile)?.packages.some((pack) =>
+        pack.id === id && ["mod", "library"].includes(pack.kind))) ?? [];
+  const worldContentError = worldSourceKind === "profile"
+    ? selectedWorld?.embedded_error || ""
+    : worldSourceError;
+  const worldSourceReady = worldSourceKind === "profile"
+    ? !!worldProfile && !!worldFolder
+    : !!worldSourcePath.trim() && !!worldSourceInspection && !worldSourceLoading
+      && (!!worldProfile || /^\d+\.\d+\.\d+$/.test(worldEngineVersion));
   const currentImage = creatorProjectImage(current);
   const modpackProfiles = localProfiles.filter(
     (profile) => !profileModpack(profile) || profileModpack(profile)?.id === current?.id,
@@ -1799,47 +1848,78 @@ export function Creator({
             {current?.type === "world" && (
               <section className="release-source-card">
                 <div>
-                  <strong>Мир из профиля</strong>
-                  <span>Личные данные игрока и временные файлы не попадут в публикацию.</span>
+                  <strong>Источник карты</strong>
+                  <span>Можно взять мир из профиля, отдельную папку карты или ZIP-архив. Личные данные игрока и временные файлы не попадут в публикацию.</span>
+                </div>
+                <div className="form-row release-source-tabs" role="group" aria-label="Источник карты">
+                  {(["profile", "folder", "zip"] as const).map((kind) => (
+                    <button key={kind} type="button" aria-pressed={worldSourceKind === kind} onClick={() => {
+                      if (kind !== worldSourceKind && kind !== "profile" && worldSourceKind !== "profile") setWorldSourcePath("");
+                      setWorldSourceInspection(null);
+                      setWorldSourceError("");
+                      setWorldSourceKind(kind);
+                      setPrepared(null);
+                    }}>
+                      {kind === "profile" ? "Из профиля" : kind === "folder" ? "Папка" : "ZIP-архив"}
+                    </button>
+                  ))}
                 </div>
                 <div className="release-source-fields">
                   <label>
-                    Профиль
+                    {worldSourceKind === "profile" ? "Профиль" : "Профиль с версией VoxelCore и зависимостями"}
                     <Select aria-label="Профиль с картой" value={worldProfile} onChange={(event) => { setWorldProfile(event.target.value); setPrepared(null); }}>
-                      <option value="" disabled>Выберите профиль</option>
+                      <option value="" disabled={worldSourceKind === "profile"}>{worldSourceKind === "profile" ? "Выберите профиль" : "Без профиля"}</option>
                       {localProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
                     </Select>
                   </label>
-                  <label>
+                  {worldSourceKind !== "profile" && (worldProfile
+                    ? <span className="muted">Версия VoxelCore берётся из выбранного профиля.</span>
+                    : <label>Версия VoxelCore
+                      <input aria-label="Версия VoxelCore для карты" value={worldEngineVersion} onChange={(event) => { setWorldEngineVersion(event.target.value); setPrepared(null); }} placeholder="0.31.4" />
+                    </label>)}
+                  {worldSourceKind === "profile" ? <label>
                     Мир
                     <Select aria-label="Мир для публикации" value={worldFolder} disabled={!worldProfile || worldsLoading || !worlds.length} onChange={(event) => { setWorldFolder(event.target.value); setPrepared(null); }}>
                       <option value="" disabled>{worldsLoading ? "Загружаем миры…" : worlds.length ? "Выберите мир" : "В профиле нет миров"}</option>
                       {worlds.map((world) => <option value={world.folder} key={world.folder}>{world.name}</option>)}
                     </Select>
-                  </label>
+                  </label> : <label>
+                    {worldSourceKind === "folder" ? "Папка карты" : "ZIP-архив карты"}
+                    <input aria-label="Путь к карте" value={worldSourcePath} onChange={(event) => { setWorldSourcePath(event.target.value); setWorldSourceInspection(null); setPrepared(null); }} placeholder={worldSourceKind === "folder" ? "Папка с world.json" : "Архив с world.json"} />
+                    <button className="secondary" type="button" disabled={working} onClick={() => void perform(async () => {
+                      const path = worldSourceKind === "folder"
+                        ? await open({ directory: true, multiple: false })
+                        : await open({ directory: false, multiple: false, filters: [{ name: "ZIP-архив", extensions: ["zip"] }] });
+                      if (path) { setWorldSourcePath(path); setWorldSourceInspection(null); setPrepared(null); }
+                    })}>{worldSourceKind === "folder" ? "Выбрать папку" : "Выбрать ZIP"}</button>
+                  </label>}
                   <label>
                     Версия карты
                     <input aria-label="Версия карты" value={worldVersion} onChange={(event) => { setWorldVersion(event.target.value); setPrepared(null); }} />
                   </label>
                 </div>
-                {selectedWorld?.embedded_error && <p className="notice error" role="alert">Папку content карты не удалось проверить: {selectedWorld.embedded_error}</p>}
-                {!!selectedWorld?.publication_missing_dependencies?.length && (
+                {worldSourceLoading && <span className="muted">Проверяем карту и вложенные паки…</span>}
+                {worldContentError && <p className="notice error" role="alert">Не удалось проверить карту: {worldContentError}</p>}
+                {!!worldMissingPackages.length && (
                   <p className="notice error" role="alert">
-                    Для публикации не хватает контент-паков: {selectedWorld.publication_missing_dependencies.join(", ")}.
-                    Добавьте их в папку карты content, если можете распространять, или установите их версии из VSpace.
+                    В <code>packs.list</code> указаны паки, которых нет в папке карты <code>content</code>{worldProfile ? " или среди пакетов VSpace выбранного профиля" : ""}: {worldMissingPackages.join(", ")}.
+                    Добавьте их в карту, если можете распространять{worldProfile ? ", или установите их версии из VSpace" : ""}.
                   </p>
                 )}
-                {!!selectedWorld?.embedded_packages?.length && (
+                {!!worldEmbeddedPackages.length && (
                   <div className="notice">
                     <strong>Контент-паки внутри карты</strong>
-                    <span>{selectedWorld.embedded_packages.map((pack) => `${pack.title} (${pack.id}${pack.version ? ` ${pack.version}` : ""})`).join(", ")}</span>
+                    <span>{worldEmbeddedPackages.map((pack) => `${pack.title} (${pack.id}${pack.version ? ` ${pack.version}` : ""})`).join(", ")}</span>
                     <span>Эти файлы войдут в архив карты. Проверьте условия их распространения перед отправкой.</span>
                   </div>
                 )}
-                <button className="primary small" disabled={working || !worldProfile || !worldFolder || !!selectedWorld?.embedded_error || !!selectedWorld?.publication_missing_dependencies?.length || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(worldVersion)} onClick={() => void perform(async () => {
+                <button className="primary small" disabled={working || !worldSourceReady || !!worldContentError || !!worldMissingPackages.length || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(worldVersion)} onClick={() => void perform(async () => {
                   if (!account) return;
-                  setPrepared(await invoke<PreparedArtifact>("prepare_profile_world", {
-                    profileId: worldProfile, folder: worldFolder, slug: current.package_id || current.slug,
+                  setPrepared(await invoke<PreparedArtifact>(worldSourceKind === "profile" ? "prepare_profile_world" : "prepare_local_world", {
+                    profileId: worldSourceKind === "profile" ? worldProfile : worldProfile || null,
+                    ...(worldSourceKind === "profile" ? {} : { voxelcoreVersion: worldEngineVersion }),
+                    ...(worldSourceKind === "profile" ? { folder: worldFolder } : { path: worldSourcePath.trim() }),
+                    slug: current.package_id || current.slug,
                     title: current.title, version: worldVersion, creator: account.username,
                     license: current.license || "",
                   }));
@@ -1963,7 +2043,7 @@ export function Creator({
                 {!!prepared.manifest.components?.length && (
                   <span>Стартовые карты: {prepared.manifest.components.map((item) => item.title).join(", ")}</span>
                 )}
-                {(current?.type !== "world" || !selectedWorld?.embedded_packages?.length) && (
+                {(current?.type !== "world" || !worldEmbeddedPackages.length) && (
                   <span>
                     {prepared.manifest.capabilities?.length
                       ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
