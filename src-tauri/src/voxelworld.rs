@@ -458,11 +458,10 @@ fn install_versions(
                     completed,
                     total: expected.max(completed),
                     bytes_per_second: speed,
-                    eta_seconds: if speed > 0 {
-                        expected.saturating_sub(completed) / speed
-                    } else {
-                        0
-                    },
+                    eta_seconds: expected
+                        .saturating_sub(completed)
+                        .checked_div(speed)
+                        .unwrap_or(0),
                 },
             );
             if cancelled.load(Ordering::SeqCst) {

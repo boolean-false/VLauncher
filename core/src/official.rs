@@ -11,7 +11,6 @@ use std::time::Duration;
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
 use std::{fs, io::Write, path::Path};
 
-const REPOSITORY: &str = "https://api.github.com/repos/MihailRis/voxelcore";
 const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
 #[derive(Clone, Deserialize)]
 struct Asset {
@@ -71,18 +70,38 @@ fn asset_for(release: &Release, os: &str, arch: &str) -> Option<Asset> {
         })
         .cloned()
 }
-pub fn list_official_releases() -> Result<Vec<OfficialRelease>, String> {
+fn metadata<T: serde::de::DeserializeOwned>(
+    http: &Client,
+    registry_url: &str,
+    path: &str,
+) -> Result<T, String> {
+    let response = http
+        .get(format!(
+            "{}/engine/metadata",
+            registry_url.trim_end_matches('/')
+        ))
+        .query(&[("path", path)])
+        .timeout(Duration::from_secs(40))
+        .send()
+        .map_err(|_| "Не удалось связаться с VSpace. Проверьте подключение и повторите попытку.")?;
+    if response.status().as_u16() == 404 {
+        return Err("Выпуск VoxelCore недоступен. Обновите список версий.".into());
+    }
+    response.error_for_status()
+        .map_err(|_| "Не удалось обновить список версий VoxelCore. Повторите позже; установленный движок можно использовать.")?
+        .json()
+        .map_err(|_| "VSpace вернул некорректные данные о выпусках VoxelCore.".into())
+}
+
+pub fn list_official_releases(registry_url: &str) -> Result<Vec<OfficialRelease>, String> {
     let http = client()?;
     let mut result = Vec::new();
     for page in 1..=10 {
-        let releases: Vec<Release> = http
-            .get(format!("{REPOSITORY}/releases?per_page=100&page={page}"))
-            .timeout(Duration::from_secs(30))
-            .send()
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| format!("Не удалось получить релизы GitHub: {e}"))?
-            .json()
-            .map_err(|e| e.to_string())?;
+        let releases: Vec<Release> = metadata(
+            &http,
+            registry_url,
+            &format!("/releases?per_page=100&page={page}"),
+        )?;
         let end = releases.len() < 100;
         for release in releases {
             if let Some(asset) = asset_for(&release, std::env::consts::OS, std::env::consts::ARCH) {
@@ -111,18 +130,13 @@ pub fn list_official_releases() -> Result<Vec<OfficialRelease>, String> {
 pub fn install_official_runtime(
     store: &ProfileStore,
     version: &str,
+    registry_url: &str,
     mut progress: impl FnMut(u64, u64) -> bool,
 ) -> Result<InstalledRuntime, String> {
     semver::Version::parse(version).map_err(|e| e.to_string())?;
     let http = client()?;
     // Не доверяем ссылке из интерфейса, получаем её заново.
-    let release: Release = http
-        .get(format!("{REPOSITORY}/releases/tags/v{version}"))
-        .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
+    let release: Release = metadata(&http, registry_url, &format!("/releases/tags/v{version}"))?;
     let asset = asset_for(&release, std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("Для этой системы нет официальной сборки данного релиза")?;
     if release.tag_name.trim_start_matches('v') != version {
@@ -159,10 +173,10 @@ pub fn install_official_runtime(
     if completed != asset.size {
         return Err("Архив загружен не полностью".into());
     }
-    if let Some(digest) = asset.digest {
-        if digest != format!("sha256:{}", hex::encode(hash.finalize())) {
-            return Err("Контрольная сумма GitHub не совпадает".into());
-        }
+    if let Some(digest) = asset.digest
+        && digest != format!("sha256:{}", hex::encode(hash.finalize()))
+    {
+        return Err("Контрольная сумма GitHub не совпадает".into());
     }
     if !progress(completed, asset.size) {
         return Err("Загрузка отменена".into());
@@ -188,9 +202,9 @@ pub(crate) fn install_archive(
             os::unix::fs::PermissionsExt,
             process::{Command, Stdio},
         };
-        fs::set_permissions(&archive, fs::Permissions::from_mode(0o700))
+        fs::set_permissions(archive, fs::Permissions::from_mode(0o700))
             .map_err(|e| e.to_string())?;
-        let output = Command::new(&archive)
+        let output = Command::new(archive)
             .arg("--appimage-extract")
             .current_dir(stage.path())
             .env("APPIMAGELAUNCHER_DISABLE", "1")
@@ -242,6 +256,7 @@ pub(crate) fn install_archive(
 pub fn install_official_runtime(
     _store: &ProfileStore,
     version: &str,
+    _registry_url: &str,
     _progress: impl FnMut(u64, u64) -> bool,
 ) -> Result<InstalledRuntime, String> {
     semver::Version::parse(version).map_err(|e| e.to_string())?;

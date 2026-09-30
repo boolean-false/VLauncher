@@ -8,8 +8,6 @@ use std::{
     time::Duration,
 };
 
-const API: &str = "https://api.github.com/repos/MihailRis/voxelcore";
-const NIGHTLY_LINK: &str = "https://nightly.link/MihailRis/voxelcore";
 const REPOSITORY_ID: u64 = 361430837;
 const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
 
@@ -138,27 +136,36 @@ fn client() -> Result<Client, String> {
         .map_err(|e| e.to_string())
 }
 
-fn nightly_artifact_url(run_id: u64, artifact_name: &str) -> String {
-    format!("{NIGHTLY_LINK}/actions/runs/{run_id}/{artifact_name}.zip")
-}
-
-fn api<T: serde::de::DeserializeOwned>(http: &Client, route: &str) -> Result<T, String> {
+fn api<T: serde::de::DeserializeOwned>(
+    http: &Client,
+    registry_url: &str,
+    route: &str,
+) -> Result<T, String> {
     let response = http
-        .get(format!("{API}{route}"))
+        .get(format!(
+            "{}/mainline/metadata",
+            registry_url.trim_end_matches('/')
+        ))
+        .query(&[("path", route)])
         .send()
-        .map_err(|_| "GitHub недоступен")?;
+        .map_err(|_| "Не удалось связаться с VSpace для проверки DEV-сборки")?;
     match response.status().as_u16() {
-        403 | 429 => {
-            return Err("GitHub временно ограничил публичные запросы. Повторите позже".into());
+        404 | 410 => return Err("Артефакт удалён или срок его хранения истёк".into()),
+        429 | 502 | 503 | 504 => {
+            return Err("VSpace временно не может проверить DEV-сборки. Повторите позже".into());
         }
-        404 | 410 => return Err("Сборка удалена или срок хранения артефакта истёк".into()),
         _ => (),
     }
     response
         .error_for_status()
-        .map_err(|e| format!("Ошибка GitHub: {}", e.status().unwrap()))?
+        .map_err(|e| {
+            format!(
+                "Ошибка проверки DEV-сборки в VSpace: {}",
+                e.status().unwrap()
+            )
+        })?
         .json()
-        .map_err(|_| "Некорректный ответ GitHub".into())
+        .map_err(|_| "Некорректный ответ VSpace о DEV-сборке".into())
 }
 
 fn verified_build(
@@ -203,16 +210,17 @@ fn verified_build(
     Ok(build)
 }
 
-pub fn list() -> Result<MainCatalog, String> {
+pub fn list(registry_url: &str) -> Result<MainCatalog, String> {
     let (workflow, name) = platform_workflow(std::env::consts::OS, std::env::consts::ARCH)?;
     let http = client()?;
     #[derive(Deserialize)]
     struct Head {
         sha: String,
     }
-    let head: Head = api(&http, "/commits/main")?;
+    let head: Head = api(&http, registry_url, "/commits/main")?;
     let runs: Runs = api(
         &http,
+        registry_url,
         &format!(
             "/actions/workflows/{workflow}/runs?branch=main&event=push&status=success&per_page=10"
         ),
@@ -221,13 +229,14 @@ pub fn list() -> Result<MainCatalog, String> {
     for run in runs.workflow_runs {
         let artifacts: Artifacts = api(
             &http,
+            registry_url,
             &format!("/actions/runs/{}/artifacts?per_page=100", run.id),
         )?;
         for artifact in artifacts.artifacts {
             if artifact.name == name && !artifact.expired {
                 let mut build =
                     verified_build(&run, artifact, std::env::consts::OS, std::env::consts::ARCH)?;
-                build.engine_version = Some(fetch_engine_version(&http, &build.sha)?);
+                build.engine_version = Some(fetch_engine_version(&http, registry_url, &build.sha)?);
                 builds.push(build);
             }
         }
@@ -244,6 +253,7 @@ pub fn list() -> Result<MainCatalog, String> {
 pub fn install(
     store: &ProfileStore,
     expected: &MainBuild,
+    registry_url: &str,
     mut progress: impl FnMut(u64, u64) -> bool,
 ) -> Result<InstalledRuntime, String> {
     expected.validate()?;
@@ -254,14 +264,16 @@ pub fn install(
     let http = client()?;
     let artifact: Artifact = api(
         &http,
+        registry_url,
         &format!("/actions/artifacts/{}", expected.artifact_id),
     )?;
     let run: Run = api(
         &http,
+        registry_url,
         &format!("/actions/runs/{}", artifact.workflow_run.id),
     )?;
     let mut actual = verified_build(&run, artifact, &expected.platform, &expected.architecture)?;
-    actual.engine_version = Some(fetch_engine_version(&http, &actual.sha)?);
+    actual.engine_version = Some(fetch_engine_version(&http, registry_url, &actual.sha)?);
     if !actual.same_artifact(expected)
         || expected
             .engine_version
@@ -270,33 +282,22 @@ pub fn install(
     {
         return Err("Метаданные сборки изменились; обновите список".into());
     }
-    let (_, artifact_name) = platform_workflow(&actual.platform, &actual.architecture)?;
-    let redirect = http
-        .get(nightly_artifact_url(actual.run_id, artifact_name))
-        .send()
-        .map_err(|_| "Не удалось получить ссылку nightly.link")?;
-    if !redirect.status().is_redirection() {
-        return Err(match redirect.status().as_u16() {
-            404 | 410 => "Артефакт удалён или срок его хранения истёк",
-            429 => "nightly.link временно ограничил загрузки. Повторите позже",
-            _ => "nightly.link не предоставил ссылку на артефакт",
-        }
-        .into());
-    }
-    let location = redirect
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or("nightly.link вернул ответ без ссылки на артефакт")?;
-    let url = reqwest::Url::parse(location).map_err(|_| "Некорректная ссылка nightly.link")?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return Err("nightly.link вернул небезопасную ссылку".into());
-    }
+    let url = format!(
+        "{}/mainline/artifacts/{}",
+        registry_url.trim_end_matches('/'),
+        actual.artifact_id
+    );
     let mut response = http
         .get(url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|_| "Не удалось скачать архив через nightly.link")?;
+        .map_err(|e| format!("Не удалось скачать сборку через VSpace: {e}"))?;
+    if !response.status().is_success() {
+        return Err(match response.status().as_u16() {
+            404 | 410 => "Артефакт удалён или срок его хранения истёк".into(),
+            503 => "VSpace временно не может получить сборку main. Повторите позже".into(),
+            status => format!("VSpace не отдал сборку main (ошибка {status})"),
+        });
+    }
     let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
     let archive = stage.path().join("actions.zip");
     let mut file = fs::File::create(&archive).map_err(|e| e.to_string())?;
@@ -398,7 +399,7 @@ fn parse_engine_version(source: &str) -> Result<String, String> {
     Ok(version.to_string())
 }
 
-fn fetch_engine_version(http: &Client, sha: &str) -> Result<String, String> {
+fn fetch_engine_version(http: &Client, registry_url: &str, sha: &str) -> Result<String, String> {
     use base64::Engine;
     #[derive(Deserialize)]
     struct Source {
@@ -406,7 +407,11 @@ fn fetch_engine_version(http: &Client, sha: &str) -> Result<String, String> {
         content: String,
         size: u64,
     }
-    let source: Source = api(http, &format!("/contents/src/constants.hpp?ref={sha}"))?;
+    let source: Source = api(
+        http,
+        registry_url,
+        &format!("/contents/src/constants.hpp?ref={sha}"),
+    )?;
     if source.encoding != "base64" || source.size > 256 * 1024 || source.content.len() > 512 * 1024
     {
         return Err("Некорректный файл версии движка".into());
@@ -419,10 +424,10 @@ fn fetch_engine_version(http: &Client, sha: &str) -> Result<String, String> {
     parse_engine_version(&text)
 }
 
-pub fn resolve_version(mut build: MainBuild) -> Result<MainBuild, String> {
+pub fn resolve_version(mut build: MainBuild, registry_url: &str) -> Result<MainBuild, String> {
     build.validate()?;
     if build.engine_version.is_none() {
-        build.engine_version = Some(fetch_engine_version(&client()?, &build.sha)?);
+        build.engine_version = Some(fetch_engine_version(&client()?, registry_url, &build.sha)?);
     }
     Ok(build)
 }
@@ -430,32 +435,49 @@ pub fn resolve_version(mut build: MainBuild) -> Result<MainBuild, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    #[ignore = "requires public GitHub API access"]
-    fn pinned_version_from_github() {
-        assert_eq!(
-            super::fetch_engine_version(
-                &super::client().unwrap(),
-                "bb6bd27b94e80d813c350fc277832145bc582f21"
-            )
-            .unwrap(),
-            "0.32.0"
-        );
+    fn metadata_uses_configured_server_and_encodes_github_route() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let route = "/actions/workflows/appimage.yml/runs?branch=main&event=push&status=success&per_page=10";
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let target = first.split_whitespace().nth(1).unwrap();
+            let url = reqwest::Url::parse(&format!("http://localhost{target}")).unwrap();
+            assert_eq!(url.path(), "/api/v1/mainline/metadata");
+            assert_eq!(
+                url.query_pairs().collect::<Vec<_>>(),
+                vec![("path".into(), route.into())]
+            );
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(!line.to_ascii_lowercase().starts_with("authorization:"));
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+        });
+        let value: serde_json::Value = api(
+            &client().unwrap(),
+            &format!("http://{address}/api/v1/"),
+            route,
+        )
+        .unwrap();
+        assert_eq!(value, serde_json::json!({}));
+        server.join().unwrap();
     }
-    #[test]
-    #[ignore = "requires public GitHub and nightly.link access"]
-    fn public_catalog_has_a_downloadable_nightly_artifact() {
-        let catalog = super::list().unwrap();
-        let build = catalog.builds.first().expect("no public main build");
-        let (_, artifact_name) =
-            super::platform_workflow(&build.platform, &build.architecture).unwrap();
-        let response = super::client()
-            .unwrap()
-            .get(super::nightly_artifact_url(build.run_id, artifact_name))
-            .send()
-            .unwrap();
-        assert!(response.status().is_redirection());
-        assert!(response.headers().contains_key(reqwest::header::LOCATION));
-    }
+
     #[test]
     fn parses_and_normalizes_pinned_source_version() {
         assert_eq!(
@@ -539,13 +561,5 @@ mod tests {
                 "{kind}"
             );
         }
-    }
-
-    #[test]
-    fn builds_a_direct_nightly_link_for_a_pinned_run() {
-        assert_eq!(
-            nightly_artifact_url(12345, "Windows-Build"),
-            "https://nightly.link/MihailRis/voxelcore/actions/runs/12345/Windows-Build.zip"
-        );
     }
 }

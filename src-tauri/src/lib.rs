@@ -447,6 +447,10 @@ async fn prepare_project_release(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command arguments match the existing frontend invocation payload."
+)]
 fn prepare_profile_modpack(
     app: tauri::AppHandle,
     profile_id: String,
@@ -470,6 +474,10 @@ fn prepare_profile_modpack(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command arguments match the existing frontend invocation payload."
+)]
 fn prepare_profile_world(
     app: tauri::AppHandle,
     profile_id: String,
@@ -501,6 +509,10 @@ fn inspect_local_world_source(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command arguments match the existing frontend invocation payload."
+)]
 fn prepare_local_world(
     app: tauri::AppHandle,
     profile_id: Option<String>,
@@ -539,6 +551,10 @@ fn prepare_local_world(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command arguments match the existing frontend invocation payload."
+)]
 async fn publish_release(
     app: tauri::AppHandle,
     control: tauri::State<'_, TransferControl>,
@@ -566,11 +582,10 @@ async fn publish_release(
             move |completed, total| {
                 let elapsed = started.elapsed().as_secs_f64().max(0.001);
                 let bytes_per_second = (completed as f64 / elapsed) as u64;
-                let eta_seconds = if bytes_per_second > 0 {
-                    total.saturating_sub(completed) / bytes_per_second
-                } else {
-                    0
-                };
+                let eta_seconds = total
+                    .saturating_sub(completed)
+                    .checked_div(bytes_per_second)
+                    .unwrap_or(0);
                 let _ = app.emit(
                     "transfer-progress",
                     TransferEvent {
@@ -719,9 +734,6 @@ fn create_initialized_profile(
     version: String,
     main_build: Option<vlauncher_core::mainline::MainBuild>,
 ) -> Result<Profile, String> {
-    if main_build.is_some() {
-        mainline::require_enabled(&app)?;
-    }
     profile_store(&app)?
         .create_initialized_with_main(&name, &version, main_build)
         .map_err(|error| error.to_string())
@@ -753,9 +765,6 @@ async fn create_profile_from_plan(
     plan: SignedRemoteInstallPlan,
     main_build: Option<vlauncher_core::mainline::MainBuild>,
 ) -> Result<Profile, String> {
-    if main_build.is_some() {
-        mainline::require_enabled(&app)?;
-    }
     let store = profile_store(&app)?;
     control.cancelled.store(false, Ordering::SeqCst);
     let cancelled = control.cancelled.clone();
@@ -1211,6 +1220,43 @@ fn ensure_stopped(app: &tauri::AppHandle, profile_id: &str) -> Result<(), String
 }
 
 #[tauri::command]
+fn profile_settings_info(
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<vlauncher_core::profile::ProfileSettingsInfo, String> {
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    profile_store(&app)?
+        .profile_settings_info(id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_profile_settings(
+    app: tauri::AppHandle,
+    profile_id: String,
+    source_id: String,
+    controls: bool,
+    settings: bool,
+) -> Result<(), String> {
+    ensure_stopped(&app, &profile_id)?;
+    ensure_stopped(&app, &source_id)?;
+    let target = profile_id.parse().map_err(|_| "invalid profile id")?;
+    let source = source_id.parse().map_err(|_| "invalid source profile id")?;
+    profile_store(&app)?
+        .import_profile_settings(target, source, controls, settings)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_profile_settings(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
+    ensure_stopped(&app, &profile_id)?;
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    profile_store(&app)?
+        .restore_profile_settings(id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn clone_profile(
     app: tauri::AppHandle,
     profile_id: String,
@@ -1233,6 +1279,17 @@ fn delete_profile(app: tauri::AppHandle, profile_id: String) -> Result<(), Strin
         .map_err(|_| "invalid profile id".to_owned())?;
     profile_store(&app)?
         .delete_profile(id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn forget_broken_profile(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
+    ensure_stopped(&app, &profile_id)?;
+    let id = profile_id
+        .parse()
+        .map_err(|_| "invalid profile id".to_owned())?;
+    profile_store(&app)?
+        .forget_broken_profile(id)
         .map_err(|error| error.to_string())
 }
 
@@ -1448,9 +1505,11 @@ fn clear_cache(app: tauri::AppHandle) -> Result<CacheStatus, String> {
 #[tauri::command]
 async fn list_official_runtimes() -> Result<Vec<vlauncher_core::official::OfficialRelease>, String>
 {
-    tauri::async_runtime::spawn_blocking(vlauncher_core::official::list_official_releases)
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(|| {
+        vlauncher_core::official::list_official_releases(registry_url())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1464,24 +1523,28 @@ async fn install_official_runtime(
     let cancelled = control.cancelled.clone();
     let started = Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        vlauncher_core::official::install_official_runtime(&store, &version, |completed, total| {
-            let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
-            let _ = app.emit(
-                "transfer-progress",
-                TransferEvent {
-                    kind: "download",
-                    completed,
-                    total,
-                    bytes_per_second: speed,
-                    eta_seconds: if speed > 0 {
-                        total.saturating_sub(completed) / speed
-                    } else {
-                        0
+        vlauncher_core::official::install_official_runtime(
+            &store,
+            &version,
+            registry_url(),
+            |completed, total| {
+                let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+                let _ = app.emit(
+                    "transfer-progress",
+                    TransferEvent {
+                        kind: "download",
+                        completed,
+                        total,
+                        bytes_per_second: speed,
+                        eta_seconds: total
+                            .saturating_sub(completed)
+                            .checked_div(speed)
+                            .unwrap_or(0),
                     },
-                },
-            );
-            !cancelled.load(Ordering::SeqCst)
-        })
+                );
+                !cancelled.load(Ordering::SeqCst)
+            },
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1520,11 +1583,10 @@ async fn install_runtime(
                     completed: aggregate,
                     total,
                     bytes_per_second: speed,
-                    eta_seconds: if speed > 0 {
-                        total.saturating_sub(aggregate) / speed
-                    } else {
-                        0
-                    },
+                    eta_seconds: total
+                        .saturating_sub(aggregate)
+                        .checked_div(speed)
+                        .unwrap_or(0),
                 },
             );
             !cancelled.load(Ordering::SeqCst)
@@ -1913,9 +1975,6 @@ async fn apply_remote_install_plan(
     plan: SignedRemoteInstallPlan,
     main_build: Option<vlauncher_core::mainline::MainBuild>,
 ) -> Result<(), String> {
-    if main_build.is_some() {
-        mainline::require_enabled(&app)?;
-    }
     ensure_stopped(&app, &profile_id)?;
     let id = profile_id
         .parse()
@@ -1967,24 +2026,22 @@ async fn apply_remote_install_plan(
                             completed: aggregate,
                             total,
                             bytes_per_second: speed,
-                            eta_seconds: if speed > 0 {
-                                total.saturating_sub(aggregate) / speed
-                            } else {
-                                0
-                            },
+                            eta_seconds: total
+                                .saturating_sub(aggregate)
+                                .checked_div(speed)
+                                .unwrap_or(0),
                         },
                     );
                     !cancelled.load(Ordering::SeqCst)
                 },
             )
             .map_err(|error| error.to_string())?;
-        if let Some(packages) = verified.external_packages {
-            if let Err(error) =
+        if let Some(packages) = verified.external_packages
+            && let Err(error) =
                 voxelworld::install_locked_packages(&app, &store, id, packages, &cancelled)
-            {
-                let _ = store.rollback(id);
-                return Err(error);
-            }
+        {
+            let _ = store.rollback(id);
+            return Err(error);
         }
         Ok::<(), String>(())
     })
@@ -2110,7 +2167,11 @@ pub fn run() {
             export_world,
             running_profiles,
             clone_profile,
+            profile_settings_info,
+            import_profile_settings,
+            restore_profile_settings,
             delete_profile,
+            forget_broken_profile,
             clear_profile,
             profile_storage,
             clean_profile_snapshots,

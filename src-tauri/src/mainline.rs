@@ -18,12 +18,6 @@ fn enabled(app: &tauri::AppHandle) -> Result<bool, String> {
         Err(_) => Err("Не удалось прочитать настройку сборок main".into()),
     }
 }
-pub(super) fn require_enabled(app: &tauri::AppHandle) -> Result<(), String> {
-    if !enabled(app)? {
-        return Err("Включите экспериментальные сборки в настройках".into());
-    }
-    Ok(())
-}
 #[tauri::command]
 pub fn mainline_status(app: tauri::AppHandle) -> Result<Status, String> {
     Ok(Status {
@@ -42,9 +36,8 @@ pub fn set_mainline_enabled(app: tauri::AppHandle, value: bool) -> Result<Status
     mainline_status(app)
 }
 #[tauri::command]
-pub async fn list_mainline_builds(app: tauri::AppHandle) -> Result<MainCatalog, String> {
-    require_enabled(&app)?;
-    tauri::async_runtime::spawn_blocking(vlauncher_core::mainline::list)
+pub async fn list_mainline_builds() -> Result<MainCatalog, String> {
+    tauri::async_runtime::spawn_blocking(|| vlauncher_core::mainline::list(super::registry_url()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -54,7 +47,6 @@ pub async fn install_mainline_build(
     control: tauri::State<'_, super::TransferControl>,
     build: MainBuild,
 ) -> Result<InstalledRuntime, String> {
-    require_enabled(&app)?;
     let store = super::profile_store(&app)?;
     control
         .cancelled
@@ -62,33 +54,39 @@ pub async fn install_mainline_build(
     let cancelled = control.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
-        vlauncher_core::mainline::install(&store, &build, |completed, total| {
-            let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
-            let _ = app.emit(
-                "transfer-progress",
-                super::TransferEvent {
-                    kind: "download",
-                    completed,
-                    total,
-                    bytes_per_second: speed,
-                    eta_seconds: if speed > 0 {
-                        total.saturating_sub(completed) / speed
-                    } else {
-                        0
+        vlauncher_core::mainline::install(
+            &store,
+            &build,
+            super::registry_url(),
+            |completed, total| {
+                let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+                let _ = app.emit(
+                    "transfer-progress",
+                    super::TransferEvent {
+                        kind: "download",
+                        completed,
+                        total,
+                        bytes_per_second: speed,
+                        eta_seconds: total
+                            .saturating_sub(completed)
+                            .checked_div(speed)
+                            .unwrap_or(0),
                     },
-                },
-            );
-            !cancelled.load(std::sync::atomic::Ordering::SeqCst)
-        })
+                );
+                !cancelled.load(std::sync::atomic::Ordering::SeqCst)
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn resolve_mainline_version(build: MainBuild) -> Result<MainBuild, String> {
-    tauri::async_runtime::spawn_blocking(move || vlauncher_core::mainline::resolve_version(build))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        vlauncher_core::mainline::resolve_version(build, super::registry_url())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -98,9 +96,6 @@ pub fn select_mainline_build(
     profile_id: String,
     build: Option<MainBuild>,
 ) -> Result<(), String> {
-    if build.is_some() {
-        require_enabled(&app)?;
-    }
     let children = processes
         .children
         .lock()

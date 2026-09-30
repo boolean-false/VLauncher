@@ -2,12 +2,26 @@
 use vlauncher_core::{ProfileStore, mainline};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let catalog = mainline::list()?;
+    let registry_url = std::env::var("VLAUNCHER_REGISTRY_URL")?;
+    if std::env::args().any(|argument| argument == "--stable") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&vlauncher_core::official::list_official_releases(
+                &registry_url
+            )?)?
+        );
+        return Ok(());
+    }
+    let catalog = mainline::list(&registry_url)?;
+    if std::env::args().any(|argument| argument == "--list-only") {
+        println!("{}", serde_json::to_string_pretty(&catalog)?);
+        return Ok(());
+    }
     let build = catalog.builds.first().ok_or("No available main build")?;
     println!("Main HEAD: {}; selected: {}", catalog.head_sha, build.sha);
     let temporary = tempfile::tempdir()?;
     let store = ProfileStore::open(temporary.path().join("library"))?;
-    let runtime = mainline::install(&store, build, |_, _| true)?;
+    let runtime = mainline::install(&store, build, &registry_url, |_, _| true)?;
     assert_eq!(runtime.main_build.as_ref(), Some(build));
     let profile = store.create_initialized("Integration main", "0.31.4")?;
     store.select_main_build(profile.id, Some(build.clone()))?;
