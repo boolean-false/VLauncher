@@ -18,7 +18,6 @@ export function ProfileContentPicker({
   close,
   refreshProfiles,
   openProfile,
-  openExperimentalSettings,
 }: {
   profile: LocalProfile;
   active: boolean;
@@ -34,7 +33,6 @@ export function ProfileContentPicker({
   close: () => void;
   refreshProfiles: () => Promise<void>;
   openProfile: (id: string) => void;
-  openExperimentalSettings: () => void;
 }) {
   if (isProjectProfile(profile)) {
     return (
@@ -64,7 +62,6 @@ export function ProfileContentPicker({
       refreshProfiles={refreshProfiles}
       profileContext={{ close }}
       openProfile={openProfile}
-      openExperimentalSettings={openExperimentalSettings}
     />
   );
 }

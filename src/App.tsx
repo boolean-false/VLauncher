@@ -1,3 +1,4 @@
+import { ProfileSettingsTransfer } from "./components/ProfileSettingsTransfer";
 import { AnalyticsConsent } from "./components/AnalyticsConsent";
 import { VoxelWorldIntroduction } from "./components/VoxelWorldIntroduction";
 import { recordActivity, recordContent } from "./telemetry";
@@ -25,6 +26,7 @@ import {
 } from "./api";
 import {
   engineVersion,
+  compareSemVer,
   exactVoxelCoreVersion,
   mainRuntimeId,
   profileRuntimeId,
@@ -70,7 +72,17 @@ import {
 import { ProfileContentPicker } from "./components/ProfileContentPicker";
 import { Creator } from "./components/Creator";
 import { Settings } from "./components/Settings";
-import { useMainlineStatus } from "./components/Mainline";
+import {
+  ExperimentalBuildPicker,
+  ExperimentalDestination,
+  RuntimeProgress,
+} from "./components/ExperimentalBuildPicker";
+import {
+  loadMainBuilds,
+  prepareMainBuild,
+  resolveWithCompatibleRuntime,
+} from "./runtimePlanning";
+import { selectVerifiedBuild } from "./runtimeSelection";
 import {
   appUpdateChannelKey,
   loadAppUpdateChannel,
@@ -94,6 +106,7 @@ type PendingPlan = {
   plan: SignedInstallPlan;
   title: string;
   newProfileName?: string;
+  copyCreated?: boolean;
   allowVersionSkips?: boolean;
   coverUrl?: string;
 };
@@ -190,6 +203,18 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const taskLock = useRef(false);
   const [newProfile, setNewProfile] = useState(false);
+  const [profileActionError, setProfileActionError] = useState<{
+    profileId: string;
+    message: string;
+  } | null>(null);
+  const [initialName, setInitialName] = useState("VoxelCore");
+  const [initialMain, setInitialMain] = useState<MainBuild | null>(null);
+  const [runtimeChange, setRuntimeChange] = useState<{
+    profile: LocalProfile;
+    version: string;
+    build?: MainBuild;
+    copyCreated?: boolean;
+  } | null>(null);
   const [existingGame, setExistingGame] = useState<{
     path: string;
     analysis: ExistingGameAnalysis;
@@ -246,13 +271,16 @@ export default function App() {
     );
   }, [tasks]);
 
+  const refreshSequence = useRef(0);
   const refresh = useCallback(async () => {
+    const sequence = ++refreshSequence.current;
     invalidateLocalResources();
     const [nextProfiles, nextRuntimes, nextRunning] = await Promise.all([
       invoke<LocalProfile[]>("list_profiles"),
       invoke<Runtime[]>("list_runtimes"),
       invoke<string[]>("running_profiles"),
     ]);
+    if (sequence !== refreshSequence.current) return;
     setProfiles(nextProfiles);
     setRuntimes(nextRuntimes);
     setRunning(new Set(nextRunning));
@@ -351,6 +379,7 @@ export default function App() {
   const run: RunTask = useCallback(async (title, work) => {
     if (taskLock.current) return false;
     taskLock.current = true;
+    setTransferActive(false);
     setBusy(true);
     const id = Date.now();
     setTasks((items) =>
@@ -393,12 +422,39 @@ export default function App() {
       return false;
     } finally {
       taskLock.current = false;
+      setTransferActive(false);
       setBusy(false);
     }
   }, []);
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (screen !== "library" || tab !== "content" || busy) return;
+    let pending = false;
+    let active = true;
+    const updateContent = () => {
+      if (document.visibilityState !== "visible" || pending || taskLock.current)
+        return;
+      pending = true;
+      void refresh()
+        .catch((error) => {
+          if (active) setLoadError(String(error));
+        })
+        .finally(() => {
+          pending = false;
+        });
+    };
+    window.addEventListener("focus", updateContent);
+    document.addEventListener("visibilitychange", updateContent);
+    const timer = window.setInterval(updateContent, 15_000);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", updateContent);
+      document.removeEventListener("visibilitychange", updateContent);
+      window.clearInterval(timer);
+    };
+  }, [screen, tab, busy, refresh]);
   useEffect(() => {
     if (profile) localStorage.setItem("vlauncher.profile", profile.id);
   }, [profile]);
@@ -555,6 +611,23 @@ export default function App() {
     });
   };
   const launch = () => launchProfile(profile);
+  const checkProfile = (
+    target: LocalProfile,
+    title: string,
+    work: Parameters<RunTask>[1],
+  ) =>
+    run(title, async (stage) => {
+      setProfileActionError(null);
+      try {
+        await work(stage);
+      } catch (error) {
+        setProfileActionError({
+          profileId: target.id,
+          message: friendlyError(error),
+        });
+        throw error;
+      }
+    });
   const changeRoots = (
     roots: string[],
     title: string,
@@ -574,7 +647,7 @@ export default function App() {
         },
       });
     } else
-      void run("Проверка зависимостей", async () => {
+      void checkProfile(profile, "Проверка зависимостей", async () => {
         let requirements = preserveRequirements
           ? Object.fromEntries(
               roots
@@ -613,7 +686,46 @@ export default function App() {
             [modpack.id]: `=${target.version}`,
           };
         }
-        const plan = await resolveProject(
+        if (!preserveRequirements && !modpack) {
+          // Pin newer main-gated roots so the resolver cannot silently retain an older mod.
+          for (let offset = 0; offset < roots.length; offset += 4) {
+            const updates = await Promise.all(
+              roots.slice(offset, offset + 4).map(async (root) => {
+                const releases = await loadReleases(
+                  root,
+                  engineVersion(profile),
+                );
+                const latest = releases
+                  .filter(
+                    (release) =>
+                      !release.deprecated &&
+                      release.download_url &&
+                      channels.includes(release.channel),
+                  )
+                  .sort((a, b) => compareSemVer(b.version, a.version))[0];
+                const direct = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(root);
+                const current = profile.packages.find(
+                  (pkg) => pkg.id === root,
+                )?.version;
+                if (
+                  latest &&
+                  (direct ||
+                    ((profile.main_build ||
+                      latest.effective_voxelcore_main ||
+                      latest.attestation?.assertion?.manifest
+                        ?.voxelcore_main) &&
+                      (!current || compareSemVer(latest.version, current) > 0)))
+                ) {
+                  return [root, `=${latest.version}`] as const;
+                }
+                return null;
+              }),
+            );
+            for (const update of updates)
+              if (update) requirements[update[0]] = update[1];
+          }
+        }
+        const { plan, mainBuild } = await resolveWithCompatibleRuntime(
           roots,
           targetEngine,
           requirements,
@@ -624,57 +736,95 @@ export default function App() {
             ? profileRuntimeContext(profile)
             : { kind: "stable", version: targetEngine },
         );
-        setPendingPlan({ profile, plan, title, allowVersionSkips });
+        setPendingPlan({ profile, plan, mainBuild, title, allowVersionSkips });
       });
   };
   const changeRuntime = (target: LocalProfile, selection: string) => {
-    const selectedMain = runtimes.find(
-      (runtime) => runtime.version === selection,
-    )?.main_build;
     if (selection === profileRuntimeId(target)) return;
-    const prepare = async () => {
-      const mainBuild = selectedMain
-        ? await invoke<MainBuild>("resolve_mainline_version", {
-            build: selectedMain,
-          })
-        : null;
-      const version = mainBuild?.engine_version ?? selection;
-      if (!version) throw new Error("Не удалось определить версию VoxelCore");
-      if (target.roots.length) {
-        const plan = await resolveProject(
+    void checkProfile(target, "Проверка совместимости VoxelCore", async () => {
+      if (selection === "stable-latest") {
+        const latest = availableRuntimes
+          .filter((runtime) => runtime.channel === "stable")
+          .sort((a, b) => compareSemVer(b.version, a.version))[0];
+        if (!latest)
+          throw new Error(
+            "Не удалось найти стабильный выпуск для вашей системы. Обновите список версий и повторите проверку.",
+          );
+        selection = latest.version;
+        if (selection === profileRuntimeId(target)) {
+          setConfirmation({
+            title: "Обновление VoxelCore",
+            text: "Уже используется последняя доступная стабильная версия.",
+            label: "Понятно",
+            action: async () => {},
+          });
+          return;
+        }
+      }
+      const verify = (build: MainBuild) =>
+        target.roots.length
+          ? resolveProject(
+              target.roots,
+              build.engine_version!,
+              target.root_requirements ?? {},
+              ["stable", "beta", "alpha"],
+              {},
+              undefined,
+              mainRuntimeContext(build),
+            )
+          : Promise.resolve(null);
+      let mainBuild =
+        runtimes.find((runtime) => runtime.version === selection)?.main_build ??
+        undefined;
+      let plan: SignedInstallPlan | null = null;
+      if (selection === "experimental-latest") {
+        const { builds } = await loadMainBuilds();
+        const candidates = builds.filter(
+          (build) =>
+            !target.main_build ||
+            build.created_at > target.main_build.created_at,
+        );
+        if (!candidates.length && target.main_build) {
+          setConfirmation({
+            title: "Обновление VoxelCore",
+            text: "Более новых готовых DEV-сборок для вашей системы пока нет.",
+            label: "Понятно",
+            action: async () => {},
+          });
+          return;
+        }
+        const result = await selectVerifiedBuild(candidates, verify);
+        mainBuild = result.build;
+        plan = result.value;
+      } else if (mainBuild) {
+        mainBuild = await invoke<MainBuild>("resolve_mainline_version", {
+          build: mainBuild,
+        });
+        plan = await verify(mainBuild);
+      } else if (target.roots.length) {
+        // An explicit stable selection must never silently switch back to experimental.
+        plan = await resolveProject(
           target.roots,
-          version,
+          selection,
           target.root_requirements ?? {},
           ["stable", "beta", "alpha"],
           {},
           undefined,
-          mainBuild
-            ? mainRuntimeContext(mainBuild)
-            : { kind: "stable", version },
+          { kind: "stable", version: selection },
         );
+      }
+      const version = mainBuild?.engine_version ?? selection;
+      if (plan) {
         setPendingPlan({
           profile: target,
           plan,
           mainBuild,
-          title: mainBuild
-            ? `Перейти на ${mainBuildLabel(mainBuild)}`
-            : `Перейти на VoxelCore ${version}`,
+          title: "Обновление VoxelCore",
         });
-      } else if (mainBuild) {
-        await invoke("select_mainline_build", {
-          profileId: target.id,
-          build: mainBuild,
-        });
-        await refresh();
       } else {
-        await invoke("change_vanilla_runtime", {
-          profileId: target.id,
-          version,
-        });
-        await refresh();
+        setRuntimeChange({ profile: target, version, build: mainBuild });
       }
-    };
-    void run("Проверка совместимости VoxelCore", prepare);
+    });
   };
   const importProfile = () =>
     void run("Создание профиля из файла", async (stage) => {
@@ -691,11 +841,6 @@ export default function App() {
         locked: { id: string; version: string; artifact_sha256: string }[];
       }>("read_profile_definition", { path });
       if (definition.main_build) {
-        const status = await invoke<{ enabled: boolean }>("mainline_status");
-        if (!status.enabled)
-          throw new Error(
-            "Профиль использует main. Сначала включите экспериментальные сборки в настройках.",
-          );
         definition.main_build = await invoke<MainBuild>(
           "resolve_mainline_version",
           { build: definition.main_build },
@@ -731,7 +876,6 @@ export default function App() {
         setPendingPlan({
           profile: {
             id: "pending-import",
-            main_build: definition.main_build,
             name: definition.name,
             active_revision: null,
             voxelcore_version: definition.voxelcore_version,
@@ -744,6 +888,10 @@ export default function App() {
           mainBuild: definition.main_build,
           newProfileName: definition.name,
         });
+      } else if (definition.main_build) {
+        setInitialMain(definition.main_build);
+        setInitialName(definition.name);
+        setNewProfile(true);
       } else {
         const created = await invoke<LocalProfile>(
           "create_initialized_profile",
@@ -874,10 +1022,12 @@ export default function App() {
                 <span>
                   {p.name}
                   <small>
-                    {voxelCoreVersionLabel(
-                      engineVersion(p),
-                      latestVoxelCoreVersion,
-                    ) || "Версия не выбрана"}
+                    {p.main_build
+                      ? `${p.main_build.engine_version} · DEV · ${new Date(p.main_build.created_at).toLocaleDateString("ru")}`
+                      : voxelCoreVersionLabel(
+                          engineVersion(p),
+                          latestVoxelCoreVersion,
+                        ) || "Версия не выбрана"}
                     {running.has(p.id) ? " · запущена" : ""}
                   </small>
                 </span>
@@ -1047,11 +1197,16 @@ export default function App() {
                           </span>
                           {profile.main_build && (
                             <p>
-                              Экспериментальная сборка. Совместимость модов не
-                              подтверждена.
+                              DEV-сборка. Миры могут быть несовместимы с другими
+                              версиями движка.
                             </p>
                           )}
                           <h2>{profile.name}</h2>
+                          {profileActionError?.profileId === profile.id && (
+                            <ErrorNotice>
+                              {profileActionError.message}
+                            </ErrorNotice>
+                          )}
                           {profile.external_game_path && (
                             <span
                               className="attached-profile-path selectable"
@@ -1179,6 +1334,29 @@ export default function App() {
                                 Изменить путь…
                               </button>
                             )}
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              setConfirmation({
+                                title: `Забыть «${profile.name}»?`,
+                                text: "Профиль исчезнет из библиотеки VLauncher. Файлы, которые ещё остались на диске, сохранятся.",
+                                label: "Забыть профиль",
+                                action: async () => {
+                                  await invoke("forget_broken_profile", {
+                                    profileId: profile.id,
+                                  });
+                                  setSelected(
+                                    profiles.find(
+                                      (item) => item.id !== profile.id,
+                                    )?.id ?? "",
+                                  );
+                                  await refresh();
+                                },
+                              })
+                            }
+                          >
+                            Забыть профиль…
+                          </button>
                           <details>
                             <summary>Технические подробности</summary>
                             {profile.problem}
@@ -1312,6 +1490,16 @@ export default function App() {
                                 </p>
                               </div>
                               <div className="actions">
+                                <button
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void refresh().catch((error) =>
+                                      setLoadError(String(error)),
+                                    )
+                                  }
+                                >
+                                  Обновить список
+                                </button>
                                 {!!profile.roots.length && (
                                   <button
                                     disabled={busy || running.has(profile.id)}
@@ -1570,6 +1758,8 @@ export default function App() {
                           <ProfileSettings
                             key={profile.id}
                             profile={profile}
+                            profiles={profiles}
+                            running={running}
                             runtimes={runtimes}
                             busy={busy || running.has(profile.id)}
                             run={run}
@@ -1623,13 +1813,6 @@ export default function App() {
                       setSelected(id);
                       setScreen("library");
                     }}
-                    openExperimentalSettings={() => {
-                      sessionStorage.setItem(
-                        "vlauncher.settings-tab",
-                        "experimental",
-                      );
-                      setScreen("settings");
-                    }}
                     close={() => {
                       setSelected(pickerProfileId);
                       setScreen("library");
@@ -1653,13 +1836,6 @@ export default function App() {
                   openProfile={(id) => {
                     setSelected(id);
                     setScreen("library");
-                  }}
-                  openExperimentalSettings={() => {
-                    sessionStorage.setItem(
-                      "vlauncher.settings-tab",
-                      "experimental",
-                    );
-                    setScreen("settings");
                   }}
                   refreshProfiles={refresh}
                 />
@@ -1717,17 +1893,11 @@ export default function App() {
                     await refresh();
                   });
                 }}
-                installMainline={(build) =>
-                  run(`Установка ${mainBuildLabel(build)}`, async () => {
-                    setOfficialTransfer(true);
-                    try {
-                      await invoke("install_mainline_build", { build });
-                      await refresh();
-                    } finally {
-                      setOfficialTransfer(false);
-                    }
-                  })
-                }
+                installMainline={async (build) => {
+                  setInitialMain(build);
+                  setNewProfile(true);
+                  return true;
+                }}
                 remove={(version) =>
                   setConfirmation({
                     title: `Удалить VoxelCore ${runtimes.find((r) => r.version === version)?.main_build ? mainBuildLabel(runtimes.find((r) => r.version === version)!.main_build!) : version}?`,
@@ -1778,14 +1948,35 @@ export default function App() {
         </div>
         {newProfile && (
           <CreateProfile
+            initialMain={initialMain}
+            initialName={initialName}
+            task={currentTask}
+            cancelTransfer={
+              officialTransfer
+                ? () => void invoke("cancel_transfer")
+                : undefined
+            }
             runtimes={runtimes}
             availableRuntimes={availableRuntimes}
             runtimeCatalogError={runtimeCatalogError}
             reloadRuntimes={reloadRuntimes}
             busy={busy}
-            close={() => setNewProfile(false)}
+            close={() => {
+              setNewProfile(false);
+              setInitialMain(null);
+              setInitialName("VoxelCore");
+            }}
             submit={async (name, version, mainBuild) => {
-              const ok = await run("Создание профиля", async () => {
+              const ok = await run("Создание профиля", async (stage) => {
+                if (mainBuild) {
+                  stage("Скачиваем DEV-сборку VoxelCore…");
+                  setOfficialTransfer(true);
+                  try {
+                    await prepareMainBuild(mainBuild, runtimes);
+                  } finally {
+                    setOfficialTransfer(false);
+                  }
+                }
                 const p = await invoke<LocalProfile>(
                   "create_initialized_profile",
                   {
@@ -1799,7 +1990,11 @@ export default function App() {
                 setTab("content");
                 setScreen("library");
               });
-              if (ok) setNewProfile(false);
+              if (ok) {
+                setNewProfile(false);
+                setInitialMain(null);
+                setInitialName("VoxelCore");
+              }
               return ok;
             }}
           />
@@ -1849,7 +2044,16 @@ export default function App() {
             busy={busy}
             close={() => setLocalProject(null)}
             submit={async (name, version, mainBuild) => {
-              const ok = await run("Подключение проекта", async () => {
+              const ok = await run("Подключение проекта", async (stage) => {
+                if (mainBuild) {
+                  stage("Скачиваем DEV-сборку VoxelCore…");
+                  setOfficialTransfer(true);
+                  try {
+                    await prepareMainBuild(mainBuild, runtimes);
+                  } finally {
+                    setOfficialTransfer(false);
+                  }
+                }
                 const created = await invoke<LocalProfile>(
                   "create_local_project_profile",
                   {
@@ -1894,6 +2098,11 @@ export default function App() {
         {pendingPlan && (
           <InstallPreview
             {...pendingPlan}
+            cancelTransfer={
+              busy && (officialTransfer || transferActive)
+                ? () => void invoke("cancel_transfer")
+                : undefined
+            }
             busy={busy}
             task={currentTask?.status === "working" ? currentTask : undefined}
             close={() => setPendingPlan(null)}
@@ -1917,7 +2126,7 @@ export default function App() {
                     })
                 : undefined
             }
-            apply={async () => {
+            apply={async (copy) => {
               const ok = await run(
                 `Установка · ${pendingPlan.profile.name}`,
                 async (stage) => {
@@ -1927,28 +2136,38 @@ export default function App() {
                   )
                     throw new Error("Сначала завершите игру");
                   stage("Загрузка, проверка и установка пакетов…");
-                  if (
-                    pendingPlan.mainBuild &&
-                    !runtimes.some(
-                      (runtime) =>
-                        runtime.main_build?.artifact_id ===
-                        pendingPlan.mainBuild!.artifact_id,
-                    )
-                  ) {
+                  if (pendingPlan.mainBuild) {
                     stage(
                       "Загрузка и проверка подходящей DEV-сборки VoxelCore…",
                     );
                     setOfficialTransfer(true);
                     try {
-                      await invoke("install_mainline_build", {
-                        build: pendingPlan.mainBuild,
-                      });
+                      await prepareMainBuild(pendingPlan.mainBuild, runtimes);
                     } finally {
                       setOfficialTransfer(false);
                     }
                     stage("Установка контента…");
                   }
                   let installedProfileId = pendingPlan.profile.id;
+                  if (
+                    copy &&
+                    !pendingPlan.copyCreated &&
+                    !pendingPlan.newProfileName
+                  ) {
+                    stage("Создаём копию профиля с мирами и настройками…");
+                    const cloned = await invoke<LocalProfile>("clone_profile", {
+                      profileId: pendingPlan.profile.id,
+                      name: `${pendingPlan.profile.name.slice(0, 60)} — DEV`,
+                    });
+                    installedProfileId = cloned.id;
+                    setPendingPlan({
+                      ...pendingPlan,
+                      profile: cloned,
+                      copyCreated: true,
+                    });
+                    await refresh();
+                    setSelected(cloned.id);
+                  }
                   if (pendingPlan.newProfileName) {
                     const created = await invoke<LocalProfile>(
                       "create_profile_from_plan",
@@ -1963,7 +2182,7 @@ export default function App() {
                     setScreen("library");
                   } else {
                     await invoke("apply_remote_install_plan", {
-                      profileId: pendingPlan.profile.id,
+                      profileId: installedProfileId,
                       plan: pendingPlan.plan,
                       mainBuild: pendingPlan.mainBuild ?? null,
                     });
@@ -1998,9 +2217,70 @@ export default function App() {
                     }
                   }
                   await refresh();
+                  setSelected(installedProfileId);
+                  setTab("content");
+                  setScreen("library");
                 },
               );
               if (ok) setPendingPlan(null);
+              return ok;
+            }}
+          />
+        )}
+        {runtimeChange && (
+          <RuntimeChangeDialog
+            change={runtimeChange}
+            task={currentTask}
+            cancelTransfer={
+              officialTransfer
+                ? () => void invoke("cancel_transfer")
+                : undefined
+            }
+            busy={busy}
+            close={() => setRuntimeChange(null)}
+            apply={async (copy) => {
+              const ok = await run("Обновление VoxelCore", async (stage) => {
+                if (running.has(runtimeChange.profile.id))
+                  throw new Error("Сначала завершите игру");
+                if (runtimeChange.build) {
+                  stage("Скачиваем и проверяем VoxelCore…");
+                  setOfficialTransfer(true);
+                  try {
+                    await prepareMainBuild(runtimeChange.build, runtimes);
+                  } finally {
+                    setOfficialTransfer(false);
+                  }
+                }
+                let target = runtimeChange.profile;
+                if (copy && !runtimeChange.copyCreated) {
+                  stage("Копируем профиль с мирами и настройками…");
+                  target = await invoke<LocalProfile>("clone_profile", {
+                    profileId: target.id,
+                    name: `${target.name.slice(0, 60)} — DEV`,
+                  });
+                  setRuntimeChange({
+                    ...runtimeChange,
+                    profile: target,
+                    copyCreated: true,
+                  });
+                  await refresh();
+                  setSelected(target.id);
+                }
+                if (runtimeChange.build)
+                  await invoke("select_mainline_build", {
+                    profileId: target.id,
+                    build: runtimeChange.build,
+                  });
+                else
+                  await invoke("change_vanilla_runtime", {
+                    profileId: target.id,
+                    version: runtimeChange.version,
+                  });
+                await refresh();
+                setSelected(target.id);
+                setScreen("library");
+              });
+              if (ok) setRuntimeChange(null);
               return ok;
             }}
           />
@@ -2255,7 +2535,11 @@ function ConnectLocalProject({
   const selectedMain = mainBuilds.find(
     (build) => mainRuntimeId(build) === selection,
   );
-  const version = selectedMain?.engine_version ?? selection;
+  const [availableBuild, setAvailableBuild] = useState<MainBuild | null>(null);
+  const experimental = selection === "experimental";
+  const chosenBuild = experimental ? availableBuild : selectedMain;
+  const version =
+    chosenBuild?.engine_version ?? (experimental ? "" : selection);
   const [acceptedRisk, setAcceptedRisk] = useState(false);
   const [failed, setFailed] = useState(false);
   return (
@@ -2263,9 +2547,9 @@ function ConnectLocalProject({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (name.trim() && version && (!selectedMain || acceptedRisk))
-            void submit(name.trim(), version, selectedMain).then((ok) =>
-              setFailed(!ok),
+          if (!busy && name.trim() && version && (!chosenBuild || acceptedRisk))
+            void submit(name.trim(), version, chosenBuild ?? undefined).then(
+              (ok) => setFailed(!ok),
             );
         }}
       >
@@ -2296,6 +2580,9 @@ function ConnectLocalProject({
               setAcceptedRisk(false);
             }}
           >
+            <option value="experimental">
+              DEV-сборка — последняя доступная
+            </option>
             {mainBuilds.map((build) => (
               <option key={mainRuntimeId(build)} value={mainRuntimeId(build)}>
                 {mainBuildLabel(build)} · установлена
@@ -2311,10 +2598,18 @@ function ConnectLocalProject({
             ))}
           </Select>
         </label>
-        {selectedMain && (
+        {experimental && (
+          <ExperimentalBuildPicker
+            runtimes={runtimes}
+            value={availableBuild}
+            onChange={setAvailableBuild}
+            busy={busy}
+          />
+        )}
+        {chosenBuild && (
           <div className="notice main-commit-requirement">
-            <strong>Экспериментальная сборка VoxelCore</strong>
-            <span>{mainBuildLabel(selectedMain)}</span>
+            <strong>DEV-сборка VoxelCore</strong>
+            <span>{mainBuildLabel(chosenBuild)}</span>
             <label className="checkbox-row">
               <input
                 type="checkbox"
@@ -2350,7 +2645,7 @@ function ConnectLocalProject({
               busy ||
               !name.trim() ||
               !version ||
-              (!!selectedMain && !acceptedRisk)
+              (!!chosenBuild && !acceptedRisk)
             }
           >
             {busy ? "Подключаем…" : "Подключить и запускать"}
@@ -2369,6 +2664,10 @@ function CreateProfile({
   busy,
   close,
   submit,
+  initialMain,
+  initialName,
+  task,
+  cancelTransfer,
 }: {
   runtimes: Runtime[];
   availableRuntimes: RuntimeRelease[];
@@ -2376,6 +2675,10 @@ function CreateProfile({
   reloadRuntimes: () => void;
   busy: boolean;
   close: () => void;
+  initialMain: MainBuild | null;
+  initialName: string;
+  task?: Task;
+  cancelTransfer?: () => void;
   submit: (
     name: string,
     version: string,
@@ -2383,47 +2686,11 @@ function CreateProfile({
   ) => Promise<boolean>;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
-  const [name, setName] = useState("VoxelCore");
-  const { status: mainlineStatus, error: mainlineError } = useMainlineStatus();
-  const [selectedMainId, setSelectedMainId] = useState("");
-  const [acceptedRisk, setAcceptedRisk] = useState(false);
-  const mainBuilds = mainlineStatus.enabled
-    ? runtimes.flatMap((runtime) =>
-        runtime.main_build ? [runtime.main_build] : [],
-      )
-    : [];
-  const selectedMain = mainBuilds.find(
-    (build) => mainRuntimeId(build) === selectedMainId,
-  );
-  const [resolvedMain, setResolvedMain] = useState<MainBuild | null>(null);
-  const [versionError, setVersionError] = useState("");
-  const [versionRetry, setVersionRetry] = useState(0);
-  const selectedVersion = selectedMain?.engine_version;
-  useEffect(() => {
-    let active = true;
-    setResolvedMain(null);
-    setVersionError("");
-    if (selectedMain) {
-      void invoke<MainBuild>("resolve_mainline_version", {
-        build: selectedMain,
-      })
-        .then((build) => {
-          if (active) setResolvedMain(build);
-        })
-        .catch((error) => {
-          if (active) setVersionError(String(error));
-        });
-    }
-    return () => {
-      active = false;
-    };
-  }, [selectedMainId, selectedVersion, mainlineStatus.enabled, versionRetry]);
-  const readyMain =
-    resolvedMain &&
-    selectedMain &&
-    mainRuntimeId(resolvedMain) === selectedMainId
-      ? resolvedMain
-      : null;
+  const [name, setName] = useState(initialName);
+  const [experimental, setExperimental] = useState(!!initialMain);
+  const [build, setBuild] = useState<MainBuild | null>(initialMain);
+  const [accepted, setAccepted] = useState(false);
+  const [failed, setFailed] = useState(false);
   const versions = [
     ...availableRuntimes,
     ...runtimes
@@ -2432,54 +2699,29 @@ function CreateProfile({
           !runtime.main_build &&
           !availableRuntimes.some((item) => item.version === runtime.version),
       )
-      .map((runtime) => ({
-        version: runtime.version,
-        channel: "local" as const,
-        artifact_size: 0,
-        published_at: "",
-      })),
+      .map((runtime) => ({ version: runtime.version, channel: "local" })),
   ];
-  const [version, setVersion] = useState(
-    versions.find((item) => item.channel === "stable")?.version ??
-      versions[0]?.version ??
-      "",
-  );
-  const [versionChosen, setVersionChosen] = useState(false);
-  const effectiveVersion = selectedMainId
-    ? (readyMain?.engine_version ?? "")
-    : version;
-  useEffect(() => {
-    if (!versionChosen && availableRuntimes.length) {
-      setVersion(
-        (
-          availableRuntimes.find((item) => item.channel === "stable") ??
-          availableRuntimes[0]
-        ).version,
-      );
-    }
-  }, [availableRuntimes, versionChosen]);
-  const [failed, setFailed] = useState(false);
+  const [chosen, setChosen] = useState("");
+  const version =
+    chosen ||
+    versions.find((item) => item.channel === "stable")?.version ||
+    versions[0]?.version ||
+    "";
+  const ready = experimental ? !!build?.engine_version && accepted : !!version;
   return (
     <Modal title="Новый профиль" close={close} busy={busy}>
       <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (
-            !effectiveVersion ||
-            (selectedMainId && (!readyMain || !acceptedRisk))
-          )
-            return;
-          void submit(
-            name.trim(),
-            effectiveVersion,
-            readyMain ?? undefined,
-          ).then((ok) => setFailed(!ok));
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy && name.trim() && ready)
+            void submit(
+              name.trim(),
+              experimental ? build!.engine_version! : version,
+              experimental ? build! : undefined,
+            ).then((ok) => setFailed(!ok));
         }}
       >
-        <p>
-          Свои миры, настройки и набор контент-паков. Другие профили хранятся
-          отдельно.
-        </p>
+        <p>Отдельные миры, настройки и набор модов.</p>
         <label>
           Название
           <input
@@ -2488,115 +2730,197 @@ function CreateProfile({
             required
             maxLength={80}
             value={name}
-            onChange={(e) => setName(e.target.value)}
-            onFocus={(e) => e.target.select()}
+            disabled={busy}
+            onChange={(event) => setName(event.target.value)}
           />
         </label>
         <label>
           Версия VoxelCore
           <Select
             aria-label="Версия VoxelCore"
-            required
-            value={selectedMainId || version}
-            onChange={(e) => {
-              const main = mainBuilds.find(
-                (build) => mainRuntimeId(build) === e.target.value,
-              );
-              setSelectedMainId(main ? e.target.value : "");
-              setAcceptedRisk(false);
-              if (!main) {
-                setVersion(e.target.value);
-                setVersionChosen(true);
-              }
+            disabled={busy}
+            value={experimental ? "experimental" : "stable"}
+            onChange={(event) => {
+              setExperimental(event.target.value === "experimental");
+              setAccepted(false);
             }}
-            disabled={!versions.length && !mainBuilds.length}
           >
-            {mainBuilds.map((build) => (
-              <option key={mainRuntimeId(build)} value={mainRuntimeId(build)}>
-                {mainBuildLabel(build)} · экспериментальная · установлена
-              </option>
-            ))}
-            {versions.map((item) => (
-              <option key={item.version} value={item.version}>
-                {versionLabel(item.version)} ·{" "}
-                {item.channel === "stable"
-                  ? "стабильная"
-                  : item.channel === "local"
-                    ? "локальная сборка"
-                    : item.channel}
-                {runtimes.some((runtime) => runtime.version === item.version)
-                  ? " · установлена"
-                  : ""}
-              </option>
-            ))}
+            <option value="stable">Стабильная</option>
+            <option value="experimental">DEV-сборка</option>
           </Select>
-          <small>
-            {selectedMain
-              ? "Будет запускаться эта сборка main, а не стабильный релиз"
-              : !versions.length
-                ? "Нет доступных версий VoxelCore для этой системы"
-                : runtimes.some((r) => r.version === version)
-                  ? "Уже установлена на компьютере"
-                  : "Будет загружена и проверена при первом запуске"}
-          </small>
         </label>
-        {selectedMain && (
+        {experimental ? (
           <>
+            <ExperimentalBuildPicker
+              runtimes={runtimes}
+              value={build}
+              onChange={setBuild}
+              busy={busy}
+            />
             <p>
-              {readyMain?.engine_version
-                ? `Версия движка: ${readyMain.engine_version} · develop · ${readyMain.sha.slice(0, 7)}. Некоторые пакеты могут не работать с этой сборкой.`
-                : "Определяем версию движка по коммиту…"}
+              Движок будет скачан автоматически. DEV-сборка может содержать
+              ошибки и быть несовместима с модами и мирами.
             </p>
-            {versionError && (
-              <ErrorNotice retry={() => setVersionRetry((value) => value + 1)}>
-                {versionError}
-              </ErrorNotice>
-            )}
             <label className="checkbox-row">
               <input
                 type="checkbox"
-                checked={acceptedRisk}
-                onChange={(e) => setAcceptedRisk(e.target.checked)}
+                disabled={busy}
+                checked={accepted}
+                onChange={(event) => setAccepted(event.target.checked)}
               />
-              Понимаю риск ошибок и повреждения миров в экспериментальной сборке
+              Понимаю риск использования DEV-сборки
             </label>
           </>
+        ) : (
+          <>
+            <label>
+              Выпуск
+              <Select
+                disabled={busy}
+                value={version}
+                onChange={(event) => setChosen(event.target.value)}
+              >
+                {!versions.length && (
+                  <option value="">Нет доступных версий</option>
+                )}
+                {versions.map((item) => (
+                  <option key={item.version} value={item.version}>
+                    {versionLabel(item.version)} ·{" "}
+                    {item.channel === "stable"
+                      ? "стабильная"
+                      : item.channel === "local"
+                        ? "локальная"
+                        : item.channel}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <small>
+              При необходимости движок будет скачан при первом запуске.
+            </small>
+            {runtimeCatalogError && (
+              <ErrorNotice retry={reloadRuntimes}>
+                {runtimeCatalogError}
+              </ErrorNotice>
+            )}
+          </>
         )}
-        {mainlineStatus.enabled && !mainBuilds.length && (
-          <p className="muted">
-            Сборку main сначала нужно установить в Настройках →
-            Экспериментальное.
-          </p>
-        )}
-        {mainlineError && <ErrorNotice>{mainlineError}</ErrorNotice>}
-        {runtimeCatalogError && (
-          <ErrorNotice retry={reloadRuntimes}>
-            Не удалось загрузить релизы с GitHub. Можно выбрать уже
-            установленную версию.
-          </ErrorNotice>
-        )}
+        <RuntimeProgress task={task} cancel={cancelTransfer} />
         {failed && (
           <ErrorNotice>
-            Не удалось создать профиль. Подробности в журнале.
+            Не удалось создать профиль. Подробности в журнале; можно повторить
+            попытку.
           </ErrorNotice>
         )}
         <div className="modal-actions">
           <button type="button" disabled={busy} onClick={close}>
             Отмена
           </button>
-          <button
-            className="primary"
-            disabled={
-              busy ||
-              !name.trim() ||
-              !effectiveVersion ||
-              (!!selectedMainId && (!readyMain || !acceptedRisk))
-            }
-          >
+          <button className="primary" disabled={busy || !name.trim() || !ready}>
             {busy ? "Создаём…" : "Создать профиль"}
           </button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+function RuntimeChangeDialog({
+  change,
+  busy,
+  close,
+  apply,
+  task,
+  cancelTransfer,
+}: {
+  change: {
+    profile: LocalProfile;
+    version: string;
+    build?: MainBuild;
+    copyCreated?: boolean;
+  };
+  busy: boolean;
+  close: () => void;
+  apply: (copy: boolean) => Promise<boolean>;
+  task?: Task;
+  cancelTransfer?: () => void;
+}) {
+  const [copy, setCopy] = useState(!!change.build && !change.copyCreated);
+  useEffect(() => {
+    if (change.copyCreated) setCopy(false);
+  }, [change.copyCreated]);
+  const [accepted, setAccepted] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <Modal title="Обновление VoxelCore" close={close} busy={busy}>
+      <p>
+        {change.build
+          ? mainBuildLabel(change.build)
+          : `VoxelCore ${change.version}`}{" "}
+        · {change.profile.name}
+      </p>
+      {(!!change.profile.manual_packages?.length ||
+        !!change.profile.external_packages?.length) && (
+        <p className="notice">
+          Совместимость добавленных вручную модов и модов VoxelWorld с новым
+          движком потребуется проверить самостоятельно.
+        </p>
+      )}
+      {change.build && (
+        <>
+          <p>
+            Движок будет скачан автоматически. DEV-сборка может быть
+            несовместима с модами и мирами.
+          </p>
+          {!change.copyCreated && (
+            <ExperimentalDestination
+              copy={copy}
+              onChange={setCopy}
+              busy={busy}
+            />
+          )}
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              disabled={busy}
+              checked={accepted}
+              onChange={(event) => setAccepted(event.target.checked)}
+            />
+            Понимаю риск использования DEV-сборки
+          </label>
+        </>
+      )}
+      {!change.build && (
+        <p>
+          Миры и настройки сохранятся. Смена версии движка не восстанавливает
+          прежнее состояние миров.
+        </p>
+      )}
+      {change.copyCreated && (
+        <p>Копия уже создана. Установка продолжится в ней.</p>
+      )}
+      <RuntimeProgress task={task} cancel={cancelTransfer} />
+      {failed && (
+        <ErrorNotice>
+          Не удалось обновить VoxelCore. Подробности в журнале.
+        </ErrorNotice>
+      )}
+      <div className="modal-actions">
+        <button disabled={busy} onClick={close}>
+          Отмена
+        </button>
+        <button
+          className="primary"
+          disabled={busy || (!!change.build && !accepted)}
+          onClick={() => void apply(copy).then((ok) => setFailed(!ok))}
+        >
+          {busy
+            ? "Применяем…"
+            : copy
+              ? "Создать копию и обновить"
+              : "Применить"}
+        </button>
+      </div>
     </Modal>
   );
 }
@@ -2639,6 +2963,8 @@ function Confirm({
 }
 function ProfileSettings({
   profile,
+  profiles,
+  running,
   runtimes,
   busy,
   run,
@@ -2649,6 +2975,8 @@ function ProfileSettings({
   changeRuntime,
 }: {
   profile: LocalProfile;
+  profiles: LocalProfile[];
+  running: Set<string>;
   runtimes: Runtime[];
   busy: boolean;
   run: RunTask;
@@ -2670,27 +2998,29 @@ function ProfileSettings({
   const modpack = profileModpack(profile);
   const project = profileProject(profile);
   const managedRelease = modpack || project;
-  const { status: mainlineStatus } = useMainlineStatus();
   const mainBuilds = runtimes.flatMap((runtime) =>
     runtime.main_build ? [runtime.main_build] : [],
   );
   const [runtimeVersion, setRuntimeVersion] = useState(
     profileRuntimeId(profile),
   );
-  const [acceptedMainRisk, setAcceptedMainRisk] = useState(false);
   useEffect(() => {
     setRuntimeVersion(profileRuntimeId(profile));
-    setAcceptedMainRisk(false);
   }, [profile.active_revision]);
-  const selectedMain = mainBuilds.find(
-    (build) => mainRuntimeId(build) === runtimeVersion,
-  );
   const { data: storage, refresh: refreshStorage } =
     useLocalResource<ProfileStorage>("profile_storage", {
       profileId: profile.id,
     });
   return (
     <div className="profile-settings">
+      <ProfileSettingsTransfer
+        profile={profile}
+        profiles={profiles}
+        running={running}
+        busy={busy}
+        run={run}
+        refresh={refresh}
+      />
       <section className="setting-row">
         <div>
           <h3>Версия VoxelCore</h3>
@@ -2719,90 +3049,115 @@ function ProfileSettings({
             </small>
           </div>
         ) : (
-          <form
-            className="actions"
-            onSubmit={(event) => {
-              event.preventDefault();
-              changeRuntime(runtimeVersion);
-            }}
-          >
-            <Select
-              aria-label="Версия VoxelCore профиля"
-              value={runtimeVersion}
-              onChange={(event) => setRuntimeVersion(event.target.value)}
+          <details>
+            <summary>Другие версии VoxelCore</summary>
+            <form
+              className="actions"
+              onSubmit={(event) => {
+                event.preventDefault();
+                changeRuntime(runtimeVersion);
+              }}
             >
-              {!runtimeVersion && (
-                <option value="" disabled>
-                  Выберите версию
+              <Select
+                aria-label="Версия VoxelCore профиля"
+                value={runtimeVersion}
+                onChange={(event) => setRuntimeVersion(event.target.value)}
+              >
+                <option value="experimental-latest">
+                  DEV-сборка — последняя совместимая
                 </option>
-              )}
-              {profile.main_build &&
-                !mainBuilds.some(
-                  (build) =>
-                    build.artifact_id === profile.main_build!.artifact_id,
-                ) && (
-                  <option value={mainRuntimeId(profile.main_build)}>
-                    {mainBuildLabel(profile.main_build)} · текущая · не
-                    установлена
+                {!runtimeVersion && (
+                  <option value="" disabled>
+                    Выберите версию
                   </option>
                 )}
-              {mainBuilds.map((build) => (
-                <option
-                  key={mainRuntimeId(build)}
-                  value={mainRuntimeId(build)}
-                  disabled={
-                    !mainlineStatus.enabled &&
-                    build.artifact_id !== profile.main_build?.artifact_id
-                  }
-                >
-                  {mainBuildLabel(build)} · экспериментальная
-                </option>
-              ))}
-              {!!engineVersion(profile) &&
-                !profile.main_build &&
-                !availableRuntimes.some(
-                  (item) => item.version === engineVersion(profile),
-                ) && (
-                  <option value={engineVersion(profile)}>
-                    {versionLabel(engineVersion(profile))} · текущая
+                {profile.main_build &&
+                  !mainBuilds.some(
+                    (build) =>
+                      build.artifact_id === profile.main_build!.artifact_id,
+                  ) && (
+                    <option value={mainRuntimeId(profile.main_build)}>
+                      {mainBuildLabel(profile.main_build)} · текущая · не
+                      установлена
+                    </option>
+                  )}
+                {mainBuilds.map((build) => (
+                  <option
+                    key={mainRuntimeId(build)}
+                    value={mainRuntimeId(build)}
+                  >
+                    {mainBuildLabel(build)}
                   </option>
-                )}
-              {availableRuntimes.map((item) => (
-                <option key={item.version} value={item.version}>
-                  {versionLabel(item.version)} ·{" "}
-                  {item.channel === "stable"
-                    ? "стабильная"
-                    : item.channel === "local"
-                      ? "локальная сборка"
-                      : item.channel}
-                </option>
-              ))}
-            </Select>
-            {selectedMain && runtimeVersion !== profileRuntimeId(profile) && (
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={acceptedMainRisk}
-                  onChange={(event) =>
-                    setAcceptedMainRisk(event.target.checked)
-                  }
-                />
-                Понимаю риск для модов и миров
-              </label>
-            )}
-            <button
-              disabled={
-                busy ||
-                !runtimeVersion ||
-                runtimeVersion === profileRuntimeId(profile) ||
-                (!!selectedMain && !acceptedMainRisk)
-              }
-            >
-              Применить
-            </button>
-          </form>
+                ))}
+                {!!engineVersion(profile) &&
+                  !profile.main_build &&
+                  !availableRuntimes.some(
+                    (item) => item.version === engineVersion(profile),
+                  ) && (
+                    <option value={engineVersion(profile)}>
+                      {versionLabel(engineVersion(profile))} · текущая
+                    </option>
+                  )}
+                {availableRuntimes.map((item) => (
+                  <option key={item.version} value={item.version}>
+                    {versionLabel(item.version)} ·{" "}
+                    {item.channel === "stable"
+                      ? "стабильная"
+                      : item.channel === "local"
+                        ? "локальная сборка"
+                        : item.channel}
+                  </option>
+                ))}
+              </Select>
+              <button
+                disabled={
+                  busy ||
+                  !runtimeVersion ||
+                  runtimeVersion === profileRuntimeId(profile)
+                }
+              >
+                Применить
+              </button>
+            </form>
+          </details>
         )}
       </section>
+      {!profile.external_runtime && (
+        <section className="setting-row">
+          <div>
+            <h3>Обновить VoxelCore</h3>
+            <p>
+              {profile.main_build
+                ? "Проверим новые DEV-сборки и совместимость с содержимым профиля."
+                : "Можно перейти на DEV-сборку. Перед применением проверим совместимость модов."}
+            </p>
+          </div>
+          <div className="actions">
+            <button
+              disabled={busy}
+              onClick={() =>
+                changeRuntime(
+                  profile.main_build ? "experimental-latest" : "stable-latest",
+                )
+              }
+            >
+              Проверить обновление VoxelCore
+            </button>
+            <button
+              disabled={busy}
+              onClick={() =>
+                changeRuntime(
+                  profile.main_build ? "stable-latest" : "experimental-latest",
+                )
+              }
+            >
+              {profile.main_build
+                ? "Перейти на стабильную версию"
+                : "Попробовать DEV-сборку"}
+            </button>
+          </div>
+        </section>
+      )}
       {profile.external_game_path && (
         <section className="setting-row">
           <div className="connected-folder-details">

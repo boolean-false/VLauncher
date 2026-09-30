@@ -56,12 +56,14 @@ export function MarkdownEditor({
   value,
   onChange,
   label = "Описание проекта",
+  placeholder = "## О контент-паке\n\nЧто он добавляет и как им пользоваться?\n\n- Возможности\n- Требования\n- Начало работы",
   token,
   onUploadImage,
 }: {
   value: string;
   onChange: (value: string) => void;
   label?: string;
+  placeholder?: string;
   token?: string;
   onUploadImage?: (file: File) => Promise<string>;
 }) {
@@ -251,9 +253,7 @@ export function MarkdownEditor({
             ref={input}
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder={
-              "## О контент-паке\n\nЧто он добавляет и как им пользоваться?\n\n- Возможности\n- Требования\n- Начало работы"
-            }
+            placeholder={placeholder}
             onPaste={(event) => {
               const file = Array.from(event.clipboardData.files).find((f) =>
                 f.type.startsWith("image/"),

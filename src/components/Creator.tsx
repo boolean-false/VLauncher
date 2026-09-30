@@ -5,7 +5,7 @@ import { registryRequest, invalidateRegistry, clearPrivateCache } from "../api";
 import { ProjectLifecycleActions } from "./ProjectLifecycleActions";
 import { ProjectMediaEditor } from "./ProjectMediaEditor";
 import { ImageEditor } from "./ImageEditor";
-import { MarkdownEditor } from "./Markdown";
+import { Markdown, MarkdownEditor } from "./Markdown";
 import { markdownImage } from "../markdownImage";
 import { registryMediaUrl } from "../mediaUrl";
 import { ManifestContentLinks } from "./ManifestContentLinks";
@@ -30,6 +30,7 @@ import {
   loadAccount,
   loadCreatorProjects,
   loadCreatorReleases,
+  updateCreatorRelease,
   loadOrganizations,
   loadProjectMedia,
   loadProjectMembers,
@@ -205,7 +206,7 @@ export function Creator({
     try {
       await task();
     } catch (reason) {
-      setError(String(reason));
+      setError(friendlyError(reason));
     } finally {
       if (alive.current) setWorking(false);
     }
@@ -233,6 +234,9 @@ export function Creator({
   const [sessions, setSessions] = useState<AccessSession[]>([]);
   const [projects, setProjects] = useState<CreatorProject[]>([]);
   const [releases, setReleases] = useState<CreatorRelease[]>([]);
+  const [editingRelease, setEditingRelease] = useState<CreatorRelease | null>(
+    null,
+  );
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [lifecycleDialog, setLifecycleDialog] = useState<{
     release: CreatorRelease;
@@ -1009,18 +1013,21 @@ export function Creator({
       eta_seconds: 0,
     });
     try {
-      const receipt = await invoke<{ id: string }>("publish_release", {
-        token,
-        projectId: project.id,
-        artifact: prepared,
-        channel,
-        changelog,
-        voxelcore: voxelcoreRequirement.trim(),
-        voxelcoreMain:
-          futureVoxelCore && allowMain
-            ? { target_version: mainTargetVersion, min_commit: mainMinCommit }
-            : null,
-      });
+      const receipt = await invoke<{ id: string; status: string }>(
+        "publish_release",
+        {
+          token,
+          projectId: project.id,
+          artifact: prepared,
+          channel,
+          changelog,
+          voxelcore: voxelcoreRequirement.trim(),
+          voxelcoreMain:
+            futureVoxelCore && allowMain
+              ? { target_version: mainTargetVersion, min_commit: mainMinCommit }
+              : null,
+        },
+      );
       const deadline = Date.now() + 120_000;
       for (;;) {
         if (!alive.current) return;
@@ -1033,7 +1040,11 @@ export function Creator({
           setChangelog("");
           break;
         }
-        const upload = await loadUpload(token, receipt.id);
+        const upload = ["published", "awaiting_moderation"].includes(
+          receipt.status,
+        )
+          ? { status: receipt.status, error: null }
+          : await loadUpload(token, receipt.id);
         setStatus(
           upload.status === "processing"
             ? "Проверяем архив…"
@@ -1041,7 +1052,7 @@ export function Creator({
         );
         if (upload.status === "published") {
           invalidateRegistry(token);
-          setStatus("Версия опубликована автоматически");
+          setStatus("Версия опубликована");
           setPrepared(null);
           setPreparedSource(null);
           setChangelog("");
@@ -2179,8 +2190,9 @@ export function Creator({
                                 <span>
                                   <strong>Исходный код · ZIP</strong>
                                   <small>
-                                    Автоматический архив GitHub для тега{" "}
-                                    {release.tag_name}
+                                    Автоматический архив для тега{" "}
+                                    {release.tag_name}. Подходит, если содержит
+                                    готовый пак с package.json.
                                   </small>
                                 </span>
                                 <button
@@ -2618,15 +2630,13 @@ export function Creator({
                     <option value="alpha">Альфа</option>
                   </Select>
                 </label>
-                <label>
-                  Список изменений
-                  <textarea
-                    aria-label="Список изменений"
-                    placeholder="Что изменилось в этой версии"
-                    value={changelog}
-                    onChange={(event) => setChangelog(event.target.value)}
-                  />
-                </label>
+                <MarkdownEditor
+                  label="Список изменений"
+                  placeholder={"## Изменения\n\n- Добавлено…\n- Исправлено…"}
+                  value={changelog}
+                  onChange={setChangelog}
+                  token={token}
+                />
                 {prepared && (
                   <VersionRequirementEditor
                     value={voxelcoreRequirement}
@@ -2782,7 +2792,9 @@ export function Creator({
                 {preparedVersionRelease && (
                   <span className="notice error" role="alert">
                     Версия {prepared.manifest.version} уже добавлена в этот
-                    проект. Выберите другой релиз или измените версию пакета.
+                    проект. Для правки описания откройте «Версии» →
+                    «Редактировать». Для новых файлов измените номер версии
+                    пакета.
                   </span>
                 )}
                 {current?.type === "project" &&
@@ -3212,7 +3224,10 @@ export function Creator({
                       {publicationStatus(release.status)}
                       {release.deprecated ? " · устарела" : ""}
                     </span>
-                    <p>{release.changelog || "Без описания изменений"}</p>
+                    <Markdown
+                      text={release.changelog || "Без описания изменений"}
+                      token={token}
+                    />
                     {release.review_reason && (
                       <p className="review-feedback">
                         Решение модератора: {release.review_reason}
@@ -3220,6 +3235,14 @@ export function Creator({
                     )}
                   </div>
                   <div className="card-actions">
+                    <button
+                      onClick={() => {
+                        setError("");
+                        setEditingRelease({ ...release });
+                      }}
+                    >
+                      Редактировать
+                    </button>
                     <button
                       onClick={() => confirmLifecycle(release, "deprecate")}
                     >
@@ -3248,6 +3271,114 @@ export function Creator({
             />
           )}
       </fieldset>
+      {editingRelease && (
+        <Modal
+          title={`Редактировать версию ${editingRelease.version}`}
+          busy={working}
+          close={() => setEditingRelease(null)}
+        >
+          <p className="muted">
+            Для изменения файлов или требований совместимости опубликуйте новую
+            версию.
+          </p>
+          <fieldset
+            disabled={working}
+            className="creator-fieldset workshop-fields"
+          >
+            <label>
+              Канал релиза
+              <Select
+                aria-label="Канал версии"
+                value={editingRelease.channel}
+                onChange={(event) =>
+                  setEditingRelease({
+                    ...editingRelease,
+                    channel: event.target.value,
+                  })
+                }
+              >
+                <option value="stable">Стабильная</option>
+                <option value="beta">Бета</option>
+                <option value="alpha">Альфа</option>
+              </Select>
+            </label>
+            <MarkdownEditor
+              label="Описание версии"
+              placeholder={"## Изменения\n\n- Добавлено…\n- Исправлено…"}
+              value={editingRelease.changelog}
+              onChange={(changelog) =>
+                setEditingRelease({ ...editingRelease, changelog })
+              }
+              token={token}
+            />
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={editingRelease.deprecated}
+                onChange={(event) =>
+                  setEditingRelease({
+                    ...editingRelease,
+                    deprecated: event.target.checked,
+                  })
+                }
+              />
+              Версия устарела
+            </label>
+            {editingRelease.deprecated && (
+              <label>
+                Причина
+                <input
+                  value={editingRelease.deprecation_message ?? ""}
+                  onChange={(event) =>
+                    setEditingRelease({
+                      ...editingRelease,
+                      deprecation_message: event.target.value,
+                    })
+                  }
+                />
+              </label>
+            )}
+            {error && <ErrorNotice>{error}</ErrorNotice>}
+            <div className="modal-actions">
+              <button
+                disabled={working}
+                onClick={() => setEditingRelease(null)}
+              >
+                Отмена
+              </button>
+              <button
+                className="primary"
+                disabled={working}
+                onClick={() =>
+                  void perform(async () => {
+                    await updateCreatorRelease(
+                      token,
+                      selectedProject,
+                      editingRelease.version,
+                      {
+                        changelog: editingRelease.changelog,
+                        channel: editingRelease.channel,
+                        deprecated: editingRelease.deprecated,
+                        deprecation_message: editingRelease.deprecated
+                          ? (editingRelease.deprecation_message ?? "")
+                          : "",
+                      },
+                    );
+                    invalidateRegistry(token);
+                    setReleases(
+                      await loadCreatorReleases(token, selectedProject),
+                    );
+                    setEditingRelease(null);
+                    setStatus("Версия обновлена");
+                  })
+                }
+              >
+                Сохранить
+              </button>
+            </div>
+          </fieldset>
+        </Modal>
+      )}
       {pendingProject !== null && (
         <Modal
           title="Сохранить изменения проекта?"

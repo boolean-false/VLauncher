@@ -49,7 +49,7 @@ test("сборка main хранит свою версию движка", () => 
   assert.equal(engineVersion({ ...profile, main_build: null }), "0.31.4");
   assert.equal(profileRuntimeId({ ...profile, main_build: null }), "0.31.4");
   assert.equal(mainRuntimeId(resolved), mainRuntimeId(build));
-  assert.match(mainBuildLabel(resolved), /0\.32\.0 · DEV \(main\) · aaaaaaa/);
+  assert.match(mainBuildLabel(resolved), /0\.32\.0 · DEV · 08\.09\.2026/);
 });
 
 test("версия новее последнего релиза помечается как DEV", () => {

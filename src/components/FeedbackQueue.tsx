@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 type Item = {
   id: string;
   kind: string;
@@ -27,12 +27,31 @@ export function FeedbackQueue({
   const [status, setStatus] = useState("in_progress");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const load = () =>
-    request<{ items: Item[] }>("/management/feedback", { cache: "no-store" })
-      .then((v) => setItems(v.items))
-      .catch((e) => setError(String(e)));
+  const [loading, setLoading] = useState(true);
+  const sequence = useRef(0);
+  const load = async () => {
+    const current = ++sequence.current;
+    setLoading(true);
+    setError("");
+    try {
+      const value = await request<{ items: Item[] }>("/management/feedback", {
+        cache: "no-store",
+      });
+      if (current === sequence.current) setItems(value.items);
+    } catch {
+      if (current === sequence.current)
+        setError(
+          "Не удалось загрузить обращения. Повторите попытку кнопкой «Обновить».",
+        );
+    } finally {
+      if (current === sequence.current) setLoading(false);
+    }
+  };
   useEffect(() => {
     void load();
+    return () => {
+      sequence.current++;
+    };
   }, [revision]);
   const send = async () => {
     if (!selected || busy || body.trim().length < 3) return;
@@ -62,7 +81,7 @@ export function FeedbackQueue({
             административных запросов.
           </p>
         </div>
-        <button disabled={busy} onClick={() => void load()}>
+        <button disabled={busy || loading} onClick={() => void load()}>
           Обновить
         </button>
       </div>
@@ -71,7 +90,8 @@ export function FeedbackQueue({
           {error}
         </p>
       )}
-      {!items.length && <p>Новых обращений нет.</p>}
+      {loading && <p role="status">Загружаем обращения…</p>}
+      {!loading && !error && !items.length && <p>Новых обращений нет.</p>}
       {items.map((item) => (
         <article className="feedback-item" key={item.id}>
           <button

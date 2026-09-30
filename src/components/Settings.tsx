@@ -8,7 +8,6 @@ import { getVersion } from "@tauri-apps/api/app";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { formatBytes, type RunTask, type Runtime } from "../model";
 import { registryUrl, type RuntimeRelease } from "../api";
 import { ErrorNotice, Icon } from "./ui";
@@ -308,13 +307,6 @@ export function Settings({
                       : "Определяем версию…"}
                 </p>
                 <p>Copyright © 2026 DaggerLab.</p>
-                <button
-                  onClick={() =>
-                    void openUrl("https://github.com/boolean-false/VLauncher")
-                  }
-                >
-                  Исходный код
-                </button>
                 {import.meta.env.DEV && (
                   <p>Режим разработки. Обновление через исходники проекта.</p>
                 )}

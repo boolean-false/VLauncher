@@ -1,3 +1,4 @@
+import { ProjectGallery } from "./ProjectGallery";
 import { recordContent } from "../telemetry";
 import { useContentInspector } from "./ContentInspector";
 import { PrivateImage } from "./PrivateImage";
@@ -28,7 +29,6 @@ import {
   type ProjectDetail,
   type Release,
   type SignedInstallPlan,
-  type VoxelCoreMainRequirement,
 } from "../api";
 import {
   engineVersion,
@@ -39,7 +39,7 @@ import {
   kinds,
   compareSemVer,
   mainBuildLabel,
-  mainRuntimeContext,
+  profileEngineLabel,
   isProjectProfile,
   profileRuntimeContext,
   type LocalProfile,
@@ -61,7 +61,9 @@ import {
   parseVersionRequirement,
 } from "../versionRequirement";
 import { mainRequirementFromResolutionError } from "../resolutionRequirement";
-import { useMainlineStatus } from "./Mainline";
+import { isRuntimeCompatibilityError } from "../runtimeSelection";
+import { resolveWithCompatibleRuntime } from "../runtimePlanning";
+import { ExperimentalDestination } from "./ExperimentalBuildPicker";
 import {
   mergeModCategories,
   useAllRegistryProjects,
@@ -82,6 +84,7 @@ type Preview = {
   title: string;
   coverUrl?: string;
   newProfileName?: string;
+  copyCreated?: boolean;
 };
 type CatalogSource = "all" | "vspace" | "voxelworld";
 type CatalogItem = {
@@ -126,7 +129,6 @@ export function Catalog({
   refreshProfiles,
   profileContext,
   openProfile,
-  openExperimentalSettings,
 }: {
   active?: boolean;
   profiles: LocalProfile[];
@@ -141,7 +143,6 @@ export function Catalog({
   refreshProfiles: () => Promise<void>;
   profileContext?: { close: () => void };
   openProfile: (id: string) => void;
-  openExperimentalSettings: () => void;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
   const latestVoxelCore = useLatestPublishedVoxelCoreVersion();
@@ -184,7 +185,9 @@ export function Catalog({
     const timer = setTimeout(() => setSearch(query), 200);
     return () => clearTimeout(timer);
   }, [query]);
-  const catalogEngine = engineVersion(profiles.find((p) => p.id === selected));
+  const catalogProfile = profiles.find((p) => p.id === selected);
+  const catalogEngine = engineVersion(catalogProfile);
+  const catalogCommit = catalogProfile?.main_build?.sha;
   const targetProfile = profileContext
     ? profiles.find((p) => p.id === selected)
     : undefined;
@@ -225,8 +228,10 @@ export function Catalog({
   if (latestVoxelCore) params.set("latest_voxelcore_version", latestVoxelCore);
   if (search.trim()) params.set("q", search.trim());
   for (const id of category) params.append("category", id);
-  if (compatibleOnly && catalogEngine)
+  if (compatibleOnly && catalogEngine) {
     params.set("voxelcore_version", catalogEngine);
+    if (catalogCommit) params.set("runtime_commit", catalogCommit);
+  }
   const result = useRegistryResource<{ items: Project[]; total: number }>(
     `/projects?${params}`,
     undefined,
@@ -265,8 +270,10 @@ export function Catalog({
     allVSpaceParams.set("latest_voxelcore_version", latestVoxelCore);
   if (search.trim()) allVSpaceParams.set("q", search.trim());
   for (const id of category) allVSpaceParams.append("category", id);
-  if (compatibleOnly && catalogEngine)
+  if (compatibleOnly && catalogEngine) {
     allVSpaceParams.set("voxelcore_version", catalogEngine);
+    if (catalogCommit) allVSpaceParams.set("runtime_commit", catalogCommit);
+  }
   const voxelWorldParams = new URLSearchParams({
     sort: sort === "updated" ? "4" : "1",
     sortOrder: sort === "title" ? "asc" : "desc",
@@ -278,6 +285,11 @@ export function Catalog({
   const allVoxelWorld = useVoxelWorldMods(voxelWorldParams, includeVoxelWorld);
   const categoryError = categoryResult.error || voxelWorldTags.error;
   const previous = useRef<typeof result.data>(undefined);
+  const previousQuery = useRef(params.toString());
+  if (previousQuery.current !== params.toString()) {
+    previous.current = undefined;
+    previousQuery.current = params.toString();
+  }
   if (result.data) previous.current = result.data;
   const regularPage = result.data ??
     previous.current ?? { items: [], total: 0 };
@@ -453,6 +465,12 @@ export function Catalog({
       <ProjectView
         key={detail}
         slug={detail}
+        preferredVersion={
+          compatibleOnly
+            ? page.items.find((item) => item.id === detail)?.project
+                ?.latest_release?.version
+            : undefined
+        }
         profiles={profiles}
         selected={selected}
         select={select}
@@ -462,7 +480,6 @@ export function Catalog({
         preview={preview}
         close={closeDetail}
         openProfile={openProfile}
-        openExperimentalSettings={openExperimentalSettings}
       />
     );
   }
@@ -577,10 +594,10 @@ export function Catalog({
         </div>
       )}
       <div className="catalog-categories" aria-label="Категории">
-        {profiles.find((p) => p.id === selected)?.main_build && (
+        {catalogCommit && (
           <p>
-            В профиле выбрана сборка main. Фильтр смотрит только на версию
-            движка, поэтому некоторые пакеты могут не работать.
+            В профиле выбрана сборка main. Фильтр учитывает версию движка и
+            коммит {catalogCommit.slice(0, 7)}.
           </p>
         )}
         <label className="checkbox-row">
@@ -780,8 +797,8 @@ export function Catalog({
                         className="catalog-main-warning"
                         title={`Минимальный коммит ${requirement.min_commit}`}
                       >
-                        <Icon name="warning" size={15} /> Требует
-                        экспериментальный VoxelCore{" "}
+                        <Icon name="warning" size={15} /> Требует DEV-сборку
+                        VoxelCore{" "}
                         {formatVoxelCoreVersion(requirement.target_version)}
                       </span>
                     ) : null;
@@ -1288,7 +1305,7 @@ function VoxelWorldProjectView({
                             <option key={item.id} value={item.id}>
                               {item.name} ·{" "}
                               {engineVersion(item)
-                                ? versionLabel(engineVersion(item))
+                                ? profileEngineLabel(item)
                                 : "версия не выбрана"}
                             </option>
                           ))}
@@ -1316,9 +1333,7 @@ function VoxelWorldProjectView({
                         <summary>
                           Изменения в версии {selectedVersion.version_number}
                         </summary>
-                        <p className="preserve-lines">
-                          {selectedVersion.changelog}
-                        </p>
+                        <Markdown text={selectedVersion.changelog} />
                       </details>
                     )}
                     {!!versionDetail?.dependencies?.length && (
@@ -1568,6 +1583,7 @@ function dependencyKindLabel(kind: DependencyKind) {
 }
 export function ProjectView({
   slug,
+  preferredVersion,
   profiles,
   selected,
   select,
@@ -1577,9 +1593,9 @@ export function ProjectView({
   preview,
   close,
   openProfile,
-  openExperimentalSettings,
 }: {
   slug: string;
+  preferredVersion?: string;
   profiles: LocalProfile[];
   selected: string;
   select: (id: string) => void;
@@ -1589,12 +1605,9 @@ export function ProjectView({
   preview: (value: Preview) => void;
   close: () => void;
   openProfile: (id: string) => void;
-  openExperimentalSettings: () => void;
 }) {
-  const versionLabel = useVoxelCoreVersionLabel();
   const latestVoxelCore = useLatestPublishedVoxelCoreVersion();
   const publishedVoxelCoreVersions = usePublishedVoxelCoreVersions();
-  const { status: mainlineStatus } = useMainlineStatus();
   const inspect = useContentInspector();
   const compatibilityQuery = latestVoxelCore
     ? `?${new URLSearchParams({ latest_voxelcore_version: latestVoxelCore })}`
@@ -1610,12 +1623,13 @@ export function ProjectView({
     if (project) recordContent(project.slug, "view");
   }, [project?.slug]);
   const releases = releasesResult.data ?? [];
-  const [version, setVersion] = useState("");
+  const [version, setVersion] = useState(preferredVersion ?? "");
   const retryDetails = () => {
     projectResult.refresh();
     releasesResult.refresh();
   };
   const [failed, setFailed] = useState(false);
+  const [installError, setInstallError] = useState("");
   const [reportToken, setReportToken] = useState("");
   const [reportDetails, setReportDetails] = useState("");
   const [reportStatus, setReportStatus] = useState("");
@@ -1677,191 +1691,168 @@ export function ProjectView({
   const createsProjectProfile = !standalone && !installableProfiles.length;
   const install = () => {
     if (!release || !project) return;
+    setInstallError("");
     void run(`Проверка · ${project.title}`, async () => {
-      const modpackEngine = standalone
-        ? exactVoxelCoreVersion(release.voxelcore)
-        : "";
-      if (standalone && !modpackEngine) {
-        throw new Error(
-          "Проект не закрепляет точную версию VoxelCore. Автору нужно выпустить исправленную версию.",
-        );
-      }
-      const createProjectProfile =
-        !standalone && !profile && !installableProfiles.length;
-      if (!standalone && !profile && !createProjectProfile) return;
-      const pendingProfile: LocalProfile | undefined = createProjectProfile
-        ? {
-            id: "pending-project",
-            name: "Новый профиль",
-            icon: null,
-            active_revision: null,
-            voxelcore_version: null,
-            roots: [],
-            root_requirements: {},
-            packages: [],
-            external_packages: [],
-            manual_packages: [],
-          }
-        : undefined;
-      const targetProfile = standalone
-        ? installedModpackProfile
-        : (profile ?? pendingProfile);
-      const directProject = standalone || project.type === "world";
-      if (!directProject && !project.package_id) {
-        throw new Error(
-          "Контент-пак ещё не получил идентификатор из package.json.",
-        );
-      }
-      const roots = directProject
-        ? (targetProfile?.roots ?? []).filter((root) => root !== project.id)
-        : [...new Set([...(targetProfile?.roots ?? []), project.package_id!])];
-      const requirements = { ...(targetProfile?.root_requirements ?? {}) };
-      delete requirements[project.id];
-      if (!directProject) requirements[project.package_id!] = `=${version}`;
-      const channels =
-        release.channel === "stable" ? ["stable"] : ["stable", release.channel];
-      let voxelcoreVersion = standalone
-        ? modpackEngine
-        : engineVersion(targetProfile);
-      let selectedMainBuild: MainBuild | null = null;
-      let runtime = standalone
-        ? { kind: "stable" as const, version: modpackEngine }
-        : profileRuntimeContext(targetProfile);
-      const recommendedMainBuild = async (
-        requirement: VoxelCoreMainRequirement,
-      ) => {
-        if (!mainlineStatus.enabled) {
+      try {
+        const modpackEngine = standalone
+          ? exactVoxelCoreVersion(release.voxelcore)
+          : "";
+        if (standalone && !modpackEngine) {
           throw new Error(
-            "Для DEV-версии включите экспериментальные сборки в настройках, затем повторите установку.",
+            "Проект не закрепляет точную версию VoxelCore. Автору нужно выпустить исправленную версию.",
           );
         }
-        const catalog = await invoke<{ builds: MainBuild[] }>(
-          "list_mainline_builds",
-        );
-        const build = catalog.builds.find(
-          (item) =>
-            formatVoxelCoreVersion(item.engine_version ?? "") ===
-            formatVoxelCoreVersion(requirement.target_version),
-        );
-        if (!build)
+        const createProjectProfile =
+          !standalone && !profile && !installableProfiles.length;
+        if (!standalone && !profile && !createProjectProfile) return;
+        const pendingProfile: LocalProfile | undefined = createProjectProfile
+          ? {
+              id: "pending-project",
+              name: "Новый профиль",
+              icon: null,
+              active_revision: null,
+              voxelcore_version: null,
+              roots: [],
+              root_requirements: {},
+              packages: [],
+              external_packages: [],
+              manual_packages: [],
+            }
+          : undefined;
+        const targetProfile = standalone
+          ? installedModpackProfile
+          : (profile ?? pendingProfile);
+        const directProject = standalone || project.type === "world";
+        if (!directProject && !project.package_id) {
           throw new Error(
-            `Для VoxelCore ${formatVoxelCoreVersion(requirement.target_version)} сейчас нет доступной DEV-сборки для этой системы.`,
+            "Контент-пак ещё не получил идентификатор из package.json.",
           );
-        return invoke<MainBuild>("resolve_mainline_version", { build });
-      };
-      if (
-        mainRequirement &&
-        !targetIsStable &&
-        !standalone &&
-        formatVoxelCoreVersion(
-          targetProfile?.main_build?.engine_version ?? "",
-        ) !== formatVoxelCoreVersion(mainRequirement.target_version)
-      ) {
-        selectedMainBuild = await recommendedMainBuild(mainRequirement);
-        runtime = mainRuntimeContext(selectedMainBuild);
-        voxelcoreVersion =
-          selectedMainBuild.engine_version ?? mainRequirement.target_version;
-      }
-      const makePlan = () =>
-        resolveProject(
-          roots,
-          voxelcoreVersion,
-          requirements,
-          channels,
-          {},
-          directProject ? { id: project.id, version } : undefined,
-          runtime,
-        );
-      let plan: SignedInstallPlan | undefined;
-      if (createProjectProfile && !selectedMainBuild) {
-        const requirementMinimum = parseVersionRequirement(
-          release.voxelcore,
-        ).minimum;
-        const candidates = [
-          ...new Set(
-            [
-              exactVoxelCoreVersion(release.voxelcore),
-              ...publishedVoxelCoreVersions,
-              requirementMinimum ?? "",
-              latestVoxelCore,
-            ].filter(Boolean),
-          ),
-        ].sort((left, right) => compareSemVer(right, left));
-        let lastError: unknown = new Error(
-          "Для этого проекта не найдена совместимая версия VoxelCore.",
-        );
-        for (const candidate of candidates) {
-          voxelcoreVersion = candidate;
-          runtime = { kind: "stable", version: candidate };
-          try {
-            plan = await makePlan();
-            break;
-          } catch (reason) {
-            lastError = reason;
+        }
+        const roots = directProject
+          ? (targetProfile?.roots ?? []).filter((root) => root !== project.id)
+          : [
+              ...new Set([
+                ...(targetProfile?.roots ?? []),
+                project.package_id!,
+              ]),
+            ];
+        const requirements = { ...(targetProfile?.root_requirements ?? {}) };
+        delete requirements[project.id];
+        if (!directProject) requirements[project.package_id!] = `=${version}`;
+        const channels =
+          release.channel === "stable"
+            ? ["stable"]
+            : ["stable", release.channel];
+        let voxelcoreVersion = standalone
+          ? modpackEngine
+          : engineVersion(targetProfile);
+        let selectedMainBuild: MainBuild | null = null;
+        let runtime = standalone
+          ? { kind: "stable" as const, version: modpackEngine }
+          : profileRuntimeContext(targetProfile);
+        const makePlan = () =>
+          resolveWithCompatibleRuntime(
+            roots,
+            voxelcoreVersion,
+            requirements,
+            channels,
+            {},
+            directProject ? { id: project.id, version } : undefined,
+            runtime,
+          );
+        let result: Awaited<ReturnType<typeof resolveWithCompatibleRuntime>>;
+        if (createProjectProfile) {
+          const candidates = [
+            ...new Set(
+              [
+                exactVoxelCoreVersion(release.voxelcore),
+                ...publishedVoxelCoreVersions,
+                parseVersionRequirement(release.voxelcore).minimum ?? "",
+                latestVoxelCore,
+              ].filter(Boolean),
+            ),
+          ].sort((left, right) => compareSemVer(right, left));
+          let resolved: typeof result | undefined;
+          let gatedVersion = "";
+          let lastError: unknown = new Error(
+            "Для проекта не найдена совместимая версия VoxelCore.",
+          );
+          for (const candidate of candidates) {
+            voxelcoreVersion = candidate;
+            runtime = { kind: "stable", version: candidate };
+            try {
+              resolved = {
+                plan: await resolveProject(
+                  roots,
+                  candidate,
+                  requirements,
+                  channels,
+                  {},
+                  directProject ? { id: project.id, version } : undefined,
+                  runtime,
+                ),
+              };
+              break;
+            } catch (reason) {
+              lastError = reason;
+              if (!gatedVersion && mainRequirementFromResolutionError(reason))
+                gatedVersion = candidate;
+              if (!isRuntimeCompatibilityError(reason)) throw reason;
+            }
           }
+          if (!resolved && gatedVersion) {
+            voxelcoreVersion = gatedVersion;
+            runtime = { kind: "stable", version: gatedVersion };
+            resolved = await makePlan();
+          }
+          if (!resolved) throw lastError;
+          result = resolved;
+        } else {
+          result = await makePlan();
         }
-        if (!plan) {
-          const dependencyRequirement =
-            mainRequirementFromResolutionError(lastError);
-          if (!dependencyRequirement) throw lastError;
-          selectedMainBuild = await recommendedMainBuild(dependencyRequirement);
-          runtime = mainRuntimeContext(selectedMainBuild);
-          voxelcoreVersion =
-            selectedMainBuild.engine_version ??
-            dependencyRequirement.target_version;
-          plan = await makePlan();
-        }
-      } else {
-        try {
-          plan = await makePlan();
-        } catch (reason) {
-          const dependencyRequirement =
-            mainRequirementFromResolutionError(reason);
-          if (!dependencyRequirement || standalone) throw reason;
-          selectedMainBuild = await recommendedMainBuild(dependencyRequirement);
-          runtime = mainRuntimeContext(selectedMainBuild);
-          voxelcoreVersion =
-            selectedMainBuild.engine_version ??
-            dependencyRequirement.target_version;
-          plan = await makePlan();
-        }
+        const { plan } = result;
+        selectedMainBuild = result.mainBuild ?? null;
+        voxelcoreVersion = plan.plan.voxelcore_version;
+        const automaticProfileName = createProjectProfile
+          ? `VoxelCore ${formatVoxelCoreVersion(voxelcoreVersion)}${selectedMainBuild ? " · DEV" : ""}`
+          : undefined;
+        preview({
+          mainBuild: selectedMainBuild,
+          profile:
+            standalone && !targetProfile
+              ? {
+                  id: "pending-modpack",
+                  name: project.title,
+                  icon: null,
+                  active_revision: null,
+                  voxelcore_version: modpackEngine,
+                  roots: [],
+                  root_requirements: {},
+                  packages: [],
+                  external_packages: [],
+                  manual_packages: [],
+                }
+              : targetProfile!,
+          plan,
+          title: createProjectProfile
+            ? `Новый профиль · ${automaticProfileName}`
+            : standalone
+              ? targetProfile
+                ? `${project.title} · ${installedModpack?.version} → ${version}`
+                : `Новый профиль · ${project.title}`
+              : `Установка ${project.title}`,
+          coverUrl:
+            standalone && !targetProfile
+              ? (project.cover_url ?? release.preview_url ?? undefined)
+              : undefined,
+          newProfileName:
+            standalone && !targetProfile ? project.title : automaticProfileName,
+        });
+        close();
+      } catch (error) {
+        setInstallError(friendlyError(error));
+        throw error;
       }
-      const automaticProfileName = createProjectProfile
-        ? `VoxelCore ${formatVoxelCoreVersion(voxelcoreVersion)}${selectedMainBuild ? " DEV" : ""}`
-        : undefined;
-      preview({
-        mainBuild: selectedMainBuild,
-        profile:
-          standalone && !targetProfile
-            ? {
-                id: "pending-modpack",
-                name: project.title,
-                icon: null,
-                active_revision: null,
-                voxelcore_version: modpackEngine,
-                roots: [],
-                root_requirements: {},
-                packages: [],
-                external_packages: [],
-                manual_packages: [],
-              }
-            : targetProfile!,
-        plan,
-        title: createProjectProfile
-          ? `Новый профиль · ${automaticProfileName}`
-          : standalone
-            ? targetProfile
-              ? `${project.title} · ${installedModpack?.version} → ${version}`
-              : `Новый профиль · ${project.title}`
-            : `Установка ${project.title}`,
-        coverUrl:
-          standalone && !targetProfile
-            ? (project.cover_url ?? release.preview_url ?? undefined)
-            : undefined,
-        newProfileName:
-          standalone && !targetProfile ? project.title : automaticProfileName,
-      });
-      close();
     }).then((ok) => setFailed(!ok));
   };
   return (
@@ -1890,6 +1881,13 @@ export function ProjectView({
                   <p>{project.summary}</p>
                 </div>
               </div>
+              {!!project.gallery_urls?.length && (
+                <ProjectGallery
+                  key={project.id}
+                  urls={project.gallery_urls}
+                  title={project.title}
+                />
+              )}
               <section className="project-overview">
                 <h2>{project.type === "modpack" ? "О сборке" : "О проекте"}</h2>
                 <div className="project-description selectable">
@@ -1900,17 +1898,6 @@ export function ProjectView({
                     }
                   />
                 </div>
-                {!!project.gallery_urls?.length && (
-                  <div className="project-gallery">
-                    {project.gallery_urls.map((url) => (
-                      <PrivateImage
-                        key={url}
-                        src={url}
-                        alt={`Скриншот ${project.title}`}
-                      />
-                    ))}
-                  </div>
-                )}
               </section>
               {project.type === "modpack" && release && (
                 <ModpackContents
@@ -2008,7 +1995,7 @@ export function ProjectView({
                               <option key={p.id} value={p.id}>
                                 {p.name} ·{" "}
                                 {engineVersion(p)
-                                  ? versionLabel(engineVersion(p))
+                                  ? profileEngineLabel(p, latestVoxelCore)
                                   : "версия не выбрана"}
                               </option>
                             ))}
@@ -2076,26 +2063,18 @@ export function ProjectView({
                       className="notice main-commit-requirement"
                       role="status"
                     >
-                      <strong>Экспериментальная версия VoxelCore</strong>
+                      <strong>DEV-сборка VoxelCore</strong>
                       <span>
                         {createsProjectProfile
-                          ? `Нажмите «Создать профиль и установить» — лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
-                          : `После выбора профиля лаунчер подберёт и скачает официальную DEV-сборку VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`}
+                          ? `Нажмите «Создать профиль и установить» — лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
+                          : `После выбора профиля лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`}
                       </span>
-                      {!mainlineStatus.enabled && (
-                        <button
-                          type="button"
-                          onClick={openExperimentalSettings}
-                        >
-                          Включить DEV-сборки
-                        </button>
-                      )}
                     </div>
                   )}
                   {release?.changelog && (
                     <details>
                       <summary>Изменения в версии {release.version}</summary>
-                      <p className="preserve-lines">{release.changelog}</p>
+                      <Markdown text={release.changelog} />
                     </details>
                   )}
                   {!standalone && !!release?.dependencies?.length && (
@@ -2198,8 +2177,8 @@ export function ProjectView({
                     )}
                   {failed && (
                     <ErrorNotice>
-                      Не удалось подобрать зависимости. Причина записана в
-                      журнале.
+                      {installError ||
+                        "Не удалось подобрать зависимости. Повторите проверку."}
                     </ErrorNotice>
                   )}
                   {reportToken && (
@@ -2296,22 +2275,34 @@ export function InstallPreview({
   plan,
   title,
   newProfileName,
+  copyCreated,
   busy,
   task,
   close,
   apply,
   skipVersion,
+  cancelTransfer,
 }: Preview & {
   busy: boolean;
   task?: Task;
   close: () => void;
-  apply: () => Promise<boolean>;
+  apply: (copy: boolean) => Promise<boolean>;
+  cancelTransfer?: () => void;
   skipVersion?: (id: string, version: string) => Promise<boolean>;
 }) {
   const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const [failed, setFailed] = useState(false);
+  const runtimeChanged =
+    !!mainBuild && mainBuild.artifact_id !== profile.main_build?.artifact_id;
+  const [copy, setCopy] = useState(
+    !newProfileName && !copyCreated && runtimeChanged,
+  );
   const [acceptedMainRisk, setAcceptedMainRisk] = useState(false);
+  useEffect(() => {
+    setCopy(!newProfileName && !copyCreated && runtimeChanged);
+  }, [profile.id, mainBuild?.artifact_id, newProfileName, copyCreated]);
+  useEffect(() => setAcceptedMainRisk(false), [mainBuild?.artifact_id]);
   const modpack = plan.plan.packages.find(
     (pkg) => pkg.type === "modpack" || pkg.type === "project",
   );
@@ -2379,6 +2370,9 @@ export function InstallPreview({
   const changed =
     (!!mainBuild &&
       mainBuild.artifact_id !== profile.main_build?.artifact_id) ||
+    (plan.plan.runtime?.kind ?? "stable") !==
+      (profile.main_build ? "main" : "stable") ||
+    plan.plan.voxelcore_version !== engineVersion(profile) ||
     modpackChanged ||
     changes.some((c) => c.status !== "Без изменений") ||
     externalChanges.some((c) => c.status !== "Без изменений") ||
@@ -2388,10 +2382,10 @@ export function InstallPreview({
     <Modal title={title} close={close} busy={busy}>
       {mainBuild ? (
         <div className="notice main-commit-requirement">
-          <strong>Лаунчер подготовит DEV-сборку автоматически</strong>
+          <strong>Будет использована DEV-сборка VoxelCore</strong>
           <span>
             {mainBuildLabel(mainBuild)}. Если её ещё нет на компьютере, она
-            будет скачана перед установкой мода.
+            будет скачана перед применением изменений.
           </span>
           {mainBuild.artifact_id !== profile.main_build?.artifact_id && (
             <label className="checkbox-row">
@@ -2400,7 +2394,7 @@ export function InstallPreview({
                 checked={acceptedMainRisk}
                 onChange={(event) => setAcceptedMainRisk(event.target.checked)}
               />
-              Понимаю, что DEV-сборка может содержать ошибки и повредить мир
+              Понимаю, что DEV-сборка может быть несовместима с модами и мирами
             </label>
           )}
         </div>
@@ -2411,6 +2405,22 @@ export function InstallPreview({
             Некоторые пакеты могут с ней не работать.
           </p>
         )
+      )}
+      {runtimeChanged &&
+        (!!profile.manual_packages?.length ||
+          !!profile.external_packages?.length) && (
+          <p className="notice">
+            Совместимость добавленных вручную модов и модов VoxelWorld с новым
+            движком потребуется проверить самостоятельно.
+          </p>
+        )}
+      {runtimeChanged && !newProfileName && !copyCreated && (
+        <ExperimentalDestination copy={copy} onChange={setCopy} busy={busy} />
+      )}
+      {copyCreated && (
+        <p className="notice">
+          Копия профиля создана. Повторная попытка продолжит установку в неё.
+        </p>
       )}
       <p>
         {newProfileName ? "Будет создан профиль" : "Профиль"}{" "}
@@ -2541,14 +2551,16 @@ export function InstallPreview({
           сохранятся.
         </p>
       )}
-      {changes.some(
-        (c) => c.status === "Удалить" || c.status === "Изменить",
-      ) && (
-        <div className="notice">
-          Существующие миры могут зависеть от этих версий пакетов. Перед
-          изменением сохраните копию папки миров.
-        </div>
-      )}
+      {!copy &&
+        !newProfileName &&
+        changes.some(
+          (c) => c.status === "Удалить" || c.status === "Изменить",
+        ) && (
+          <div className="notice">
+            Существующие миры могут зависеть от этих версий пакетов. Перед
+            изменением сохраните копию папки миров.
+          </div>
+        )}
       {!changed && (
         <div className="notice success">Состав профиля уже актуален.</div>
       )}
@@ -2573,6 +2585,11 @@ export function InstallPreview({
               aria-label="Прогресс загрузки"
             />
           )}
+          {cancelTransfer && (
+            <button type="button" onClick={cancelTransfer}>
+              Остановить загрузку
+            </button>
+          )}
           <small>
             Профиль изменится только после успешной проверки всего набора.
           </small>
@@ -2591,13 +2608,15 @@ export function InstallPreview({
                 mainBuild.artifact_id !== profile.main_build?.artifact_id &&
                 !acceptedMainRisk)
             }
-            onClick={() => void apply().then((ok) => setFailed(!ok))}
+            onClick={() => void apply(copy).then((ok) => setFailed(!ok))}
           >
             {busy
               ? "Устанавливаем…"
               : newProfileName
                 ? "Создать и установить"
-                : "Применить изменения"}
+                : copy
+                  ? "Создать копию и установить"
+                  : "Применить изменения"}
           </button>
         )}
       </div>

@@ -203,7 +203,11 @@ export function ErrorNotice({
   return (
     <div className="notice error" role="alert">
       <div>{children}</div>
-      {retry && <button onClick={retry}>Повторить</button>}
+      {retry && (
+        <button type="button" onClick={retry}>
+          Повторить
+        </button>
+      )}
     </div>
   );
 }

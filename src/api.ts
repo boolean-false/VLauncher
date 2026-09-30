@@ -89,8 +89,10 @@ export type ProjectMedia = {
 };
 export const loadProject = (slug: string) =>
   registryRequest<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
-export const loadReleases = (slug: string) =>
-  registryRequest<Release[]>(`/projects/${encodeURIComponent(slug)}/releases`);
+export const loadReleases = (slug: string, compatibilityVersion?: string) =>
+  registryRequest<Release[]>(
+    `/projects/${encodeURIComponent(slug)}/releases${compatibilityVersion ? `?${new URLSearchParams({ latest_voxelcore_version: compatibilityVersion })}` : ""}`,
+  );
 export const loadRuntimeReleases = (platform: string, architecture: string) =>
   registryRequest<RuntimeRelease[]>(
     `/runtimes?${new URLSearchParams({ platform, architecture })}`,
@@ -149,9 +151,9 @@ const translatedErrors: Record<string, string> = {
   no_compatible_release:
     "Для выбранной версии VoxelCore нет совместимого набора пакетов.",
   voxelcore_main_commit_required:
-    "Для этой версии нужна более свежая экспериментальная сборка VoxelCore.",
+    "Для этой версии нужна более свежая DEV-сборка VoxelCore.",
   voxelcore_commit_check_unavailable:
-    "Не удалось проверить свежесть экспериментальной сборки VoxelCore. Повторите позже.",
+    "Не удалось проверить свежесть DEV-сборки VoxelCore. Повторите позже.",
   dependency_cycle: "В зависимостях проекта найден замкнутый цикл.",
   package_conflict: "Выбранные пакеты конфликтуют друг с другом.",
   multiple_modpacks: "В одном профиле не может быть несколько сборок.",
@@ -453,6 +455,22 @@ export const loadCreatorReleases = (token: string, slug: string) =>
   registryRequest<CreatorRelease[]>(
     `/creator/projects/${slug}/releases`,
     undefined,
+    token,
+  );
+export const updateCreatorRelease = (
+  token: string,
+  slug: string,
+  version: string,
+  data: {
+    changelog: string;
+    channel: string;
+    deprecated: boolean;
+    deprecation_message: string;
+  },
+) =>
+  registryRequest(
+    `/creator/projects/${encodeURIComponent(slug)}/releases/${encodeURIComponent(version)}`,
+    { method: "PATCH", body: JSON.stringify(data) },
     token,
   );
 export const loadProjectMedia = (token: string, slug: string) =>

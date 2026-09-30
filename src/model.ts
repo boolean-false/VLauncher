@@ -64,7 +64,7 @@ export const profileRuntimeId = (profile?: LocalProfile) =>
 export const formatVoxelCoreVersion = (version: string) =>
   normalizeVersion(version) || version.trim();
 export const mainBuildLabel = (build: MainBuild) =>
-  `${build.engine_version ? `${formatVoxelCoreVersion(build.engine_version)} · DEV (main)` : "main"} · ${build.sha.slice(0, 7)} · ${build.created_at.slice(0, 10)}`;
+  `${build.engine_version ? formatVoxelCoreVersion(build.engine_version) : ""} · DEV · ${new Date(build.created_at).toLocaleDateString("ru")}`;
 export const profileEngineLabel = (
   profile: LocalProfile,
   latestPublishedVersion = "",
@@ -254,7 +254,7 @@ export const friendlyError = (value: unknown) => {
     ],
     [
       '"code":"release_exists"',
-      "Версия с таким номером уже существует. Сначала снимите её с публикации.",
+      "Версия с таким номером уже существует. Описание можно изменить в разделе «Версии». Для новых файлов укажите новый номер версии.",
     ],
     ["profile does not exist", "Профиль больше не существует."],
     [
