@@ -1,17 +1,51 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { engineVersion, exactVoxelCoreVersion, formatVoxelCoreVersion, isDevelopmentVoxelCoreVersion, isProjectProfile, latestPublishedVoxelCoreVersion, requireEngineVersion, mainBuildLabel, mainRuntimeId, profileEngineLabel, profileModpack, profileRuntimeId, voxelCoreVersionLabel, type LocalProfile, type MainBuild } from "../src/model.ts";
+import {
+  engineVersion,
+  exactVoxelCoreVersion,
+  formatVoxelCoreVersion,
+  isDevelopmentVoxelCoreVersion,
+  isProjectProfile,
+  latestPublishedVoxelCoreVersion,
+  requireEngineVersion,
+  mainBuildLabel,
+  mainRuntimeId,
+  profileEngineLabel,
+  profileModpack,
+  profileRuntimeId,
+  voxelCoreVersionLabel,
+  type LocalProfile,
+  type MainBuild,
+} from "../src/model.ts";
 
 test("сборка main хранит свою версию движка", () => {
   const build: MainBuild = {
-    sha: "a".repeat(40), run_id: 1, artifact_id: 2, digest: `sha256:${"b".repeat(64)}`,
-    size: 10, created_at: "2026-09-08", expires_at: "2026-12-08", platform: "linux", architecture: "x86_64",
+    sha: "a".repeat(40),
+    run_id: 1,
+    artifact_id: 2,
+    digest: `sha256:${"b".repeat(64)}`,
+    size: 10,
+    created_at: "2026-09-08",
+    expires_at: "2026-12-08",
+    platform: "linux",
+    architecture: "x86_64",
   };
-  const profile: LocalProfile = { id: "test", name: "Test", active_revision: "test", voxelcore_version: "0.31.4", roots: [], packages: [], main_build: build };
+  const profile: LocalProfile = {
+    id: "test",
+    name: "Test",
+    active_revision: "test",
+    voxelcore_version: "0.31.4",
+    roots: [],
+    packages: [],
+    main_build: build,
+  };
   assert.equal(engineVersion(profile), "0.31.4");
   const resolved = { ...build, engine_version: "0.32.0" };
   assert.equal(engineVersion({ ...profile, main_build: resolved }), "0.32.0");
-  assert.equal(profileRuntimeId({ ...profile, main_build: resolved }), mainRuntimeId(resolved));
+  assert.equal(
+    profileRuntimeId({ ...profile, main_build: resolved }),
+    mainRuntimeId(resolved),
+  );
   assert.equal(engineVersion({ ...profile, main_build: null }), "0.31.4");
   assert.equal(profileRuntimeId({ ...profile, main_build: null }), "0.31.4");
   assert.equal(mainRuntimeId(resolved), mainRuntimeId(build));
@@ -29,7 +63,14 @@ test("версия новее последнего релиза помечает
   assert.equal(voxelCoreVersionLabel("0.31.4", latest), "0.31.4");
   assert.equal(formatVoxelCoreVersion("0.32"), "0.32.0");
   assert.equal(voxelCoreVersionLabel("0.32", latest), "0.32.0 · DEV");
-  const profile: LocalProfile = { id: "dev", name: "Dev", active_revision: null, voxelcore_version: "0.32.0", roots: [], packages: [] };
+  const profile: LocalProfile = {
+    id: "dev",
+    name: "Dev",
+    active_revision: null,
+    voxelcore_version: "0.32.0",
+    roots: [],
+    packages: [],
+  };
   assert.equal(profileEngineLabel(profile, latest), "0.32.0 · DEV");
 });
 
@@ -39,7 +80,10 @@ test("для пустого профиля версия не придумыва�
 
 test("операции требуют выбранную версию", () => {
   for (const value of ["", "   "]) {
-    assert.throws(() => requireEngineVersion(value), /Выберите версию VoxelCore/);
+    assert.throws(
+      () => requireEngineVersion(value),
+      /Выберите версию VoxelCore/,
+    );
   }
   assert.equal(requireEngineVersion("0.31.4"), "0.31.4");
   assert.equal(requireEngineVersion("1.2.3-beta.1"), "1.2.3-beta.1");
@@ -71,9 +115,15 @@ test("локальный и опубликованный проекты опре
     packages: [],
   };
   assert.equal(isProjectProfile(profile), false);
-  assert.equal(isProjectProfile({ ...profile, external_project_path: "/projects/demo" }), true);
-  assert.equal(isProjectProfile({
-    ...profile,
-    packages: [{ id: "project-id", kind: "project", version: "1.0.0" }],
-  }), true);
+  assert.equal(
+    isProjectProfile({ ...profile, external_project_path: "/projects/demo" }),
+    true,
+  );
+  assert.equal(
+    isProjectProfile({
+      ...profile,
+      packages: [{ id: "project-id", kind: "project", version: "1.0.0" }],
+    }),
+    true,
+  );
 });

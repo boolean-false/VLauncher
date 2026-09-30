@@ -146,9 +146,12 @@ export const registryUrl: string =
 connectPublicMetadata(resources, registryUrl);
 
 const translatedErrors: Record<string, string> = {
-  no_compatible_release: "Для выбранной версии VoxelCore нет совместимого набора пакетов.",
-  voxelcore_main_commit_required: "Для этой версии нужна более свежая экспериментальная сборка VoxelCore.",
-  voxelcore_commit_check_unavailable: "Не удалось проверить свежесть экспериментальной сборки VoxelCore. Повторите позже.",
+  no_compatible_release:
+    "Для выбранной версии VoxelCore нет совместимого набора пакетов.",
+  voxelcore_main_commit_required:
+    "Для этой версии нужна более свежая экспериментальная сборка VoxelCore.",
+  voxelcore_commit_check_unavailable:
+    "Не удалось проверить свежесть экспериментальной сборки VoxelCore. Повторите позже.",
   dependency_cycle: "В зависимостях проекта найден замкнутый цикл.",
   package_conflict: "Выбранные пакеты конфликтуют друг с другом.",
   multiple_modpacks: "В одном профиле не может быть несколько сборок.",
@@ -157,30 +160,43 @@ const translatedErrors: Record<string, string> = {
   authentication_required: "Сначала войдите в аккаунт.",
   github_oauth_not_configured: "Вход через GitHub пока не настроен на сервере.",
   release_exists: "Версия с таким номером уже существует.",
-  project_slug_reserved: "Этот идентификатор зарезервирован после удаления проекта. Для нового проекта выберите другой идентификатор.",
-  reservation_protected: "Адрес используется в зависимостях и пока не может быть освобождён.",
-  published_reservation_confirmation_required: "Подтвердите риск освобождения ранее опубликованного адреса.",
-  project_slug_taken: "Этот короткий адрес уже занят другим проектом или контент-паком.",
+  project_slug_reserved:
+    "Этот идентификатор зарезервирован после удаления проекта. Для нового проекта выберите другой идентификатор.",
+  reservation_protected:
+    "Адрес используется в зависимостях и пока не может быть освобождён.",
+  published_reservation_confirmation_required:
+    "Подтвердите риск освобождения ранее опубликованного адреса.",
+  project_slug_taken:
+    "Этот короткий адрес уже занят другим проектом или контент-паком.",
   package_identifier_pending: "Дождитесь проверки первой версии контент-пака.",
   invalid_image: "Файл не удалось распознать как подходящее изображение.",
   image_too_large: "Изображение превышает ограничение 10 МБ.",
   session_expired: "Сессия завершена. Войдите снова.",
-  upload_quota_reached: "Достигнут лимит одновременных загрузок. Завершите или отмените старые.",
+  upload_quota_reached:
+    "Достигнут лимит одновременных загрузок. Завершите или отмените старые.",
   rate_limited: "Слишком много запросов. Подождите немного и повторите.",
-  invalid_project_slug: "Адрес должен содержать от 2 до 48 строчных латинских букв, цифр, дефисов или подчёркиваний.",
-  github_username_conflict: "Этот GitHub-профиль уже связан с другой учётной записью.",
+  invalid_project_slug:
+    "Адрес должен содержать от 2 до 48 строчных латинских букв, цифр, дефисов или подчёркиваний.",
+  github_username_conflict:
+    "Этот GitHub-профиль уже связан с другой учётной записью.",
 };
 
-async function responseError(response: Response, fallback: string): Promise<Error> {
+async function responseError(
+  response: Response,
+  fallback: string,
+): Promise<Error> {
   const data = (await response.json().catch(() => null)) as {
     error?: { code?: string; message?: string; details?: unknown };
   } | null;
   const code = data?.error?.code ?? "";
-  return Object.assign(new Error(translatedErrors[code] ?? data?.error?.message ?? fallback), {
-    status: response.status,
-    code,
-    details: data?.error?.details,
-  });
+  return Object.assign(
+    new Error(translatedErrors[code] ?? data?.error?.message ?? fallback),
+    {
+      status: response.status,
+      code,
+      details: data?.error?.details,
+    },
+  );
 }
 
 async function fetchRegistry<T>(
@@ -192,49 +208,109 @@ async function fetchRegistry<T>(
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init?.body) headers.set("Content-Type", "application/json");
   const timeout = AbortSignal.timeout(20_000);
-  const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-  const response = await fetch(`${registryUrl}${path}`, { ...init, headers, signal });
+  const signal = init?.signal
+    ? AbortSignal.any([init.signal, timeout])
+    : timeout;
+  const response = await fetch(`${registryUrl}${path}`, {
+    ...init,
+    headers,
+    signal,
+  });
   if (!response.ok) {
     if (response.status === 401 && token) clearPrivateCache(token);
-    throw await responseError(response, `Сервер вернул ошибку ${response.status}`);
+    throw await responseError(
+      response,
+      `Сервер вернул ошибку ${response.status}`,
+    );
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-export const registryKey = (path: string, token?: string) => JSON.stringify([registryUrl, token ?? "", path]);
-export const registryCacheable = (path: string) => /^\/(projects(?:[/?]|$)|categories(?:[?]|$)|runtimes(?:[?]|$)|creator\/projects(?:[/?]|$)|organizations(?:[/?]|$)|users\/)/.test(path);
+export const registryKey = (path: string, token?: string) =>
+  JSON.stringify([registryUrl, token ?? "", path]);
+export const registryCacheable = (path: string) =>
+  /^\/(projects(?:[/?]|$)|categories(?:[?]|$)|runtimes(?:[?]|$)|creator\/projects(?:[/?]|$)|organizations(?:[/?]|$)|users\/)/.test(
+    path,
+  );
 export function invalidateRegistry(token?: string) {
-  resources.invalidate(key => { try { const [url, session] = JSON.parse(key); return url === registryUrl && (!session || session === token); } catch { return false; } });
+  resources.invalidate((key) => {
+    try {
+      const [url, session] = JSON.parse(key);
+      return url === registryUrl && (!session || session === token);
+    } catch {
+      return false;
+    }
+  });
 }
 function invalidateMutation(path: string, token?: string) {
-  if (path.startsWith('/auth/')) return;
+  if (path.startsWith("/auth/")) return;
   const project = path.match(/^\/creator\/projects\/([^/]+)/)?.[1];
-  resources.invalidate(key => {
+  resources.invalidate((key) => {
     try {
       const [url, session, resource] = JSON.parse(key);
-      if (url !== registryUrl || session && session !== token) return false;
-      if (path.startsWith('/creator/projects')) return resource.startsWith('/projects?') || resource.startsWith('/users/') || resource.startsWith('/categories') || resource === '/creator/projects' || (project && (resource.startsWith(`/projects/${project}`) || resource.startsWith(`/creator/projects/${project}`))) || path.endsWith('/organization') && resource.startsWith('/organizations');
-      if (path.startsWith('/organizations')) return resource.startsWith('/organizations') || resource.startsWith('/creator/projects');
+      if (url !== registryUrl || (session && session !== token)) return false;
+      if (path.startsWith("/creator/projects"))
+        return (
+          resource.startsWith("/projects?") ||
+          resource.startsWith("/users/") ||
+          resource.startsWith("/categories") ||
+          resource === "/creator/projects" ||
+          (project &&
+            (resource.startsWith(`/projects/${project}`) ||
+              resource.startsWith(`/creator/projects/${project}`))) ||
+          (path.endsWith("/organization") &&
+            resource.startsWith("/organizations"))
+        );
+      if (path.startsWith("/organizations"))
+        return (
+          resource.startsWith("/organizations") ||
+          resource.startsWith("/creator/projects")
+        );
       if (/^\/(management|moderation|admin)\//.test(path)) return true;
       return false;
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   });
 }
 export function clearPrivateCache(token: string) {
   clearImageSession(token);
-  resources.invalidate(key => { try { return JSON.parse(key)[1] === token; } catch { return false; } }, true);
+  resources.invalidate((key) => {
+    try {
+      return JSON.parse(key)[1] === token;
+    } catch {
+      return false;
+    }
+  }, true);
 }
-export async function registryRequest<T>(path: string, init?: RequestInit, token?: string): Promise<T> {
+export async function registryRequest<T>(
+  path: string,
+  init?: RequestInit,
+  token?: string,
+): Promise<T> {
   if (init?.signal?.aborted) throw init.signal.reason;
   const method = init?.method?.toUpperCase() ?? "GET";
-  if (method === "GET" && registryCacheable(path) && init?.cache !== "no-store" && (token || !new Headers(init?.headers).has("Authorization"))) {
+  if (
+    method === "GET" &&
+    registryCacheable(path) &&
+    init?.cache !== "no-store" &&
+    (token || !new Headers(init?.headers).has("Authorization"))
+  ) {
     const { signal, ...options } = init ?? {};
-    return consumerSignal(resources.read(registryKey(path, token), () => fetchRegistry<T>(path, options, token), path.startsWith('/categories') ? 300_000 : 60_000, init?.cache === 'reload'), signal);
+    return consumerSignal(
+      resources.read(
+        registryKey(path, token),
+        () => fetchRegistry<T>(path, options, token),
+        path.startsWith("/categories") ? 300_000 : 60_000,
+        init?.cache === "reload",
+      ),
+      signal,
+    );
   }
   const value = await fetchRegistry<T>(path, init, token);
   if (method !== "GET") invalidateMutation(path, token);
-  if (path === '/auth/logout' && token) clearPrivateCache(token);
+  if (path === "/auth/logout" && token) clearPrivateCache(token);
   return value;
 }
 
@@ -330,13 +406,20 @@ export type AccessSession = {
 export const loadSessions = (token: string) =>
   registryRequest<AccessSession[]>("/auth/sessions", undefined, token);
 export const revokeSessionById = (token: string, id: string) =>
-  registryRequest<void>(`/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }, token);
+  registryRequest<void>(
+    `/auth/sessions/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+    token,
+  );
 export const loadCreatorProjects = (token: string) =>
   registryRequest<CreatorProject[]>("/creator/projects", undefined, token);
 export const createCreatorProject = (
   token: string,
   project: Omit<
-    Pick<CreatorProject, "type" | "title" | "summary" | "description" | "license" | "categories">,
+    Pick<
+      CreatorProject,
+      "type" | "title" | "summary" | "description" | "license" | "categories"
+    >,
     "type"
   > & { type: Exclude<Project["type"], "runtime">; slug?: string },
 ) =>
@@ -349,7 +432,10 @@ export const updateCreatorProject = (
   token: string,
   slug: string,
   project: Partial<
-    Pick<CreatorProject, "title" | "summary" | "description" | "license" | "categories">
+    Pick<
+      CreatorProject,
+      "title" | "summary" | "description" | "license" | "categories"
+    >
   >,
 ) =>
   registryRequest<CreatorProject>(
@@ -396,12 +482,21 @@ export async function uploadProjectMedia(
     const data = (await response.json().catch(() => null)) as {
       error?: { message?: string };
     } | null;
-    throw new Error(data?.error?.message ?? `Image upload returned ${response.status}`);
+    throw new Error(
+      data?.error?.message ?? `Image upload returned ${response.status}`,
+    );
   }
-  invalidateMutation(`/creator/projects/${encodeURIComponent(slug)}/media`, token);
+  invalidateMutation(
+    `/creator/projects/${encodeURIComponent(slug)}/media`,
+    token,
+  );
   return response.json() as Promise<ProjectMedia>;
 }
-export const deleteProjectMedia = (token: string, slug: string, mediaId: string) =>
+export const deleteProjectMedia = (
+  token: string,
+  slug: string,
+  mediaId: string,
+) =>
   registryRequest(
     `/creator/projects/${encodeURIComponent(slug)}/media/${mediaId}`,
     { method: "DELETE" },
@@ -441,7 +536,11 @@ export const loadProjectMembers = (token: string, slug: string) =>
     undefined,
     token,
   );
-export const removeProjectMember = (token: string, slug: string, username: string) =>
+export const removeProjectMember = (
+  token: string,
+  slug: string,
+  username: string,
+) =>
   registryRequest(
     `/creator/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(username)}`,
     { method: "DELETE" },
@@ -512,7 +611,10 @@ export const loadUpload = (token: string, id: string) =>
 
 export type CategoryOption = { id: string; name: string };
 export const loadCategories = (kind: string, signal?: AbortSignal) =>
-  registryRequest<CategoryOption[]>(`/categories?${new URLSearchParams({ kind })}`, { signal });
+  registryRequest<CategoryOption[]>(
+    `/categories?${new URLSearchParams({ kind })}`,
+    { signal },
+  );
 
 export async function loadProjects(
   query = "",
@@ -553,23 +655,32 @@ export async function resolveProject(
   voxelcoreVersion = requireEngineVersion(voxelcoreVersion);
   runtime ??= { kind: "stable", version: voxelcoreVersion };
   if (!runtime.platform || !runtime.architecture) {
-    const host = await invoke<{ platform: string; architecture: string }>("launcher_info");
+    const host = await invoke<{ platform: string; architecture: string }>(
+      "launcher_info",
+    );
     const platform = host.platform === "darwin" ? "macos" : host.platform;
-    if (!(["linux", "windows", "macos"] as string[]).includes(platform) ||
-        !(["x86_64", "aarch64"] as string[]).includes(host.architecture)) {
-      throw new Error("Эта платформа не поддерживает проверку версии VoxelCore.");
+    if (
+      !(["linux", "windows", "macos"] as string[]).includes(platform) ||
+      !(["x86_64", "aarch64"] as string[]).includes(host.architecture)
+    ) {
+      throw new Error(
+        "Эта платформа не поддерживает проверку версии VoxelCore.",
+      );
     }
     runtime = {
       ...runtime,
       platform: platform as VoxelCoreRuntimeContext["platform"],
-      architecture: host.architecture as VoxelCoreRuntimeContext["architecture"],
+      architecture:
+        host.architecture as VoxelCoreRuntimeContext["architecture"],
     };
   }
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const direct = new Map<string, string>();
   if (directProject) direct.set(directProject.id, directProject.version);
   for (const id of slugs.filter((item) => uuid.test(item))) {
-    const requirement = requirements[id] ?? (locked[id] ? `=${locked[id]}` : "");
+    const requirement =
+      requirements[id] ?? (locked[id] ? `=${locked[id]}` : "");
     if (!requirement.startsWith("=") || !requirement.slice(1)) {
       throw new Error(`Для проекта ${id} не зафиксирована точная версия.`);
     }
@@ -582,15 +693,23 @@ export async function resolveProject(
     body: JSON.stringify({
       voxelcore_version: voxelcoreVersion,
       runtime,
-      roots: packageRoots.map((id) => ({ id, requirement: requirements[id] ?? "*" })),
+      roots: packageRoots.map((id) => ({
+        id,
+        requirement: requirements[id] ?? "*",
+      })),
       channels,
-      locked: Object.fromEntries(Object.entries(locked).filter(([id]) => !direct.has(id))),
+      locked: Object.fromEntries(
+        Object.entries(locked).filter(([id]) => !direct.has(id)),
+      ),
       projects: [...direct].map(([id, version]) => ({ id, version })),
     }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) {
-    throw await responseError(response, `Resolver вернул ошибку ${response.status}`);
+    throw await responseError(
+      response,
+      `Resolver вернул ошибку ${response.status}`,
+    );
   }
   return response.json() as Promise<SignedInstallPlan>;
 }

@@ -54,9 +54,25 @@ import {
   type ProjectMedia,
   type ProjectMember,
 } from "../api";
-import { compareSemVer, formatBytes, friendlyError, mainBuildLabel, profileModpack, type LocalProfile, type MainBuild } from "../model";
-import { useLatestPublishedVoxelCoreVersion, usePublishedVoxelCoreVersions } from "../VoxelCoreVersionContext";
-import { isVersionRequirementValid, normalizeVersion, normalizeVersionRequirement, parseVersionRequirement } from "../versionRequirement";
+import {
+  compareSemVer,
+  formatBytes,
+  friendlyError,
+  mainBuildLabel,
+  profileModpack,
+  type LocalProfile,
+  type MainBuild,
+} from "../model";
+import {
+  useLatestPublishedVoxelCoreVersion,
+  usePublishedVoxelCoreVersions,
+} from "../VoxelCoreVersionContext";
+import {
+  isVersionRequirementValid,
+  normalizeVersion,
+  normalizeVersionRequirement,
+  parseVersionRequirement,
+} from "../versionRequirement";
 import { projectSlugFromTitle, validProjectSlug } from "../projectSlug";
 const storedToken = () => invoke<string | null>("load_access_token");
 const draftStorageKey = (kind: "project" | "release") =>
@@ -71,7 +87,11 @@ type PreparedArtifact = {
     version: string;
     title: string;
     capabilities?: string[];
-    dependencies?: { id: string; requirement: string; kind: "required" | "optional" | "weak" }[];
+    dependencies?: {
+      id: string;
+      requirement: string;
+      kind: "required" | "optional" | "weak";
+    }[];
     conflicts?: unknown[];
     external_packages?: unknown[];
     components?: { key: string; type: "world"; title: string }[];
@@ -80,11 +100,15 @@ type PreparedArtifact = {
 const minimumVoxelCoreVersion = (requirement: string) => {
   const parsed = parseVersionRequirement(requirement);
   if (parsed.minimum) return parsed.minimum;
-  return normalizeVersion(requirement.match(/^\s*(?:\^|~)\s*([^,\s]+)/)?.[1] ?? "");
+  return normalizeVersion(
+    requirement.match(/^\s*(?:\^|~)\s*([^,\s]+)/)?.[1] ?? "",
+  );
 };
 const packageVoxelCoreRequirement = (artifact: PreparedArtifact) =>
   normalizeVersionRequirement(
-    artifact.manifest.dependencies?.find((dependency) => dependency.id === "base")?.requirement ?? "",
+    artifact.manifest.dependencies?.find(
+      (dependency) => dependency.id === "base",
+    )?.requirement ?? "",
   );
 type LocalWorld = {
   folder: string;
@@ -153,7 +177,12 @@ export function Creator({
   clearWorldPublish,
 }: {
   active?: boolean;
-  worldPublish?: { profileId: string; folder: string; name: string; originProjectId?: string } | null;
+  worldPublish?: {
+    profileId: string;
+    folder: string;
+    name: string;
+    originProjectId?: string;
+  } | null;
   clearWorldPublish?: () => void;
 }) {
   const latestStableVoxelCore = useLatestPublishedVoxelCoreVersion();
@@ -184,9 +213,22 @@ export function Creator({
 
   const [token, setToken] = useState("");
   const [tokenReady, setTokenReady] = useState(false);
-  const tokenRef = useRef(token); tokenRef.current = token;
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
   const lastRefresh = useRef(0);
-  useEffect(() => { const clear = (event: Event) => { if ((event as CustomEvent).detail === tokenRef.current) { setToken(""); setAccount(null); setProjects([]); setSessions([]); setOrganizations([]); } }; window.addEventListener('image-session-cleared', clear); return () => window.removeEventListener('image-session-cleared', clear); }, []);
+  useEffect(() => {
+    const clear = (event: Event) => {
+      if ((event as CustomEvent).detail === tokenRef.current) {
+        setToken("");
+        setAccount(null);
+        setProjects([]);
+        setSessions([]);
+        setOrganizations([]);
+      }
+    };
+    window.addEventListener("image-session-cleared", clear);
+    return () => window.removeEventListener("image-session-cleared", clear);
+  }, []);
   const [account, setAccount] = useState<Account | null>(null);
   const [sessions, setSessions] = useState<AccessSession[]>([]);
   const [projects, setProjects] = useState<CreatorProject[]>([]);
@@ -228,22 +270,22 @@ export function Creator({
   };
   const [draft, setDraft] = useState(() =>
     (() => {
-      const saved = readDraft(
-        draftStorageKey("project"),
-        emptyProjectDraft,
-      );
+      const saved = readDraft(draftStorageKey("project"), emptyProjectDraft);
       const savedType: Exclude<Project["type"], "runtime"> =
-        saved.type === "modpack" || saved.type === "project" || saved.type === "world"
+        saved.type === "modpack" ||
+        saved.type === "project" ||
+        saved.type === "world"
           ? saved.type
           : "mod";
       return {
         ...saved,
         type: savedType,
-        slug: savedType === "mod"
-          ? ""
-          : typeof saved.slug === "string" && saved.slug
-            ? saved.slug
-            : projectSlugFromTitle(saved.title, savedType),
+        slug:
+          savedType === "mod"
+            ? ""
+            : typeof saved.slug === "string" && saved.slug
+              ? saved.slug
+              : projectSlugFromTitle(saved.title, savedType),
       };
     })(),
   );
@@ -271,34 +313,42 @@ export function Creator({
   const [channel, setChannel] = useState(releaseDraft.channel);
   const [changelog, setChangelog] = useState(releaseDraft.changelog);
   const [voxelcoreRequirement, setVoxelcoreRequirement] = useState(
-    typeof releaseDraft.voxelcoreRequirement === "string" ? releaseDraft.voxelcoreRequirement : "",
+    typeof releaseDraft.voxelcoreRequirement === "string"
+      ? releaseDraft.voxelcoreRequirement
+      : "",
   );
   const [allowMain, setAllowMain] = useState(releaseDraft.allowMain === true);
   const [mainMinCommit, setMainMinCommit] = useState(
-    typeof releaseDraft.mainMinCommit === "string" ? releaseDraft.mainMinCommit : "",
+    typeof releaseDraft.mainMinCommit === "string"
+      ? releaseDraft.mainMinCommit
+      : "",
   );
   const [mainBuilds, setMainBuilds] = useState<MainBuild[]>([]);
   const [projectReleasePreferences, setProjectReleasePreferences] = useState<
     Record<string, ProjectReleasePreference>
   >(() => {
     const preferences = { ...releaseDraft.projectPreferences };
-    if (releaseDraft.selectedProject && !preferences[releaseDraft.selectedProject]) {
+    if (
+      releaseDraft.selectedProject &&
+      !preferences[releaseDraft.selectedProject]
+    ) {
       preferences[releaseDraft.selectedProject] = {
         source: releaseDraft.source === "github" ? "github" : "local",
-        githubRepository: typeof releaseDraft.githubRepository === "string"
-          ? releaseDraft.githubRepository
-          : "",
+        githubRepository:
+          typeof releaseDraft.githubRepository === "string"
+            ? releaseDraft.githubRepository
+            : "",
       };
     }
     return preferences;
   });
   const projectReleasePreference = projectReleasePreferences[selectedProject];
-  const releaseSource: ReleaseSource = projectReleasePreference?.source === "github"
-    ? "github"
-    : "local";
-  const githubRepository = typeof projectReleasePreference?.githubRepository === "string"
-    ? projectReleasePreference.githubRepository
-    : "";
+  const releaseSource: ReleaseSource =
+    projectReleasePreference?.source === "github" ? "github" : "local";
+  const githubRepository =
+    typeof projectReleasePreference?.githubRepository === "string"
+      ? projectReleasePreference.githubRepository
+      : "";
   const updateProjectReleasePreference = (
     updates: Partial<ProjectReleasePreference>,
   ) => {
@@ -309,9 +359,10 @@ export function Creator({
         ...preferences,
         [selectedProject]: {
           source: current?.source === "github" ? "github" : "local",
-          githubRepository: typeof current?.githubRepository === "string"
-            ? current.githubRepository
-            : "",
+          githubRepository:
+            typeof current?.githubRepository === "string"
+              ? current.githubRepository
+              : "",
           ...updates,
         },
       };
@@ -340,26 +391,36 @@ export function Creator({
   const [localProfiles, setLocalProfiles] = useState<LocalProfile[]>([]);
   const [modpackProfile, setModpackProfile] = useState("");
   const [modpackWorlds, setModpackWorlds] = useState<LocalWorld[]>([]);
-  const [selectedModpackWorlds, setSelectedModpackWorlds] = useState<string[]>([]);
+  const [selectedModpackWorlds, setSelectedModpackWorlds] = useState<string[]>(
+    [],
+  );
   const [modpackWorldsLoading, setModpackWorldsLoading] = useState(false);
   const [modpackVersion, setModpackVersion] = useState("1.0.0");
   const [worldVersion, setWorldVersion] = useState("1.0.0");
-  const [worldEngineVersion, setWorldEngineVersion] = useState(latestStableVoxelCore);
+  const [worldEngineVersion, setWorldEngineVersion] = useState(
+    latestStableVoxelCore,
+  );
   const [projectVersion, setProjectVersion] = useState("1.0.0");
   const [worldProfile, setWorldProfile] = useState("");
   const [worldFolder, setWorldFolder] = useState("");
-  const [worldSourceKind, setWorldSourceKind] = useState<"profile" | "folder" | "zip">("profile");
+  const [worldSourceKind, setWorldSourceKind] = useState<
+    "profile" | "folder" | "zip"
+  >("profile");
   const [worldSourcePath, setWorldSourcePath] = useState("");
-  const [worldSourceInspection, setWorldSourceInspection] = useState<WorldSourceInspection | null>(null);
+  const [worldSourceInspection, setWorldSourceInspection] =
+    useState<WorldSourceInspection | null>(null);
   const [worldSourceError, setWorldSourceError] = useState("");
   const [worldSourceLoading, setWorldSourceLoading] = useState(false);
   useEffect(() => {
-    if (latestStableVoxelCore) setWorldEngineVersion((value) => value || latestStableVoxelCore);
+    if (latestStableVoxelCore)
+      setWorldEngineVersion((value) => value || latestStableVoxelCore);
   }, [latestStableVoxelCore]);
   const [worlds, setWorlds] = useState<LocalWorld[]>([]);
   const [worldsLoading, setWorldsLoading] = useState(false);
   const [worldSelectionPending, setWorldSelectionPending] = useState(false);
-  const selectedProjectType = projects.find((project) => project.slug === selectedProject)?.type;
+  const selectedProjectType = projects.find(
+    (project) => project.slug === selectedProject,
+  )?.type;
   const [transfer, setTransfer] = useState<{
     completed: number;
     total: number;
@@ -392,18 +453,20 @@ export function Creator({
         title: worldPublish.name,
         slug: projectSlugFromTitle(worldPublish.name, "world"),
       });
-      setStatus(
-        `Карта «${worldPublish.name}» выбрана для публикации.`,
-      );
+      setStatus(`Карта «${worldPublish.name}» выбрана для публикации.`);
     }
   }, [worldPublish]);
   useEffect(() => {
     if (!worldSelectionPending || !account) return;
-    const worldProjects = projects.filter((project) => project.type === "world" && !project.archived_at);
-    const target = worldProjects.find((project) =>
-      project.package_id === worldPublish?.originProjectId
-      || project.id === worldPublish?.originProjectId
-      || project.slug === worldPublish?.originProjectId);
+    const worldProjects = projects.filter(
+      (project) => project.type === "world" && !project.archived_at,
+    );
+    const target = worldProjects.find(
+      (project) =>
+        project.package_id === worldPublish?.originProjectId ||
+        project.id === worldPublish?.originProjectId ||
+        project.slug === worldPublish?.originProjectId,
+    );
     if (!target) {
       setSelectedProject("");
       setSection(worldProjects.length ? "release" : "create");
@@ -438,7 +501,9 @@ export function Creator({
         if (!current) return;
         setModpackWorlds(items);
         setSelectedModpackWorlds((selected) =>
-          selected.filter((folder) => items.some((world) => world.folder === folder)),
+          selected.filter((folder) =>
+            items.some((world) => world.folder === folder),
+          ),
         );
       })
       .catch((reason) => {
@@ -451,7 +516,9 @@ export function Creator({
       .finally(() => {
         if (current) setModpackWorldsLoading(false);
       });
-    return () => { current = false; };
+    return () => {
+      current = false;
+    };
   }, [modpackProfile]);
   useEffect(() => {
     if (selectedProjectType !== "world" && !worldSelectionPending) return;
@@ -466,7 +533,11 @@ export function Creator({
       .then((items) => {
         if (!current) return;
         setWorlds(items);
-        setWorldFolder((value) => items.some((world) => world.folder === value) ? value : items[0]?.folder || "");
+        setWorldFolder((value) =>
+          items.some((world) => world.folder === value)
+            ? value
+            : items[0]?.folder || "",
+        );
       })
       .catch((reason) => {
         if (current) {
@@ -478,7 +549,9 @@ export function Creator({
       .finally(() => {
         if (current) setWorldsLoading(false);
       });
-    return () => { current = false; };
+    return () => {
+      current = false;
+    };
   }, [selectedProjectType, worldProfile, worldSelectionPending]);
   useEffect(() => {
     if (worldSourceKind === "profile" || !worldSourcePath.trim()) {
@@ -492,12 +565,23 @@ export function Creator({
     setWorldSourceError("");
     setWorldSourceLoading(true);
     const timer = window.setTimeout(() => {
-      void invoke<WorldSourceInspection>("inspect_local_world_source", { path: worldSourcePath.trim() })
-        .then((inspection) => { if (active) setWorldSourceInspection(inspection); })
-        .catch((reason) => { if (active) setWorldSourceError(friendlyError(reason)); })
-        .finally(() => { if (active) setWorldSourceLoading(false); });
+      void invoke<WorldSourceInspection>("inspect_local_world_source", {
+        path: worldSourcePath.trim(),
+      })
+        .then((inspection) => {
+          if (active) setWorldSourceInspection(inspection);
+        })
+        .catch((reason) => {
+          if (active) setWorldSourceError(friendlyError(reason));
+        })
+        .finally(() => {
+          if (active) setWorldSourceLoading(false);
+        });
     }, 300);
-    return () => { active = false; window.clearTimeout(timer); };
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [worldSourceKind, worldSourcePath]);
   useEffect(() => {
     const subscription = listen<typeof transfer>(
@@ -512,10 +596,7 @@ export function Creator({
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(
-      draftStorageKey("project"),
-      JSON.stringify(draft),
-    );
+    localStorage.setItem(draftStorageKey("project"), JSON.stringify(draft));
   }, [draft]);
   useEffect(() => {
     localStorage.setItem(
@@ -531,7 +612,16 @@ export function Creator({
         projectPreferences: projectReleasePreferences,
       }),
     );
-  }, [folder, selectedProject, channel, changelog, voxelcoreRequirement, allowMain, mainMinCommit, projectReleasePreferences]);
+  }, [
+    folder,
+    selectedProject,
+    channel,
+    changelog,
+    voxelcoreRequirement,
+    allowMain,
+    mainMinCommit,
+    projectReleasePreferences,
+  ]);
 
   useEffect(() => {
     if (!prepared) return;
@@ -545,41 +635,47 @@ export function Creator({
     setMainBuilds([]);
   }, [prepared?.sha256]);
 
-  const refresh = useCallback(async (value: string) => {
-    lastRefresh.current = Date.now();
-    const [current, owned, ownOrganizations] =
-      await Promise.all([
+  const refresh = useCallback(
+    async (value: string) => {
+      lastRefresh.current = Date.now();
+      const [current, owned, ownOrganizations] = await Promise.all([
         loadAccount(value),
         loadCreatorProjects(value),
         loadOrganizations(value),
       ]);
-    if (tokenRef.current !== value) return;
-    lastRefresh.current = Date.now();
-    setAccount(current);
-    setProjects(owned);
-    savedProjects.current = new Map(
-      owned.map((project) => [project.slug, JSON.stringify(project)]),
-    );
-    setOrganizations(ownOrganizations);
-    setSelectedProject((selected) => {
-      if (worldPublish) {
-        return owned.some((project) => project.slug === selected && project.type === "world")
+      if (tokenRef.current !== value) return;
+      lastRefresh.current = Date.now();
+      setAccount(current);
+      setProjects(owned);
+      savedProjects.current = new Map(
+        owned.map((project) => [project.slug, JSON.stringify(project)]),
+      );
+      setOrganizations(ownOrganizations);
+      setSelectedProject((selected) => {
+        if (worldPublish) {
+          return owned.some(
+            (project) => project.slug === selected && project.type === "world",
+          )
+            ? selected
+            : "";
+        }
+        return owned.some((project) => project.slug === selected)
           ? selected
-          : "";
-      }
-      return owned.some((project) => project.slug === selected)
-        ? selected
-        : owned[0]?.slug || "";
-    });
-    setError("");
-  }, [worldPublish]);
+          : owned[0]?.slug || "";
+      });
+      setError("");
+    },
+    [worldPublish],
+  );
 
   useEffect(() => {
     void (async () => {
       // Старый токен не привязан к адресу сервера.
       localStorage.removeItem("vlauncher_token");
       setToken((await storedToken()) ?? "");
-    })().catch((reason) => setError(String(reason))).finally(() => setTokenReady(true));
+    })()
+      .catch((reason) => setError(String(reason)))
+      .finally(() => setTokenReady(true));
   }, []);
   useEffect(() => {
     if (token)
@@ -587,19 +683,60 @@ export function Creator({
         setError(String(reason));
       });
   }, [token, refresh]);
-  useEffect(() => { if (!active || !token || section !== "sessions") return; let alive = true; void loadSessions(token).then(value => { if (alive) setSessions(value); }).catch(e => { if (alive) setError(String(e)); }); return () => { alive = false; }; }, [active, token, section]);
+  useEffect(() => {
+    if (!active || !token || section !== "sessions") return;
+    let alive = true;
+    void loadSessions(token)
+      .then((value) => {
+        if (alive) setSessions(value);
+      })
+      .catch((e) => {
+        if (alive) setError(String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [active, token, section]);
   const selectedProjectExists = projects.some(
     (project) => project.slug === selectedProject,
   );
   const projectPath = `/creator/projects/${encodeURIComponent(selectedProject)}`;
   const projectActive = active && !!token && selectedProjectExists;
-  const releaseData = useRegistryResource<CreatorRelease[]>(`${projectPath}/releases`, token, projectActive && (section === "release" || section === "manage" && projectTab === "versions"));
-  const mediaData = useRegistryResource<ProjectMedia[]>(`${projectPath}/media`, token, projectActive && section === "manage" && ["manage", "media"].includes(projectTab));
-  const memberData = useRegistryResource<ProjectMember[]>(`${projectPath}/members`, token, projectActive && section === "manage" && projectTab === "members");
-  useEffect(() => setReleases(releaseData.data ?? []), [releaseData.data, selectedProject]);
-  useEffect(() => setMedia(mediaData.data ?? []), [mediaData.data, selectedProject]);
-  useEffect(() => setMembers(memberData.data ?? []), [memberData.data, selectedProject]);
-  useEffect(() => { const failure = releaseData.error || mediaData.error || memberData.error; if (failure) setError(failure); }, [releaseData.error, mediaData.error, memberData.error]);
+  const releaseData = useRegistryResource<CreatorRelease[]>(
+    `${projectPath}/releases`,
+    token,
+    projectActive &&
+      (section === "release" ||
+        (section === "manage" && projectTab === "versions")),
+  );
+  const mediaData = useRegistryResource<ProjectMedia[]>(
+    `${projectPath}/media`,
+    token,
+    projectActive &&
+      section === "manage" &&
+      ["manage", "media"].includes(projectTab),
+  );
+  const memberData = useRegistryResource<ProjectMember[]>(
+    `${projectPath}/members`,
+    token,
+    projectActive && section === "manage" && projectTab === "members",
+  );
+  useEffect(
+    () => setReleases(releaseData.data ?? []),
+    [releaseData.data, selectedProject],
+  );
+  useEffect(
+    () => setMedia(mediaData.data ?? []),
+    [mediaData.data, selectedProject],
+  );
+  useEffect(
+    () => setMembers(memberData.data ?? []),
+    [memberData.data, selectedProject],
+  );
+  useEffect(() => {
+    const failure = releaseData.error || mediaData.error || memberData.error;
+    if (failure) setError(failure);
+  }, [releaseData.error, mediaData.error, memberData.error]);
 
   const login = async () => {
     const attempt = ++loginAttempt.current;
@@ -717,8 +854,13 @@ export function Creator({
   );
   useEffect(() => {
     if (!active || !token || hasUnsavedProject) return;
-    const check = () => { if (Date.now() - lastRefresh.current > 60_000) void refresh(token).catch(e => setError(String(e))); };
-    check(); window.addEventListener('focus', check); return () => window.removeEventListener('focus', check);
+    const check = () => {
+      if (Date.now() - lastRefresh.current > 60_000)
+        void refresh(token).catch((e) => setError(String(e)));
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
   }, [active, token, hasUnsavedProject, refresh]);
 
   const switchProject = (slug: string) => {
@@ -755,12 +897,21 @@ export function Creator({
     setPreparedSource(null);
     try {
       const project = projects.find((item) => item.slug === selectedProject);
-      setPrepared(await invoke<PreparedArtifact>(
-        project?.type === "project" ? "prepare_project_release" : "prepare_release",
-        project?.type === "project"
-          ? { path: folder, version: projectVersion, creator: account?.username ?? "", license: project.license ?? "" }
-          : { path: folder },
-      ));
+      setPrepared(
+        await invoke<PreparedArtifact>(
+          project?.type === "project"
+            ? "prepare_project_release"
+            : "prepare_release",
+          project?.type === "project"
+            ? {
+                path: folder,
+                version: projectVersion,
+                creator: account?.username ?? "",
+                license: project.license ?? "",
+              }
+            : { path: folder },
+        ),
+      );
     } catch (reason) {
       setError(String(reason));
     }
@@ -774,10 +925,16 @@ export function Creator({
         page,
       });
       setGithubRepository(result.repository);
-      setGithubReleases((items) => page === 1
-        ? result.releases
-        : [...items, ...result.releases.filter((release) =>
-          !items.some((item) => item.id === release.id))]);
+      setGithubReleases((items) =>
+        page === 1
+          ? result.releases
+          : [
+              ...items,
+              ...result.releases.filter(
+                (release) => !items.some((item) => item.id === release.id),
+              ),
+            ],
+      );
       setGithubPage(page);
       setGithubHasMore(result.has_more);
     } finally {
@@ -794,14 +951,22 @@ export function Creator({
     setGithubTask("archive");
     setStatus(`Скачиваем ${archive.name} из GitHub…`);
     if (archive.size) {
-      setTransfer({ completed: 0, total: archive.size, bytes_per_second: 0, eta_seconds: 0 });
+      setTransfer({
+        completed: 0,
+        total: archive.size,
+        bytes_per_second: 0,
+        eta_seconds: 0,
+      });
     }
     try {
-      const artifact = await invoke<PreparedArtifact>("prepare_github_release", {
-        repository: githubRepository,
-        assetId: archive.assetId ?? null,
-        tag: archive.assetId ? null : release.tag_name,
-      });
+      const artifact = await invoke<PreparedArtifact>(
+        "prepare_github_release",
+        {
+          repository: githubRepository,
+          assetId: archive.assetId ?? null,
+          tag: archive.assetId ? null : release.tag_name,
+        },
+      );
       setPrepared(artifact);
       setPreparedSource({
         repository: githubRepository,
@@ -809,7 +974,8 @@ export function Creator({
         archive: archive.name,
       });
       setChannel(release.prerelease ? "beta" : "stable");
-      if (!changelog.trim() && release.body.trim()) setChangelog(release.body.trim());
+      if (!changelog.trim() && release.body.trim())
+        setChangelog(release.body.trim());
       setStatus("ZIP из GitHub скачан и проверен");
     } catch (reason) {
       setStatus("");
@@ -821,17 +987,27 @@ export function Creator({
   };
   const publish = async () => {
     const project = projects.find((item) => item.slug === selectedProject);
-    const identityMatches = !["mod", "world"].includes(project?.type || "") || !project?.package_id ||
+    const identityMatches =
+      !["mod", "world"].includes(project?.type || "") ||
+      !project?.package_id ||
       prepared?.manifest.id === project.package_id;
-    const versionExists = !!prepared && releases.some(
-      (release) =>
-        release.version === prepared.manifest.version &&
-        release.status !== "yanked",
-    );
-    if (!token || !project || !prepared || !identityMatches || versionExists) return;
+    const versionExists =
+      !!prepared &&
+      releases.some(
+        (release) =>
+          release.version === prepared.manifest.version &&
+          release.status !== "yanked",
+      );
+    if (!token || !project || !prepared || !identityMatches || versionExists)
+      return;
     setError("");
     setStatus("Загружаем проверенный архив…");
-    setTransfer({ completed: 0, total: prepared.size, bytes_per_second: 0, eta_seconds: 0 });
+    setTransfer({
+      completed: 0,
+      total: prepared.size,
+      bytes_per_second: 0,
+      eta_seconds: 0,
+    });
     try {
       const receipt = await invoke<{ id: string }>("publish_release", {
         token,
@@ -840,12 +1016,13 @@ export function Creator({
         channel,
         changelog,
         voxelcore: voxelcoreRequirement.trim(),
-        voxelcoreMain: futureVoxelCore && allowMain
-          ? { target_version: mainTargetVersion, min_commit: mainMinCommit }
-          : null,
+        voxelcoreMain:
+          futureVoxelCore && allowMain
+            ? { target_version: mainTargetVersion, min_commit: mainMinCommit }
+            : null,
       });
       const deadline = Date.now() + 120_000;
-      for (; ;) {
+      for (;;) {
         if (!alive.current) return;
         if (Date.now() > deadline) {
           setStatus(
@@ -940,16 +1117,27 @@ export function Creator({
   };
   const refreshProjectImages = async () => {
     const updated = await loadCreatorProjects(token);
-    const metadata = new Map(updated.map((project) => [project.slug, {
-      status: project.status,
-      cover_url: project.cover_url,
-      preview_url: project.preview_url,
-    }]));
+    const metadata = new Map(
+      updated.map((project) => [
+        project.slug,
+        {
+          status: project.status,
+          cover_url: project.cover_url,
+          preview_url: project.preview_url,
+        },
+      ]),
+    );
     for (const [slug, fields] of metadata) {
       const saved = savedProjects.current.get(slug);
-      if (saved) savedProjects.current.set(slug, JSON.stringify({ ...JSON.parse(saved), ...fields }));
+      if (saved)
+        savedProjects.current.set(
+          slug,
+          JSON.stringify({ ...JSON.parse(saved), ...fields }),
+        );
     }
-    setProjects((items) => items.map((item) => ({ ...item, ...metadata.get(item.slug) })));
+    setProjects((items) =>
+      items.map((item) => ({ ...item, ...metadata.get(item.slug) })),
+    );
   };
   const saveMedia = async (
     kind: "cover" | "gallery" | "description",
@@ -964,15 +1152,14 @@ export function Creator({
         file,
       );
       setMedia(await loadProjectMedia(token, selectedProject));
-      setStatus(
-        "Изображение сохранено.",
-      );
+      setStatus("Изображение сохранено.");
       await refreshProjectImages();
       return saved;
     }
   };
   const removeMedia = async (item: ProjectMedia) => {
-    if (!token || !selectedProject || working) throw new Error("Действие сейчас недоступно");
+    if (!token || !selectedProject || working)
+      throw new Error("Действие сейчас недоступно");
     setWorking(true);
     try {
       await deleteProjectMedia(token, selectedProject, item.id);
@@ -1012,7 +1199,23 @@ export function Creator({
     setLifecycleDialog({ release, action });
   };
 
-  if (!tokenReady || token && !account) return <><div className="page-title"><h1>Мастерская</h1></div>{error ? <ErrorNotice retry={() => void refresh(token).catch(e => setError(String(e)))}>{error}</ErrorNotice> : <p role="status">Загружаем мастерскую…</p>}</>;
+  if (!tokenReady || (token && !account))
+    return (
+      <>
+        <div className="page-title">
+          <h1>Мастерская</h1>
+        </div>
+        {error ? (
+          <ErrorNotice
+            retry={() => void refresh(token).catch((e) => setError(String(e)))}
+          >
+            {error}
+          </ErrorNotice>
+        ) : (
+          <p role="status">Загружаем мастерскую…</p>
+        )}
+      </>
+    );
   if (!token || !account)
     return (
       <>
@@ -1024,8 +1227,8 @@ export function Creator({
         <section className="creator-login">
           <h2>Войдите через GitHub</h2>
           <p>
-            Публикуйте контент-паки, сборки и карты в каталоге VLauncher. Для игры и
-            установки контента вход не нужен.
+            Публикуйте контент-паки, сборки и карты в каталоге VLauncher. Для
+            игры и установки контента вход не нужен.
           </p>
           {deviceCode && (
             <div className="creator-device-login" role="status">
@@ -1091,7 +1294,12 @@ export function Creator({
           {token && !account && (
             <button
               disabled={working}
-              onClick={() => void perform(async () => { invalidateRegistry(token); await refresh(token); })}
+              onClick={() =>
+                void perform(async () => {
+                  invalidateRegistry(token);
+                  await refresh(token);
+                })
+              }
             >
               Повторить загрузку аккаунта
             </button>
@@ -1101,60 +1309,91 @@ export function Creator({
     );
   const current = projects.find((item) => item.slug === selectedProject);
   const selectedWorld = worlds.find((world) => world.folder === worldFolder);
-  const worldEmbeddedPackages = worldSourceKind === "profile"
-    ? selectedWorld?.embedded_packages ?? []
-    : worldSourceInspection?.embedded_packages ?? [];
-  const worldMissingPackages = worldSourceKind === "profile"
-    ? selectedWorld?.publication_missing_dependencies ?? []
-    : worldSourceInspection?.required_packages.filter((id) =>
-      !worldEmbeddedPackages.some((pack) => pack.id === id)
-      && !localProfiles.find((profile) => profile.id === worldProfile)?.packages.some((pack) =>
-        pack.id === id && ["mod", "library"].includes(pack.kind))) ?? [];
-  const worldContentError = worldSourceKind === "profile"
-    ? selectedWorld?.embedded_error || ""
-    : worldSourceError;
-  const worldSourceReady = worldSourceKind === "profile"
-    ? !!worldProfile && !!worldFolder
-    : !!worldSourcePath.trim() && !!worldSourceInspection && !worldSourceLoading
-      && (!!worldProfile || /^\d+\.\d+\.\d+$/.test(worldEngineVersion));
+  const worldEmbeddedPackages =
+    worldSourceKind === "profile"
+      ? (selectedWorld?.embedded_packages ?? [])
+      : (worldSourceInspection?.embedded_packages ?? []);
+  const worldMissingPackages =
+    worldSourceKind === "profile"
+      ? (selectedWorld?.publication_missing_dependencies ?? [])
+      : (worldSourceInspection?.required_packages.filter(
+          (id) =>
+            !worldEmbeddedPackages.some((pack) => pack.id === id) &&
+            !localProfiles
+              .find((profile) => profile.id === worldProfile)
+              ?.packages.some(
+                (pack) =>
+                  pack.id === id && ["mod", "library"].includes(pack.kind),
+              ),
+        ) ?? []);
+  const worldContentError =
+    worldSourceKind === "profile"
+      ? selectedWorld?.embedded_error || ""
+      : worldSourceError;
+  const worldSourceReady =
+    worldSourceKind === "profile"
+      ? !!worldProfile && !!worldFolder
+      : !!worldSourcePath.trim() &&
+        !!worldSourceInspection &&
+        !worldSourceLoading &&
+        (!!worldProfile || /^\d+\.\d+\.\d+$/.test(worldEngineVersion));
   const currentImage = creatorProjectImage(current);
   const modpackProfiles = localProfiles.filter(
-    (profile) => !profileModpack(profile) || profileModpack(profile)?.id === current?.id,
+    (profile) =>
+      !profileModpack(profile) || profileModpack(profile)?.id === current?.id,
   );
-  const selectedModpackProfile = modpackProfiles.find((profile) => profile.id === modpackProfile);
+  const selectedModpackProfile = modpackProfiles.find(
+    (profile) => profile.id === modpackProfile,
+  );
   const draftKind = projectKindInfo(draft.type);
   const currentKind = current ? projectKindInfo(current.type) : null;
-  const preparedKind = prepared?.manifest.type === "library"
-    ? "mod"
-    : prepared?.manifest.type;
-  const preparedMatchesProject = !!prepared && !!current &&
+  const preparedKind =
+    prepared?.manifest.type === "library" ? "mod" : prepared?.manifest.type;
+  const preparedMatchesProject =
+    !!prepared &&
+    !!current &&
     preparedKind === current.type &&
     (current.type === "project"
       ? prepared.manifest.id === current.slug
-      : !["mod", "world"].includes(current.type) || !current.package_id || prepared.manifest.id === current.package_id);
+      : !["mod", "world"].includes(current.type) ||
+        !current.package_id ||
+        prepared.manifest.id === current.package_id);
   const preparedVersionRelease = prepared
     ? releases.find(
-      (release) =>
-        release.version === prepared.manifest.version &&
-        release.status !== "yanked",
-    )
+        (release) =>
+          release.version === prepared.manifest.version &&
+          release.status !== "yanked",
+      )
     : undefined;
-  const mainTargetVersion = prepared ? minimumVoxelCoreVersion(voxelcoreRequirement) : "";
-  const futureVoxelCore = !!mainTargetVersion && !!latestStableVoxelCore &&
+  const mainTargetVersion = prepared
+    ? minimumVoxelCoreVersion(voxelcoreRequirement)
+    : "";
+  const futureVoxelCore =
+    !!mainTargetVersion &&
+    !!latestStableVoxelCore &&
     compareSemVer(mainTargetVersion, latestStableVoxelCore) > 0;
   const validMainCommit = /^[a-f0-9]{40}$/.test(mainMinCommit);
-  const validVoxelcoreRequirement = isVersionRequirementValid(voxelcoreRequirement);
+  const validVoxelcoreRequirement =
+    isVersionRequirementValid(voxelcoreRequirement);
   const compatibleMainBuilds = mainBuilds.filter(
-    (build) => normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
+    (build) =>
+      normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
   );
   const loadCompatibleMainBuilds = async () => {
-    const catalog = await invoke<{ builds: MainBuild[] }>("list_mainline_builds");
+    const catalog = await invoke<{ builds: MainBuild[] }>(
+      "list_mainline_builds",
+    );
     setMainBuilds(catalog.builds);
     const matching = catalog.builds.filter(
-      (build) => normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
+      (build) =>
+        normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
     );
-    if (!matching.length) throw new Error(`Для VoxelCore ${mainTargetVersion} нет доступных DEV-сборок`);
-    if (!matching.some((build) => build.sha === mainMinCommit)) setMainMinCommit(matching[0].sha);
+    if (!matching.length)
+      throw new Error(
+        `Для VoxelCore ${mainTargetVersion} нет доступных DEV-сборок`,
+      );
+    if (!matching.some((build) => build.sha === mainMinCommit))
+      setMainMinCommit(matching[0].sha);
   };
   return (
     <>
@@ -1170,7 +1409,9 @@ export function Creator({
       )}
       <div className="page-title">
         <div>
-          <p className="eyebrow supporting-label">Мастерская · @{account.username}</p>
+          <p className="eyebrow supporting-label">
+            Мастерская · @{account.username}
+          </p>
           <h1>Мастерская</h1>
         </div>
         <button
@@ -1192,7 +1433,12 @@ export function Creator({
       <div className="workshop-refresh">
         <button
           disabled={working}
-          onClick={() => void perform(async () => { invalidateRegistry(token); await refresh(token); })}
+          onClick={() =>
+            void perform(async () => {
+              invalidateRegistry(token);
+              await refresh(token);
+            })
+          }
         >
           Обновить данные
         </button>
@@ -1240,18 +1486,27 @@ export function Creator({
             key={id}
             className={
               section === id ||
-                (id === "projects" &&
-                  ["create", "manage", "release"].includes(section))
+              (id === "projects" &&
+                ["create", "manage", "release"].includes(section))
                 ? "active"
                 : ""
             }
-            onClick={() => { clearWorldPublish?.(); setSection(id); }}
+            onClick={() => {
+              clearWorldPublish?.();
+              setSection(id);
+            }}
           >
             {label}
           </button>
         ))}
       </nav>
-      {section === "sessions" && <FeedbackPanel request={<T,>(path: string, init?: RequestInit) => registryRequest<T>(path, init, token)} />}
+      {section === "sessions" && (
+        <FeedbackPanel
+          request={<T,>(path: string, init?: RequestInit) =>
+            registryRequest<T>(path, init, token)
+          }
+        />
+      )}
       {section === "projects" && (
         <section className="workshop-projects">
           <div className="section-heading">
@@ -1286,8 +1541,18 @@ export function Creator({
             </div>
           </div>
           <div className="form-row" aria-label="Список проектов">
-            <button aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>Основные · {projects.filter(p => !p.archived_at).length}</button>
-            <button aria-pressed={showArchived} onClick={() => setShowArchived(true)}>Архив · {projects.filter(p => !!p.archived_at).length}</button>
+            <button
+              aria-pressed={!showArchived}
+              onClick={() => setShowArchived(false)}
+            >
+              Основные · {projects.filter((p) => !p.archived_at).length}
+            </button>
+            <button
+              aria-pressed={showArchived}
+              onClick={() => setShowArchived(true)}
+            >
+              Архив · {projects.filter((p) => !!p.archived_at).length}
+            </button>
           </div>
           {!!projects.length && (
             <label>
@@ -1302,7 +1567,8 @@ export function Creator({
             </label>
           )}
           <div className="workshop-project-list">
-            {projects.filter(p => !!p.archived_at === showArchived)
+            {projects
+              .filter((p) => !!p.archived_at === showArchived)
               .filter((p) =>
                 (p.title + p.slug)
                   .toLowerCase()
@@ -1323,23 +1589,31 @@ export function Creator({
                       <PrivateImage
                         src={creatorProjectImage(project)!}
                         alt=""
-                        token={registryMediaUrl(creatorProjectImage(project)!, registryUrl) ? token : ""}
+                        token={
+                          registryMediaUrl(
+                            creatorProjectImage(project)!,
+                            registryUrl,
+                          )
+                            ? token
+                            : ""
+                        }
                         fallback={project.title.slice(0, 1).toUpperCase()}
                       />
-                    ) : project.title.slice(0, 1).toUpperCase()}
+                    ) : (
+                      project.title.slice(0, 1).toUpperCase()
+                    )}
                   </span>
                   <span className="workshop-project-copy">
                     <strong>{project.title}</strong>
                     <span>
                       {project.summary || "Описание пока не добавлено"}
                     </span>
-                    <small>
-                      {projectKind(project.type)}
-                    </small>
+                    <small>{projectKind(project.type)}</small>
                   </span>
                   <span className="workshop-project-meta">
                     <span className={"publication-status " + project.status}>
-                      {publicationStatus(project.status)}{project.archived_at ? " · В архиве" : ""}
+                      {publicationStatus(project.status)}
+                      {project.archived_at ? " · В архиве" : ""}
                     </span>
                     <small>
                       {(project.downloads ?? 0).toLocaleString("ru")} загрузок
@@ -1362,12 +1636,20 @@ export function Creator({
             </div>
           )}
           {!!projects.length &&
-            !projects.some((p) =>
-              !!p.archived_at === showArchived && (p.title + p.slug)
-                .toLowerCase()
-                .includes(projectSearch.toLowerCase()),
+            !projects.some(
+              (p) =>
+                !!p.archived_at === showArchived &&
+                (p.title + p.slug)
+                  .toLowerCase()
+                  .includes(projectSearch.toLowerCase()),
             ) && (
-              <p className="workshop-empty">{projectSearch ? "Проектов по этому запросу нет." : showArchived ? "Архив пуст." : "Все проекты находятся в архиве."}</p>
+              <p className="workshop-empty">
+                {projectSearch
+                  ? "Проектов по этому запросу нет."
+                  : showArchived
+                    ? "Архив пуст."
+                    : "Все проекты находятся в архиве."}
+              </p>
             )}
         </section>
       )}
@@ -1386,7 +1668,9 @@ export function Creator({
                   <PrivateImage
                     src={currentImage}
                     alt=""
-                    token={registryMediaUrl(currentImage, registryUrl) ? token : ""}
+                    token={
+                      registryMediaUrl(currentImage, registryUrl) ? token : ""
+                    }
                     fallback={current.title.slice(0, 1).toUpperCase()}
                   />
                 ) : (
@@ -1394,23 +1678,32 @@ export function Creator({
                 )}
               </span>
               <div>
-                <p className="eyebrow supporting-label">
-                  {currentKind!.name}
-                </p>
+                <p className="eyebrow supporting-label">{currentKind!.name}</p>
                 <h2>{current.title}</h2>
-                {current.summary && <p className="workshop-project-summary">{current.summary}</p>}
+                {current.summary && (
+                  <p className="workshop-project-summary">{current.summary}</p>
+                )}
                 <p className="workshop-project-identifiers">
                   {current.type === "mod" ? (
-                    <span>Публичный адрес: <code>{current.package_id || "появится после проверки package.json"}</code></span>
+                    <span>
+                      Публичный адрес:{" "}
+                      <code>
+                        {current.package_id ||
+                          "появится после проверки package.json"}
+                      </code>
+                    </span>
                   ) : (
-                    <span>Публичный адрес: <code>{current.slug}</code></span>
+                    <span>
+                      Публичный адрес: <code>{current.slug}</code>
+                    </span>
                   )}
                 </p>
               </div>
             </div>
             <div className="form-row">
               <span className={"publication-status " + current.status}>
-                {publicationStatus(current.status)}{current.archived_at ? " · В архиве" : ""}
+                {publicationStatus(current.status)}
+                {current.archived_at ? " · В архиве" : ""}
               </span>
             </div>
           </div>
@@ -1473,35 +1766,40 @@ export function Creator({
               <legend>Что вы создаёте?</legend>
               <p>Тип определяет раздел каталога и способ подготовки версий.</p>
               <div>
-                {(["mod", "modpack", "project", "world"] as const).map((kind) => {
-                  const info = projectKindInfo(kind);
-                  return (
-                    <button
-                      type="button"
-                      key={kind}
-                      className={draft.type === kind ? "active" : ""}
-                      aria-pressed={draft.type === kind}
-                      onClick={() => setDraft({
-                        ...draft,
-                        type: kind,
-                        slug: kind === "mod"
-                          ? ""
-                          : draft.type === "mod" || !draft.slug
-                            ? projectSlugFromTitle(draft.title, kind)
-                            : draft.slug,
-                        categories: [],
-                      })}
-                    >
-                      <span className={`workshop-kind-mark ${kind}`}>
-                        <Icon name={info.icon} size={22} />
-                      </span>
-                      <span>
-                        <strong>{info.name}</strong>
-                        <small>{info.choiceDescription}</small>
-                      </span>
-                    </button>
-                  );
-                })}
+                {(["mod", "modpack", "project", "world"] as const).map(
+                  (kind) => {
+                    const info = projectKindInfo(kind);
+                    return (
+                      <button
+                        type="button"
+                        key={kind}
+                        className={draft.type === kind ? "active" : ""}
+                        aria-pressed={draft.type === kind}
+                        onClick={() =>
+                          setDraft({
+                            ...draft,
+                            type: kind,
+                            slug:
+                              kind === "mod"
+                                ? ""
+                                : draft.type === "mod" || !draft.slug
+                                  ? projectSlugFromTitle(draft.title, kind)
+                                  : draft.slug,
+                            categories: [],
+                          })
+                        }
+                      >
+                        <span className={`workshop-kind-mark ${kind}`}>
+                          <Icon name={info.icon} size={22} />
+                        </span>
+                        <span>
+                          <strong>{info.name}</strong>
+                          <small>{info.choiceDescription}</small>
+                        </span>
+                      </button>
+                    );
+                  },
+                )}
               </div>
             </fieldset>
             <label>
@@ -1512,14 +1810,19 @@ export function Creator({
                 value={draft.title}
                 onChange={(event) => {
                   const title = event.target.value;
-                  const previousAutomaticSlug = projectSlugFromTitle(draft.title, draft.type);
-                  const customSlug = !!draft.slug && draft.slug !== previousAutomaticSlug;
+                  const previousAutomaticSlug = projectSlugFromTitle(
+                    draft.title,
+                    draft.type,
+                  );
+                  const customSlug =
+                    !!draft.slug && draft.slug !== previousAutomaticSlug;
                   setDraft({
                     ...draft,
                     title,
-                    slug: draft.type === "mod" || customSlug
-                      ? draft.slug
-                      : projectSlugFromTitle(title, draft.type),
+                    slug:
+                      draft.type === "mod" || customSlug
+                        ? draft.slug
+                        : projectSlugFromTitle(title, draft.type),
                   });
                 }}
               />
@@ -1533,12 +1836,29 @@ export function Creator({
                     aria-label="Короткий адрес проекта"
                     maxLength={48}
                     value={draft.slug}
-                    placeholder={draft.type === "world" ? "floating-islands" : draft.type === "project" ? "my-game" : "technical-adventures"}
+                    placeholder={
+                      draft.type === "world"
+                        ? "floating-islands"
+                        : draft.type === "project"
+                          ? "my-game"
+                          : "technical-adventures"
+                    }
                     spellCheck={false}
-                    onChange={(event) => setDraft({ ...draft, slug: event.target.value.trim().toLowerCase() })}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        slug: event.target.value.trim().toLowerCase(),
+                      })
+                    }
                   />
                 </div>
-                <small className={!draft.slug || validProjectSlug(draft.slug) ? undefined : "danger-text"}>
+                <small
+                  className={
+                    !draft.slug || validProjectSlug(draft.slug)
+                      ? undefined
+                      : "danger-text"
+                  }
+                >
                   {!draft.slug || validProjectSlug(draft.slug)
                     ? draft.type === "project"
                       ? "Должен совпадать с name в project.toml. Это постоянный адрес проекта."
@@ -1596,19 +1916,24 @@ export function Creator({
               {draftKind.createLabel}
             </button>
           </section>
-          <section hidden={section !== "release"} className={`form-card release-composer ${current?.type || ""}`}>
+          <section
+            hidden={section !== "release"}
+            className={`form-card release-composer ${current?.type || ""}`}
+          >
             <div className="release-composer-heading">
               <div>
                 <h2>Новая версия</h2>
-                <p>{current?.type === "mod"
-                  ? "Загрузите исходную папку или готовый ZIP контент-пака."
-                  : current?.type === "modpack"
-                    ? "Зафиксируйте текущее состояние игрового профиля как новую версию сборки."
-                    : current?.type === "project"
-                      ? "Выберите папку с project.toml. Проект публикуется и обновляется как единое целое."
-                    : current?.type === "world"
-                      ? "Выберите установленный профиль и мир, который нужно опубликовать."
-                      : "Сначала выберите проект для публикации."}</p>
+                <p>
+                  {current?.type === "mod"
+                    ? "Загрузите исходную папку или готовый ZIP контент-пака."
+                    : current?.type === "modpack"
+                      ? "Зафиксируйте текущее состояние игрового профиля как новую версию сборки."
+                      : current?.type === "project"
+                        ? "Выберите папку с project.toml. Проект публикуется и обновляется как единое целое."
+                        : current?.type === "world"
+                          ? "Выберите установленный профиль и мир, который нужно опубликовать."
+                          : "Сначала выберите проект для публикации."}
+                </p>
               </div>
             </div>
             {!current && (
@@ -1620,47 +1945,87 @@ export function Creator({
                   onChange={(event) => selectProject(event.target.value)}
                 >
                   <option value="">Выберите проект</option>
-                  {projects.filter((project) => worldPublish
-                    ? project.type === "world" && !project.archived_at
-                    : project.type !== "runtime").map((project) => (
-                    <option value={project.slug} key={project.id}>
-                      {project.title} · {projectKindInfo(project.type).name}
-                    </option>
-                  ))}
+                  {projects
+                    .filter((project) =>
+                      worldPublish
+                        ? project.type === "world" && !project.archived_at
+                        : project.type !== "runtime",
+                    )
+                    .map((project) => (
+                      <option value={project.slug} key={project.id}>
+                        {project.title} · {projectKindInfo(project.type).name}
+                      </option>
+                    ))}
                 </Select>
               </label>
             )}
             {!current && worldPublish && (
-              <button className="secondary" onClick={() => setSection("create")}>Создать проект карты</button>
+              <button
+                className="secondary"
+                onClick={() => setSection("create")}
+              >
+                Создать проект карты
+              </button>
             )}
             {(current?.type === "mod" || current?.type === "project") && (
               <section className="release-source-card">
                 <div>
-                  <strong>{current.type === "project" ? "Папка проекта" : "Файлы контент-пака"}</strong>
-                  <span>{current.type === "project"
-                    ? "ID, название и разрешения будут прочитаны из project.toml. Версия хранится в VSpace."
-                    : "Версия, ID и зависимости будут прочитаны из package.json. Необязательные зависимости тоже поддерживаются."}</span>
+                  <strong>
+                    {current.type === "project"
+                      ? "Папка проекта"
+                      : "Файлы контент-пака"}
+                  </strong>
+                  <span>
+                    {current.type === "project"
+                      ? "ID, название и разрешения будут прочитаны из project.toml. Версия хранится в VSpace."
+                      : "Версия, ID и зависимости будут прочитаны из package.json. Необязательные зависимости тоже поддерживаются."}
+                  </span>
                 </div>
-                {current.type === "mod" && <div className="form-row release-source-tabs" role="group" aria-label="Источник файлов">
-                  <button
-                    type="button"
-                    aria-pressed={releaseSource === "local"}
-                    onClick={() => { setReleaseSource("local"); setPrepared(null); setPreparedSource(null); setStatus(""); }}
+                {current.type === "mod" && (
+                  <div
+                    className="form-row release-source-tabs"
+                    role="group"
+                    aria-label="Источник файлов"
                   >
-                    Локальные файлы
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={releaseSource === "github"}
-                    onClick={() => { setReleaseSource("github"); setPrepared(null); setPreparedSource(null); setStatus(""); }}
-                  >
-                    GitHub
-                  </button>
-                </div>}
-                {current.type === "project" && <label>
-                  Версия проекта
-                  <input value={projectVersion} onChange={(event) => { setProjectVersion(event.target.value); setPrepared(null); }} placeholder="1.0.0" />
-                </label>}
+                    <button
+                      type="button"
+                      aria-pressed={releaseSource === "local"}
+                      onClick={() => {
+                        setReleaseSource("local");
+                        setPrepared(null);
+                        setPreparedSource(null);
+                        setStatus("");
+                      }}
+                    >
+                      Локальные файлы
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={releaseSource === "github"}
+                      onClick={() => {
+                        setReleaseSource("github");
+                        setPrepared(null);
+                        setPreparedSource(null);
+                        setStatus("");
+                      }}
+                    >
+                      GitHub
+                    </button>
+                  </div>
+                )}
+                {current.type === "project" && (
+                  <label>
+                    Версия проекта
+                    <input
+                      value={projectVersion}
+                      onChange={(event) => {
+                        setProjectVersion(event.target.value);
+                        setPrepared(null);
+                      }}
+                      placeholder="1.0.0"
+                    />
+                  </label>
+                )}
                 {releaseSource === "local" || current.type === "project" ? (
                   <>
                     <label>
@@ -1670,19 +2035,64 @@ export function Creator({
                         placeholder="Путь к папке проекта или .zip"
                         value={folder}
                         disabled={working}
-                        onChange={(event) => { setFolder(event.target.value); setPrepared(null); setPreparedSource(null); }}
+                        onChange={(event) => {
+                          setFolder(event.target.value);
+                          setPrepared(null);
+                          setPreparedSource(null);
+                        }}
                       />
                     </label>
                     <div className="form-row">
-                      <button className="secondary" disabled={working} onClick={() => void perform(async () => {
-                        const path = await open({ directory: true, multiple: false });
-                        if (path) { setFolder(path); setPrepared(null); setPreparedSource(null); setStatus(""); }
-                      })}>Выбрать папку</button>
-                      <button className="secondary" disabled={working} onClick={() => void perform(async () => {
-                        const path = await open({ directory: false, multiple: false, filters: [{ name: "ZIP-архив", extensions: ["zip"] }] });
-                        if (path) { setFolder(path); setPrepared(null); setPreparedSource(null); setStatus(""); }
-                      })}>Выбрать ZIP</button>
-                      <button className="primary" disabled={working || !folder.trim()} onClick={() => void perform(preview)}>Проверить пакет</button>
+                      <button
+                        className="secondary"
+                        disabled={working}
+                        onClick={() =>
+                          void perform(async () => {
+                            const path = await open({
+                              directory: true,
+                              multiple: false,
+                            });
+                            if (path) {
+                              setFolder(path);
+                              setPrepared(null);
+                              setPreparedSource(null);
+                              setStatus("");
+                            }
+                          })
+                        }
+                      >
+                        Выбрать папку
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={working}
+                        onClick={() =>
+                          void perform(async () => {
+                            const path = await open({
+                              directory: false,
+                              multiple: false,
+                              filters: [
+                                { name: "ZIP-архив", extensions: ["zip"] },
+                              ],
+                            });
+                            if (path) {
+                              setFolder(path);
+                              setPrepared(null);
+                              setPreparedSource(null);
+                              setStatus("");
+                            }
+                          })
+                        }
+                      >
+                        Выбрать ZIP
+                      </button>
+                      <button
+                        className="primary"
+                        disabled={working || !folder.trim()}
+                        onClick={() => void perform(preview)}
+                      >
+                        Проверить пакет
+                      </button>
                     </div>
                   </>
                 ) : (
@@ -1708,26 +2118,42 @@ export function Creator({
                       disabled={working || !githubRepository.trim()}
                       onClick={() => void perform(() => loadGithubReleases())}
                     >
-                      {githubTask === "releases" ? "Загружаем…" : "Найти релизы"}
+                      {githubTask === "releases"
+                        ? "Загружаем…"
+                        : "Найти релизы"}
                     </button>
                     {!!githubReleases.length && (
-                      <div className="github-release-list" aria-label="Релизы GitHub">
+                      <div
+                        className="github-release-list"
+                        aria-label="Релизы GitHub"
+                      >
                         {githubReleases.map((release) => (
-                          <article className="github-release-card" key={release.id}>
+                          <article
+                            className="github-release-card"
+                            key={release.id}
+                          >
                             <header>
                               <div>
                                 <strong>{release.name}</strong>
                                 <span>
-                                  {release.tag_name} · {new Date(release.published_at).toLocaleDateString("ru")}
+                                  {release.tag_name} ·{" "}
+                                  {new Date(
+                                    release.published_at,
+                                  ).toLocaleDateString("ru")}
                                 </span>
                               </div>
                               <span className="publication-status published">
-                                {release.prerelease ? "Предрелиз" : "Стабильный"}
+                                {release.prerelease
+                                  ? "Предрелиз"
+                                  : "Стабильный"}
                               </span>
                             </header>
                             <div className="github-release-assets">
                               {release.assets.map((asset) => (
-                                <div className="github-release-asset" key={asset.id}>
+                                <div
+                                  className="github-release-asset"
+                                  key={asset.id}
+                                >
                                   <span>
                                     <strong>{asset.name}</strong>
                                     <small>{formatBytes(asset.size)}</small>
@@ -1735,11 +2161,15 @@ export function Creator({
                                   <button
                                     className="secondary small"
                                     disabled={working}
-                                    onClick={() => void perform(() => prepareGithubRelease(release, {
-                                      assetId: asset.id,
-                                      name: asset.name,
-                                      size: asset.size,
-                                    }))}
+                                    onClick={() =>
+                                      void perform(() =>
+                                        prepareGithubRelease(release, {
+                                          assetId: asset.id,
+                                          name: asset.name,
+                                          size: asset.size,
+                                        }),
+                                      )
+                                    }
                                   >
                                     Скачать и проверить
                                   </button>
@@ -1748,14 +2178,21 @@ export function Creator({
                               <div className="github-release-asset source-archive">
                                 <span>
                                   <strong>Исходный код · ZIP</strong>
-                                  <small>Автоматический архив GitHub для тега {release.tag_name}</small>
+                                  <small>
+                                    Автоматический архив GitHub для тега{" "}
+                                    {release.tag_name}
+                                  </small>
                                 </span>
                                 <button
                                   className="secondary small"
                                   disabled={working}
-                                  onClick={() => void perform(() => prepareGithubRelease(release, {
-                                    name: `Исходный код ${release.tag_name}.zip`,
-                                  }))}
+                                  onClick={() =>
+                                    void perform(() =>
+                                      prepareGithubRelease(release, {
+                                        name: `Исходный код ${release.tag_name}.zip`,
+                                      }),
+                                    )
+                                  }
                                 >
                                   Скачать и проверить
                                 </button>
@@ -1776,7 +2213,9 @@ export function Creator({
                       <button
                         className="text-button github-more-releases"
                         disabled={working}
-                        onClick={() => void perform(() => loadGithubReleases(githubPage + 1))}
+                        onClick={() =>
+                          void perform(() => loadGithubReleases(githubPage + 1))
+                        }
                       >
                         Показать ещё
                       </button>
@@ -1789,27 +2228,52 @@ export function Creator({
               <section className="release-source-card">
                 <div>
                   <strong>Профиль сборки</strong>
-                  <span>VoxelCore, версии контента и настройки config будут зафиксированы автоматически.</span>
+                  <span>
+                    VoxelCore, версии контента и настройки config будут
+                    зафиксированы автоматически.
+                  </span>
                 </div>
                 <div className="release-source-fields">
                   <label>
                     Профиль
-                    <Select aria-label="Профиль для сборки" value={selectedModpackProfile?.id || ""} onChange={(event) => { setModpackProfile(event.target.value); setSelectedModpackWorlds([]); setPrepared(null); }}>
-                      <option value="" disabled>Выберите профиль</option>
+                    <Select
+                      aria-label="Профиль для сборки"
+                      value={selectedModpackProfile?.id || ""}
+                      onChange={(event) => {
+                        setModpackProfile(event.target.value);
+                        setSelectedModpackWorlds([]);
+                        setPrepared(null);
+                      }}
+                    >
+                      <option value="" disabled>
+                        Выберите профиль
+                      </option>
                       {modpackProfiles.map((profile) => (
-                        <option value={profile.id} key={profile.id}>{profile.name}</option>
+                        <option value={profile.id} key={profile.id}>
+                          {profile.name}
+                        </option>
                       ))}
                     </Select>
                   </label>
                   <label>
                     Версия сборки
-                    <input aria-label="Версия новой сборки" value={modpackVersion} onChange={(event) => { setModpackVersion(event.target.value); setPrepared(null); }} />
+                    <input
+                      aria-label="Версия новой сборки"
+                      value={modpackVersion}
+                      onChange={(event) => {
+                        setModpackVersion(event.target.value);
+                        setPrepared(null);
+                      }}
+                    />
                   </label>
                 </div>
                 <div className="modpack-world-selection">
                   <div>
                     <strong>Стартовые карты</strong>
-                    <span>Будут загружены отдельными артефактами и скопированы в новый профиль один раз.</span>
+                    <span>
+                      Будут загружены отдельными артефактами и скопированы в
+                      новый профиль один раз.
+                    </span>
                   </div>
                   {modpackWorldsLoading ? (
                     <span className="muted">Загружаем миры…</span>
@@ -1819,15 +2283,24 @@ export function Creator({
                         <label className="checkbox-row" key={world.folder}>
                           <input
                             type="checkbox"
-                            checked={selectedModpackWorlds.includes(world.folder)}
+                            checked={selectedModpackWorlds.includes(
+                              world.folder,
+                            )}
                             onChange={(event) => {
-                              setSelectedModpackWorlds((selected) => event.target.checked
-                                ? [...selected, world.folder]
-                                : selected.filter((folder) => folder !== world.folder));
+                              setSelectedModpackWorlds((selected) =>
+                                event.target.checked
+                                  ? [...selected, world.folder]
+                                  : selected.filter(
+                                      (folder) => folder !== world.folder,
+                                    ),
+                              );
                               setPrepared(null);
                             }}
                           />
-                          <span><strong>{world.name}</strong><small>{world.folder}</small></span>
+                          <span>
+                            <strong>{world.name}</strong>
+                            <small>{world.folder}</small>
+                          </span>
                         </label>
                       ))}
                     </div>
@@ -1835,102 +2308,311 @@ export function Creator({
                     <span className="muted">В профиле нет карт.</span>
                   )}
                 </div>
-                <button className="primary small" disabled={working || !selectedModpackProfile || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(modpackVersion)} onClick={() => void perform(async () => {
-                  if (!account) return;
-                  setPrepared(await invoke<PreparedArtifact>("prepare_profile_modpack", {
-                    profileId: modpackProfile, slug: current.slug, title: current.title,
-                    version: modpackVersion, creator: account.username, license: current.license || "",
-                    worlds: selectedModpackWorlds,
-                  }));
-                })}>Подготовить сборку</button>
+                <button
+                  className="primary small"
+                  disabled={
+                    working ||
+                    !selectedModpackProfile ||
+                    !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(
+                      modpackVersion,
+                    )
+                  }
+                  onClick={() =>
+                    void perform(async () => {
+                      if (!account) return;
+                      setPrepared(
+                        await invoke<PreparedArtifact>(
+                          "prepare_profile_modpack",
+                          {
+                            profileId: modpackProfile,
+                            slug: current.slug,
+                            title: current.title,
+                            version: modpackVersion,
+                            creator: account.username,
+                            license: current.license || "",
+                            worlds: selectedModpackWorlds,
+                          },
+                        ),
+                      );
+                    })
+                  }
+                >
+                  Подготовить сборку
+                </button>
               </section>
             )}
             {current?.type === "world" && (
               <section className="release-source-card">
                 <div>
                   <strong>Источник карты</strong>
-                  <span>Можно взять мир из профиля, отдельную папку карты или ZIP-архив. Личные данные игрока и временные файлы не попадут в публикацию.</span>
+                  <span>
+                    Можно взять мир из профиля, отдельную папку карты или
+                    ZIP-архив. Личные данные игрока и временные файлы не попадут
+                    в публикацию.
+                  </span>
                 </div>
-                <div className="form-row release-source-tabs" role="group" aria-label="Источник карты">
+                <div
+                  className="form-row release-source-tabs"
+                  role="group"
+                  aria-label="Источник карты"
+                >
                   {(["profile", "folder", "zip"] as const).map((kind) => (
-                    <button key={kind} type="button" aria-pressed={worldSourceKind === kind} onClick={() => {
-                      if (kind !== worldSourceKind && kind !== "profile" && worldSourceKind !== "profile") setWorldSourcePath("");
-                      setWorldSourceInspection(null);
-                      setWorldSourceError("");
-                      setWorldSourceKind(kind);
-                      setPrepared(null);
-                    }}>
-                      {kind === "profile" ? "Из профиля" : kind === "folder" ? "Папка" : "ZIP-архив"}
+                    <button
+                      key={kind}
+                      type="button"
+                      aria-pressed={worldSourceKind === kind}
+                      onClick={() => {
+                        if (
+                          kind !== worldSourceKind &&
+                          kind !== "profile" &&
+                          worldSourceKind !== "profile"
+                        )
+                          setWorldSourcePath("");
+                        setWorldSourceInspection(null);
+                        setWorldSourceError("");
+                        setWorldSourceKind(kind);
+                        setPrepared(null);
+                      }}
+                    >
+                      {kind === "profile"
+                        ? "Из профиля"
+                        : kind === "folder"
+                          ? "Папка"
+                          : "ZIP-архив"}
                     </button>
                   ))}
                 </div>
                 <div className="release-source-fields">
                   <label>
-                    {worldSourceKind === "profile" ? "Профиль" : "Профиль с версией VoxelCore и зависимостями"}
-                    <Select aria-label="Профиль с картой" value={worldProfile} onChange={(event) => { setWorldProfile(event.target.value); setPrepared(null); }}>
-                      <option value="" disabled={worldSourceKind === "profile"}>{worldSourceKind === "profile" ? "Выберите профиль" : "Без профиля"}</option>
-                      {localProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
+                    {worldSourceKind === "profile"
+                      ? "Профиль"
+                      : "Профиль с версией VoxelCore и зависимостями"}
+                    <Select
+                      aria-label="Профиль с картой"
+                      value={worldProfile}
+                      onChange={(event) => {
+                        setWorldProfile(event.target.value);
+                        setPrepared(null);
+                      }}
+                    >
+                      <option value="" disabled={worldSourceKind === "profile"}>
+                        {worldSourceKind === "profile"
+                          ? "Выберите профиль"
+                          : "Без профиля"}
+                      </option>
+                      {localProfiles.map((profile) => (
+                        <option value={profile.id} key={profile.id}>
+                          {profile.name}
+                        </option>
+                      ))}
                     </Select>
                   </label>
-                  {worldSourceKind !== "profile" && (worldProfile
-                    ? <span className="muted">Версия VoxelCore берётся из выбранного профиля.</span>
-                    : <label>Версия VoxelCore
-                      <input aria-label="Версия VoxelCore для карты" value={worldEngineVersion} onChange={(event) => { setWorldEngineVersion(event.target.value); setPrepared(null); }} placeholder="0.31.4" />
-                    </label>)}
-                  {worldSourceKind === "profile" ? <label>
-                    Мир
-                    <Select aria-label="Мир для публикации" value={worldFolder} disabled={!worldProfile || worldsLoading || !worlds.length} onChange={(event) => { setWorldFolder(event.target.value); setPrepared(null); }}>
-                      <option value="" disabled>{worldsLoading ? "Загружаем миры…" : worlds.length ? "Выберите мир" : "В профиле нет миров"}</option>
-                      {worlds.map((world) => <option value={world.folder} key={world.folder}>{world.name}</option>)}
-                    </Select>
-                  </label> : <label>
-                    {worldSourceKind === "folder" ? "Папка карты" : "ZIP-архив карты"}
-                    <input aria-label="Путь к карте" value={worldSourcePath} onChange={(event) => { setWorldSourcePath(event.target.value); setWorldSourceInspection(null); setPrepared(null); }} placeholder={worldSourceKind === "folder" ? "Папка с world.json" : "Архив с world.json"} />
-                    <button className="secondary" type="button" disabled={working} onClick={() => void perform(async () => {
-                      const path = worldSourceKind === "folder"
-                        ? await open({ directory: true, multiple: false })
-                        : await open({ directory: false, multiple: false, filters: [{ name: "ZIP-архив", extensions: ["zip"] }] });
-                      if (path) { setWorldSourcePath(path); setWorldSourceInspection(null); setPrepared(null); }
-                    })}>{worldSourceKind === "folder" ? "Выбрать папку" : "Выбрать ZIP"}</button>
-                  </label>}
+                  {worldSourceKind !== "profile" &&
+                    (worldProfile ? (
+                      <span className="muted">
+                        Версия VoxelCore берётся из выбранного профиля.
+                      </span>
+                    ) : (
+                      <label>
+                        Версия VoxelCore
+                        <input
+                          aria-label="Версия VoxelCore для карты"
+                          value={worldEngineVersion}
+                          onChange={(event) => {
+                            setWorldEngineVersion(event.target.value);
+                            setPrepared(null);
+                          }}
+                          placeholder="0.31.4"
+                        />
+                      </label>
+                    ))}
+                  {worldSourceKind === "profile" ? (
+                    <label>
+                      Мир
+                      <Select
+                        aria-label="Мир для публикации"
+                        value={worldFolder}
+                        disabled={
+                          !worldProfile || worldsLoading || !worlds.length
+                        }
+                        onChange={(event) => {
+                          setWorldFolder(event.target.value);
+                          setPrepared(null);
+                        }}
+                      >
+                        <option value="" disabled>
+                          {worldsLoading
+                            ? "Загружаем миры…"
+                            : worlds.length
+                              ? "Выберите мир"
+                              : "В профиле нет миров"}
+                        </option>
+                        {worlds.map((world) => (
+                          <option value={world.folder} key={world.folder}>
+                            {world.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                  ) : (
+                    <label>
+                      {worldSourceKind === "folder"
+                        ? "Папка карты"
+                        : "ZIP-архив карты"}
+                      <input
+                        aria-label="Путь к карте"
+                        value={worldSourcePath}
+                        onChange={(event) => {
+                          setWorldSourcePath(event.target.value);
+                          setWorldSourceInspection(null);
+                          setPrepared(null);
+                        }}
+                        placeholder={
+                          worldSourceKind === "folder"
+                            ? "Папка с world.json"
+                            : "Архив с world.json"
+                        }
+                      />
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={working}
+                        onClick={() =>
+                          void perform(async () => {
+                            const path =
+                              worldSourceKind === "folder"
+                                ? await open({
+                                    directory: true,
+                                    multiple: false,
+                                  })
+                                : await open({
+                                    directory: false,
+                                    multiple: false,
+                                    filters: [
+                                      {
+                                        name: "ZIP-архив",
+                                        extensions: ["zip"],
+                                      },
+                                    ],
+                                  });
+                            if (path) {
+                              setWorldSourcePath(path);
+                              setWorldSourceInspection(null);
+                              setPrepared(null);
+                            }
+                          })
+                        }
+                      >
+                        {worldSourceKind === "folder"
+                          ? "Выбрать папку"
+                          : "Выбрать ZIP"}
+                      </button>
+                    </label>
+                  )}
                   <label>
                     Версия карты
-                    <input aria-label="Версия карты" value={worldVersion} onChange={(event) => { setWorldVersion(event.target.value); setPrepared(null); }} />
+                    <input
+                      aria-label="Версия карты"
+                      value={worldVersion}
+                      onChange={(event) => {
+                        setWorldVersion(event.target.value);
+                        setPrepared(null);
+                      }}
+                    />
                   </label>
                 </div>
-                {worldSourceLoading && <span className="muted">Проверяем карту и вложенные паки…</span>}
-                {worldContentError && <p className="notice error" role="alert">Не удалось проверить карту: {worldContentError}</p>}
+                {worldSourceLoading && (
+                  <span className="muted">
+                    Проверяем карту и вложенные паки…
+                  </span>
+                )}
+                {worldContentError && (
+                  <p className="notice error" role="alert">
+                    Не удалось проверить карту: {worldContentError}
+                  </p>
+                )}
                 {!!worldMissingPackages.length && (
                   <p className="notice error" role="alert">
-                    В <code>packs.list</code> указаны паки, которых нет в папке карты <code>content</code>{worldProfile ? " или среди пакетов VSpace выбранного профиля" : ""}: {worldMissingPackages.join(", ")}.
-                    Добавьте их в карту, если можете распространять{worldProfile ? ", или установите их версии из VSpace" : ""}.
+                    В <code>packs.list</code> указаны паки, которых нет в папке
+                    карты <code>content</code>
+                    {worldProfile
+                      ? " или среди пакетов VSpace выбранного профиля"
+                      : ""}
+                    : {worldMissingPackages.join(", ")}. Добавьте их в карту,
+                    если можете распространять
+                    {worldProfile ? ", или установите их версии из VSpace" : ""}
+                    .
                   </p>
                 )}
                 {!!worldEmbeddedPackages.length && (
                   <div className="notice">
                     <strong>Контент-паки внутри карты</strong>
-                    <span>{worldEmbeddedPackages.map((pack) => `${pack.title} (${pack.id}${pack.version ? ` ${pack.version}` : ""})`).join(", ")}</span>
-                    <span>Эти файлы войдут в архив карты. Проверьте условия их распространения перед отправкой.</span>
+                    <span>
+                      {worldEmbeddedPackages
+                        .map(
+                          (pack) =>
+                            `${pack.title} (${pack.id}${pack.version ? ` ${pack.version}` : ""})`,
+                        )
+                        .join(", ")}
+                    </span>
+                    <span>
+                      Эти файлы войдут в архив карты. Проверьте условия их
+                      распространения перед отправкой.
+                    </span>
                   </div>
                 )}
-                <button className="primary small" disabled={working || !worldSourceReady || !!worldContentError || !!worldMissingPackages.length || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(worldVersion)} onClick={() => void perform(async () => {
-                  if (!account) return;
-                  setPrepared(await invoke<PreparedArtifact>(worldSourceKind === "profile" ? "prepare_profile_world" : "prepare_local_world", {
-                    profileId: worldSourceKind === "profile" ? worldProfile : worldProfile || null,
-                    ...(worldSourceKind === "profile" ? {} : { voxelcoreVersion: worldEngineVersion }),
-                    ...(worldSourceKind === "profile" ? { folder: worldFolder } : { path: worldSourcePath.trim() }),
-                    slug: current.package_id || current.slug,
-                    title: current.title, version: worldVersion, creator: account.username,
-                    license: current.license || "",
-                  }));
-                })}>Подготовить карту</button>
+                <button
+                  className="primary small"
+                  disabled={
+                    working ||
+                    !worldSourceReady ||
+                    !!worldContentError ||
+                    !!worldMissingPackages.length ||
+                    !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(worldVersion)
+                  }
+                  onClick={() =>
+                    void perform(async () => {
+                      if (!account) return;
+                      setPrepared(
+                        await invoke<PreparedArtifact>(
+                          worldSourceKind === "profile"
+                            ? "prepare_profile_world"
+                            : "prepare_local_world",
+                          {
+                            profileId:
+                              worldSourceKind === "profile"
+                                ? worldProfile
+                                : worldProfile || null,
+                            ...(worldSourceKind === "profile"
+                              ? {}
+                              : { voxelcoreVersion: worldEngineVersion }),
+                            ...(worldSourceKind === "profile"
+                              ? { folder: worldFolder }
+                              : { path: worldSourcePath.trim() }),
+                            slug: current.package_id || current.slug,
+                            title: current.title,
+                            version: worldVersion,
+                            creator: account.username,
+                            license: current.license || "",
+                          },
+                        ),
+                      );
+                    })
+                  }
+                >
+                  Подготовить карту
+                </button>
               </section>
             )}
             {current && (
               <div className="release-metadata-fields">
                 <label>
                   Канал релиза
-                  <Select aria-label="Канал релиза" value={channel} onChange={(event) => setChannel(event.target.value)}>
+                  <Select
+                    aria-label="Канал релиза"
+                    value={channel}
+                    onChange={(event) => setChannel(event.target.value)}
+                  >
                     <option value="stable">Стабильная</option>
                     <option value="beta">Бета</option>
                     <option value="alpha">Альфа</option>
@@ -1938,83 +2620,118 @@ export function Creator({
                 </label>
                 <label>
                   Список изменений
-                  <textarea aria-label="Список изменений" placeholder="Что изменилось в этой версии" value={changelog} onChange={(event) => setChangelog(event.target.value)} />
+                  <textarea
+                    aria-label="Список изменений"
+                    placeholder="Что изменилось в этой версии"
+                    value={changelog}
+                    onChange={(event) => setChangelog(event.target.value)}
+                  />
                 </label>
                 {prepared && (
                   <VersionRequirementEditor
                     value={voxelcoreRequirement}
                     versions={publishedVoxelCoreVersions}
                     onChange={setVoxelcoreRequirement}
-                    exactOnly={current.type === "modpack" || current.type === "project"}
+                    exactOnly={
+                      current.type === "modpack" || current.type === "project"
+                    }
                   />
                 )}
               </div>
             )}
-            {prepared && futureVoxelCore && !["modpack", "project"].includes(prepared.manifest.type) && (
-              <section className="main-compatibility-editor">
-                <div className="notice">
-                  <strong>VoxelCore {mainTargetVersion} ещё не выпущен</strong>
-                  <span>
-                    Последняя стабильная версия — {latestStableVoxelCore}. Без дополнительной настройки релиз станет доступен после выхода VoxelCore {mainTargetVersion}.
-                  </span>
-                </div>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={allowMain}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setAllowMain(checked);
-                      if (checked) void perform(loadCompatibleMainBuilds);
-                    }}
-                  />
-                  Разрешить установку на экспериментальные main-сборки
-                </label>
-                {allowMain && (
-                  <div className="main-compatibility-fields">
-                    <button
-                      type="button"
-                      disabled={working}
-                      onClick={() => void perform(loadCompatibleMainBuilds)}
-                    >
-                      {compatibleMainBuilds.length ? "Обновить список DEV-сборок" : "Подобрать DEV-сборку автоматически"}
-                    </button>
-                    {!!compatibleMainBuilds.length && (
-                      <label>
-                        Первая проверенная сборка
-                        <Select
-                          value={compatibleMainBuilds.some((build) => build.sha === mainMinCommit) ? mainMinCommit : ""}
-                          onChange={(event) => setMainMinCommit(event.target.value)}
-                        >
-                          <option value="">Выберите проверенную сборку</option>
-                          {compatibleMainBuilds.map((build) => (
-                            <option key={build.sha} value={build.sha}>{mainBuildLabel(build)}</option>
-                          ))}
-                        </Select>
-                      </label>
-                    )}
-                    <small>
-                      Лаунчер сохранит коммит выбранной сборки сам. Пользователю подойдёт она или любая более новая официальная сборка.
-                    </small>
-                    <details className="version-requirement-advanced">
-                      <summary>Указать commit вручную</summary>
-                      <label>
-                        Полный SHA commit
-                        <input
-                          value={mainMinCommit}
-                          spellCheck={false}
-                          placeholder="40 символов"
-                          onChange={(event) => setMainMinCommit(event.target.value.trim().toLowerCase())}
-                        />
-                      </label>
-                    </details>
+            {prepared &&
+              futureVoxelCore &&
+              !["modpack", "project"].includes(prepared.manifest.type) && (
+                <section className="main-compatibility-editor">
+                  <div className="notice">
+                    <strong>
+                      VoxelCore {mainTargetVersion} ещё не выпущен
+                    </strong>
+                    <span>
+                      Последняя стабильная версия — {latestStableVoxelCore}. Без
+                      дополнительной настройки релиз станет доступен после
+                      выхода VoxelCore {mainTargetVersion}.
+                    </span>
                   </div>
-                )}
-              </section>
-            )}
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={allowMain}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setAllowMain(checked);
+                        if (checked) void perform(loadCompatibleMainBuilds);
+                      }}
+                    />
+                    Разрешить установку на экспериментальные main-сборки
+                  </label>
+                  {allowMain && (
+                    <div className="main-compatibility-fields">
+                      <button
+                        type="button"
+                        disabled={working}
+                        onClick={() => void perform(loadCompatibleMainBuilds)}
+                      >
+                        {compatibleMainBuilds.length
+                          ? "Обновить список DEV-сборок"
+                          : "Подобрать DEV-сборку автоматически"}
+                      </button>
+                      {!!compatibleMainBuilds.length && (
+                        <label>
+                          Первая проверенная сборка
+                          <Select
+                            value={
+                              compatibleMainBuilds.some(
+                                (build) => build.sha === mainMinCommit,
+                              )
+                                ? mainMinCommit
+                                : ""
+                            }
+                            onChange={(event) =>
+                              setMainMinCommit(event.target.value)
+                            }
+                          >
+                            <option value="">
+                              Выберите проверенную сборку
+                            </option>
+                            {compatibleMainBuilds.map((build) => (
+                              <option key={build.sha} value={build.sha}>
+                                {mainBuildLabel(build)}
+                              </option>
+                            ))}
+                          </Select>
+                        </label>
+                      )}
+                      <small>
+                        Лаунчер сохранит коммит выбранной сборки сам.
+                        Пользователю подойдёт она или любая более новая
+                        официальная сборка.
+                      </small>
+                      <details className="version-requirement-advanced">
+                        <summary>Указать commit вручную</summary>
+                        <label>
+                          Полный SHA commit
+                          <input
+                            value={mainMinCommit}
+                            spellCheck={false}
+                            placeholder="40 символов"
+                            onChange={(event) =>
+                              setMainMinCommit(
+                                event.target.value.trim().toLowerCase(),
+                              )
+                            }
+                          />
+                        </label>
+                      </details>
+                    </div>
+                  )}
+                </section>
+              )}
             {prepared && (
               <div className="package-preview release-ready-card">
-                <span className="supporting-label">Подготовлено к загрузке</span>
+                <span className="supporting-label">
+                  Подготовлено к загрузке
+                </span>
                 <strong>
                   {prepared.manifest.title} {prepared.manifest.version}
                 </strong>
@@ -2024,12 +2741,17 @@ export function Creator({
                   </span>
                 )}
                 {current?.type === "project" && (
-                  <span>ID проекта: <code>{prepared.manifest.id}</code> · адрес каталога: <code>{current.slug}</code></span>
+                  <span>
+                    ID проекта: <code>{prepared.manifest.id}</code> · адрес
+                    каталога: <code>{current.slug}</code>
+                  </span>
                 )}
                 <ManifestContentLinks
                   manifest={prepared.manifest}
                   parent={prepared.manifest.title}
-                  compact={["modpack", "project"].includes(prepared.manifest.type)}
+                  compact={["modpack", "project"].includes(
+                    prepared.manifest.type,
+                  )}
                 />
                 <span>
                   {(prepared.size / 1024 / 1024).toFixed(2)} MiB ·{" "}
@@ -2037,13 +2759,20 @@ export function Creator({
                 </span>
                 {preparedSource && (
                   <span>
-                    GitHub · {preparedSource.repository} · {preparedSource.release} · {preparedSource.archive}
+                    GitHub · {preparedSource.repository} ·{" "}
+                    {preparedSource.release} · {preparedSource.archive}
                   </span>
                 )}
                 {!!prepared.manifest.components?.length && (
-                  <span>Стартовые карты: {prepared.manifest.components.map((item) => item.title).join(", ")}</span>
+                  <span>
+                    Стартовые карты:{" "}
+                    {prepared.manifest.components
+                      .map((item) => item.title)
+                      .join(", ")}
+                  </span>
                 )}
-                {(current?.type !== "world" || !worldEmbeddedPackages.length) && (
+                {(current?.type !== "world" ||
+                  !worldEmbeddedPackages.length) && (
                   <span>
                     {prepared.manifest.capabilities?.length
                       ? `Разрешения: ${prepared.manifest.capabilities.join(", ")}`
@@ -2052,18 +2781,24 @@ export function Creator({
                 )}
                 {preparedVersionRelease && (
                   <span className="notice error" role="alert">
-                    Версия {prepared.manifest.version} уже добавлена в этот проект.
-                    Выберите другой релиз или измените версию пакета.
+                    Версия {prepared.manifest.version} уже добавлена в этот
+                    проект. Выберите другой релиз или измените версию пакета.
                   </span>
                 )}
-                {current?.type === "project" && prepared.manifest.id !== current.slug && (
-                  <span className="notice error" role="alert">
-                    Поле <code>name</code> в project.toml должно совпадать с адресом проекта: <code>{current.slug}</code>.
-                  </span>
-                )}
+                {current?.type === "project" &&
+                  prepared.manifest.id !== current.slug && (
+                    <span className="notice error" role="alert">
+                      Поле <code>name</code> в project.toml должно совпадать с
+                      адресом проекта: <code>{current.slug}</code>.
+                    </span>
+                  )}
               </div>
             )}
-            <p id="release-publish-state" role="status" className="release-publish-state">
+            <p
+              id="release-publish-state"
+              role="status"
+              className="release-publish-state"
+            >
               {working
                 ? "Выполняется операция…"
                 : !selectedProject
@@ -2073,9 +2808,9 @@ export function Creator({
                       ? "Выберите файлы контент-пака и проверьте пакет."
                       : current?.type === "project"
                         ? "Выберите папку проекта и проверьте её."
-                      : current?.type === "modpack"
-                        ? "Выберите профиль и подготовьте сборку."
-                        : "Выберите профиль, мир и подготовьте карту."
+                        : current?.type === "modpack"
+                          ? "Выберите профиль и подготовьте сборку."
+                          : "Выберите профиль, мир и подготовьте карту."
                     : !preparedMatchesProject
                       ? "Подготовленные файлы не соответствуют выбранному проекту."
                       : preparedVersionRelease
@@ -2099,7 +2834,9 @@ export function Creator({
               className="primary small"
               aria-describedby="release-publish-state"
               disabled={
-                working || !preparedMatchesProject || !!preparedVersionRelease ||
+                working ||
+                !preparedMatchesProject ||
+                !!preparedVersionRelease ||
                 !validVoxelcoreRequirement ||
                 (futureVoxelCore && allowMain && !validMainCommit)
               }
@@ -2200,23 +2937,48 @@ export function Creator({
                 </button>
               </div>
               {projectTab === "settings" && (
-                <ProjectLifecycleActions key={current.slug} project={current} disabled={working}
+                <ProjectLifecycleActions
+                  key={current.slug}
+                  project={current}
+                  disabled={working}
                   request={(path, init) => registryRequest(path, init, token)}
                   changed={(action) => {
                     if (action === "delete") {
-                      setProjects(items => items.filter(item => item.slug !== current.slug));
+                      setProjects((items) =>
+                        items.filter((item) => item.slug !== current.slug),
+                      );
                       savedProjects.current.delete(current.slug);
-                      setSelectedProject(""); setPrepared(null); setSection("projects");
-                      setStatus("Проект удалён. Очистка файлов выполняется на сервере.");
+                      setSelectedProject("");
+                      setPrepared(null);
+                      setSection("projects");
+                      setStatus(
+                        "Проект удалён. Очистка файлов выполняется на сервере.",
+                      );
                     } else {
-                      const archived_at = action === "archive" ? new Date().toISOString() : null;
+                      const archived_at =
+                        action === "archive" ? new Date().toISOString() : null;
                       const saved = savedProjects.current.get(current.slug);
-                      if (saved) savedProjects.current.set(current.slug, JSON.stringify({ ...JSON.parse(saved), archived_at }));
-                      setProjects(items => items.map(item => item.slug === current.slug ? { ...item, archived_at } : item));
+                      if (saved)
+                        savedProjects.current.set(
+                          current.slug,
+                          JSON.stringify({ ...JSON.parse(saved), archived_at }),
+                        );
+                      setProjects((items) =>
+                        items.map((item) =>
+                          item.slug === current.slug
+                            ? { ...item, archived_at }
+                            : item,
+                        ),
+                      );
                       setShowArchived(action === "archive");
-                      setStatus(action === "archive" ? "Проект перемещён в архив." : "Проект возвращён из архива.");
+                      setStatus(
+                        action === "archive"
+                          ? "Проект перемещён в архив."
+                          : "Проект возвращён из архива.",
+                      );
                     }
-                  }} />
+                  }}
+                />
               )}
               {projectTab === "media" && (
                 <ProjectMediaEditor
@@ -2229,9 +2991,19 @@ export function Creator({
                   add={addMedia}
                   remove={removeMedia}
                   insert={(item) => {
-                    updateSelected({ description: current.description + "\n\n![" + (item.kind === "cover" ? "Обложка" : "Скриншот") + "](" + item.url + ")" });
+                    updateSelected({
+                      description:
+                        current.description +
+                        "\n\n![" +
+                        (item.kind === "cover" ? "Обложка" : "Скриншот") +
+                        "](" +
+                        item.url +
+                        ")",
+                    });
                     setProjectTab("manage");
-                    setStatus("Изображение вставлено. Сохраните описание, чтобы опубликовать изменение.");
+                    setStatus(
+                      "Изображение вставлено. Сохраните описание, чтобы опубликовать изменение.",
+                    );
                   }}
                 />
               )}
@@ -2317,7 +3089,15 @@ export function Creator({
                       ? "Редактор"
                       : "Участник"}
                 </small>
-                <TeamActions slug={org.slug} request={<T,>(path: string, init?: RequestInit) => registryRequest<T>(path, init, token)} changed={() => void refresh(token).catch(e => setError(String(e)))} />
+                <TeamActions
+                  slug={org.slug}
+                  request={<T,>(path: string, init?: RequestInit) =>
+                    registryRequest<T>(path, init, token)
+                  }
+                  changed={() =>
+                    void refresh(token).catch((e) => setError(String(e)))
+                  }
+                />
               </article>
             ))}
             <h3>Создать команду</h3>
@@ -2461,7 +3241,11 @@ export function Creator({
         )}
         {["owner", "admin", "moderator"].includes(account.role) &&
           section === "moderation" && (
-            <PlatformAdmin token={token} role={account.role} username={account.username} />
+            <PlatformAdmin
+              token={token}
+              role={account.role}
+              username={account.username}
+            />
           )}
       </fieldset>
       {pendingProject !== null && (
@@ -2571,7 +3355,8 @@ const projectKinds: Record<Project["type"], ProjectKindInfo> = {
   mod: {
     name: "Контент-пак",
     newTitle: "Новый контент-пак",
-    description: "Отдельное расширение игры: механика, блоки, интерфейс или библиотека для других паков.",
+    description:
+      "Отдельное расширение игры: механика, блоки, интерфейс или библиотека для других паков.",
     choiceDescription: "Расширение или библиотека",
     icon: "package",
     titleLabel: "Название контент-пака",
@@ -2584,7 +3369,8 @@ const projectKinds: Record<Project["type"], ProjectKindInfo> = {
   modpack: {
     name: "Сборка",
     newTitle: "Новая сборка",
-    description: "Готовая конфигурация игры с выбранной версией VoxelCore, контентом и настройками.",
+    description:
+      "Готовая конфигурация игры с выбранной версией VoxelCore, контентом и настройками.",
     choiceDescription: "Готовый набор для игры",
     icon: "catalog",
     titleLabel: "Название сборки",
@@ -2597,7 +3383,8 @@ const projectKinds: Record<Project["type"], ProjectKindInfo> = {
   project: {
     name: "Проект",
     newTitle: "Новый проект VoxelCore",
-    description: "Самостоятельное приложение VoxelCore с собственным project.toml и встроенным контентом.",
+    description:
+      "Самостоятельное приложение VoxelCore с собственным project.toml и встроенным контентом.",
     choiceDescription: "Цельный проект или игра",
     icon: "terminal",
     titleLabel: "Название проекта",
@@ -2610,7 +3397,8 @@ const projectKinds: Record<Project["type"], ProjectKindInfo> = {
   world: {
     name: "Карта",
     newTitle: "Новая карта",
-    description: "Готовый игровой мир: приключение, демонстрация, мини-игра или заготовка для строительства.",
+    description:
+      "Готовый игровой мир: приключение, демонстрация, мини-игра или заготовка для строительства.",
     choiceDescription: "Опубликованный игровой мир",
     icon: "world",
     titleLabel: "Название карты",
@@ -2642,5 +3430,9 @@ function projectKind(kind: string) {
 }
 
 function creatorProjectImage(project?: CreatorProject) {
-  return project?.cover_url || project?.preview_url || markdownImage(project?.description);
+  return (
+    project?.cover_url ||
+    project?.preview_url ||
+    markdownImage(project?.description)
+  );
 }
