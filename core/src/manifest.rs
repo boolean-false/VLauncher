@@ -239,11 +239,13 @@ impl PackageManifest {
             path: path.clone(),
             source,
         })?;
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|source| PackageProblem::Json {
-                path: path.clone(),
-                source,
-            })?;
+        let value: Value = serde_json::from_slice(
+            bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes),
+        )
+        .map_err(|source| PackageProblem::Json {
+            path: path.clone(),
+            source,
+        })?;
         let mut manifest = if value.get("schema_version").is_some() {
             serde_json::from_value(value).map_err(|source| PackageProblem::Json {
                 path: path.clone(),

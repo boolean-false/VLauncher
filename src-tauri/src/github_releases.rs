@@ -54,6 +54,7 @@ struct ApiAsset {
     #[serde(default)]
     download_count: u64,
     state: String,
+    browser_download_url: String,
 }
 
 #[derive(Deserialize)]
@@ -132,9 +133,29 @@ fn parse_repository(value: &str) -> Result<(String, String), String> {
     Ok((owner.to_owned(), repo.to_owned()))
 }
 
+fn asset_download_url(value: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "GitHub вернул некорректную ссылку на ZIP")?;
+    let parts: Vec<_> = url.path_segments().into_iter().flatten().collect();
+    // The API may redirect a renamed repository to its new owner/name.
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || parts.len() < 6
+        || parts[2] != "releases"
+        || parts[3] != "download"
+    {
+        return Err("GitHub вернул неожиданную ссылку на ZIP".into());
+    }
+    Ok(url.to_string())
+}
+
 fn api_error(response: Response) -> String {
     match response.status().as_u16() {
-        403 | 429 => "GitHub временно ограничил запросы без авторизации. Повторите позже.".into(),
+        429 => "GitHub временно ограничил запросы. Повторите позже.".into(),
+        403 if response.headers().get("x-ratelimit-remaining").is_some_and(|value| value == "0") =>
+            "Исчерпан лимит публичного GitHub API для вашей сети. Подождите или скачайте ZIP в браузере и выберите его в «Локальных файлах».".into(),
+        403 => "GitHub запретил запрос. Проверьте доступ к репозиторию и попробуйте скачать ZIP в браузере.".into(),
         404 => "Публичный репозиторий или релиз не найден.".into(),
         status => format!("GitHub вернул ошибку {status}"),
     }
@@ -232,7 +253,10 @@ fn download(
     target: &mut fs::File,
 ) -> Result<(), String> {
     if !response.status().is_success() {
-        return Err(api_error(response));
+        return Err(format!(
+            "Не удалось получить ZIP из GitHub (HTTP {}). Попробуйте скачать этот файл в браузере и выбрать его в «Локальных файлах».",
+            response.status()
+        ));
     }
     let total = expected_size
         .or_else(|| response.content_length())
@@ -311,7 +335,11 @@ pub async fn prepare_github_release(
             {
                 return Err("Выбранный файл GitHub не является доступным ZIP-архивом".into());
             }
-            (url, Some(asset.size), ASSET_ACCEPT)
+            (
+                asset_download_url(&asset.browser_download_url)?,
+                Some(asset.size),
+                ASSET_ACCEPT,
+            )
         } else {
             let tag = tag.unwrap();
             let release_url = tagged_api_url(&owner, &repo, "releases/tags", &tag)?;
@@ -324,6 +352,7 @@ pub async fn prepare_github_release(
         };
         let response = http
             .get(url)
+            .timeout(Duration::from_secs(30 * 60))
             .header("Accept", accept)
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
@@ -398,6 +427,19 @@ mod tests {
             "-owner/repo",
         ] {
             assert!(parse_repository(value).is_err(), "{value}");
+        }
+    }
+    #[test]
+    fn asset_download_uses_public_zip_link_including_renamed_repositories() {
+        let url = "https://github.com/new-owner/renamed/releases/download/v1.0/pack%20name.zip";
+        assert_eq!(super::asset_download_url(url).unwrap(), url);
+        for invalid in [
+            "https://api.github.com/repos/a/b/releases/assets/1",
+            "http://github.com/a/b/releases/download/v1/p.zip",
+            "https://example.com/a/b/releases/download/v1/p.zip",
+            "https://github.com/a/b",
+        ] {
+            assert!(super::asset_download_url(invalid).is_err());
         }
     }
 }

@@ -58,6 +58,10 @@ struct SavedUpload {
     project_id: String,
     artifact_sha256: String,
     part_size: usize,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    changelog: Option<String>,
     voxelcore: String,
     #[serde(default)]
     voxelcore_main: Option<VoxelCoreMainRequirement>,
@@ -75,26 +79,48 @@ pub fn prepare_package(
     if folder.is_file() {
         return prepare_zip_package(folder, output_folder.as_ref());
     }
-    let manifest = PackageManifest::read(folder)?;
+    let root = package_root(folder)?;
+    let folder = root.as_path();
+    let manifest = PackageManifest::read(folder).map_err(|error| problem(format!(
+        "Не удалось проверить package.json: {error}. Проверьте ID, версию, авторов и зависимости пака."
+    )))?;
     fs::create_dir_all(output_folder.as_ref()).map_err(|source| PackageProblem::Io {
         path: output_folder.as_ref().to_owned(),
         source,
     })?;
+    let source_root = fs::canonicalize(folder).map_err(|error| problem(error.to_string()))?;
+    let output_root =
+        fs::canonicalize(output_folder.as_ref()).map_err(|error| problem(error.to_string()))?;
+    if output_root.starts_with(&source_root) {
+        return Err(problem(
+            "Папка для подготовленных архивов не должна находиться внутри пака",
+        ));
+    }
     let target = output_folder.as_ref().join(format!(
         "{}-{}-{}.zip",
         manifest.id,
         manifest.version,
         Uuid::new_v4()
     ));
-    let file = fs::File::create(&target).map_err(|source| PackageProblem::Io {
-        path: target.clone(),
-        source,
-    })?;
+    let temporary = tempfile::NamedTempFile::new_in(output_folder.as_ref())
+        .map_err(|error| problem(error.to_string()))?;
+    let file = temporary
+        .reopen()
+        .map_err(|error| problem(error.to_string()))?;
     let mut archive = ZipWriter::new(file);
+    let mut paths = std::collections::HashSet::new();
+    let mut total = 0_u64;
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
-    for entry in WalkDir::new(folder).follow_links(false).sort_by_file_name() {
+    for entry in WalkDir::new(folder)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|entry| {
+            !ignored_package_path(entry.path().strip_prefix(folder).unwrap_or(entry.path()))
+        })
+    {
         let entry = entry.map_err(|error| problem(error.to_string()))?;
         if entry.file_type().is_symlink() {
             return Err(problem(format!(
@@ -114,6 +140,22 @@ pub fn prepare_package(
         if relative.split('/').next() == Some(".git") {
             continue;
         }
+        if relative.contains(':') || !paths.insert(relative.to_lowercase()) {
+            return Err(problem(format!(
+                "Путь не переносим между системами или повторяется: {relative}"
+            )));
+        }
+        total = total.saturating_add(
+            entry
+                .metadata()
+                .map_err(|error| problem(error.to_string()))?
+                .len(),
+        );
+        if paths.len() > 100_000 || total > 2 * 1024 * 1024 * 1024 {
+            return Err(problem(
+                "Пак превышает лимит: 100 000 файлов или 2 ГБ после распаковки",
+            ));
+        }
         archive
             .start_file(&relative, options)
             .map_err(|error| problem(error.to_string()))?;
@@ -129,7 +171,10 @@ pub fn prepare_package(
     archive
         .finish()
         .map_err(|error| problem(error.to_string()))?;
-    let (sha256, size) = hash_file(&target)?;
+    let (sha256, size) = hash_file(temporary.path())?;
+    temporary
+        .persist(&target)
+        .map_err(|error| problem(error.to_string()))?;
     Ok(PreparedArtifact {
         path: target,
         sha256,
@@ -253,6 +298,57 @@ fn write_project_archive(folder: &Path, target: &Path) -> Result<(), PackageProb
     Ok(())
 }
 
+fn ignored_package_path(path: &Path) -> bool {
+    path.components().any(|part| {
+        matches!(
+            part.as_os_str().to_str(),
+            Some(".git" | "__MACOSX" | ".DS_Store")
+        )
+    })
+}
+
+/// Stop below a package root: bundled dependencies belong to that package.
+fn package_root(folder: &Path) -> Result<PathBuf, PackageProblem> {
+    let mut roots = Vec::new();
+    let mut walk = WalkDir::new(folder)
+        .follow_links(false)
+        .max_depth(32)
+        .sort_by_file_name()
+        .into_iter();
+    while let Some(entry) = walk.next() {
+        let entry =
+            entry.map_err(|error| problem(format!("Не удалось прочитать папку пака: {error}")))?;
+        if ignored_package_path(entry.path().strip_prefix(folder).unwrap_or(entry.path())) {
+            if entry.file_type().is_dir() {
+                walk.skip_current_dir();
+            }
+            continue;
+        }
+        if entry.file_type().is_dir() && entry.path().join("package.json").is_file() {
+            roots.push(entry.path().to_owned());
+            walk.skip_current_dir();
+        }
+    }
+    match roots.len() {
+        0 => Err(problem(
+            "Пак не найден: нужен файл package.json. Если в репозитории только исходники, выберите готовый ZIP пака из Assets релиза.",
+        )),
+        1 => Ok(roots.remove(0)),
+        _ => Err(problem(format!(
+            "Найдено несколько паков: {}. Выберите папку нужного пака или ZIP, содержащий только его.",
+            roots
+                .iter()
+                .map(|root| root
+                    .strip_prefix(folder)
+                    .unwrap_or(root)
+                    .display()
+                    .to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 fn prepare_zip_package(source: &Path, output: &Path) -> Result<PreparedArtifact, PackageProblem> {
     const MAX_UNPACKED: u64 = 2 * 1024 * 1024 * 1024;
     let temporary = tempfile::tempdir().map_err(|error| problem(error.to_string()))?;
@@ -268,7 +364,14 @@ fn prepare_zip_package(source: &Path, output: &Path) -> Result<PreparedArtifact,
         let mut entry = zip
             .by_index(index)
             .map_err(|error| problem(error.to_string()))?;
-        let name = entry.name().trim_end_matches('/').to_owned();
+        let name = entry
+            .name()
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_owned();
+        if name.is_empty() && entry.is_dir() {
+            continue;
+        }
         if name.is_empty()
             || name.contains(['\\', ':'])
             || name.starts_with('/')
@@ -291,6 +394,9 @@ fn prepare_zip_package(source: &Path, output: &Path) -> Result<PreparedArtifact,
         if entry.size() > MAX_UNPACKED.saturating_sub(total) {
             return Err(problem("Распакованный ZIP превышает 2 ГБ"));
         }
+        if ignored_package_path(Path::new(&name)) {
+            continue;
+        }
         let destination = temporary.path().join(&name);
         if entry.is_dir() {
             fs::create_dir_all(&destination).map_err(|error| problem(error.to_string()))?;
@@ -310,20 +416,7 @@ fn prepare_zip_package(source: &Path, output: &Path) -> Result<PreparedArtifact,
             return Err(problem("Распакованный ZIP превышает 2 ГБ"));
         }
     }
-    let root = if temporary.path().join("package.json").is_file() {
-        temporary.path().to_owned()
-    } else {
-        let entries = fs::read_dir(temporary.path())
-            .map_err(|error| problem(error.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| problem(error.to_string()))?;
-        if entries.len() != 1 || !entries[0].path().join("package.json").is_file() {
-            return Err(problem(
-                "В ZIP нужен package.json в корне или в единственной папке проекта",
-            ));
-        }
-        entries[0].path()
-    };
+    let root = package_root(temporary.path())?;
     if fs::metadata(root.join("package.json"))
         .map_err(|error| problem(error.to_string()))?
         .len()
@@ -364,6 +457,10 @@ fn transfer_error(error: reqwest::Error) -> PackageProblem {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Publication metadata remains explicit in the existing desktop API."
+)]
 pub fn upload_package(
     registry_url: &str,
     token: &str,
@@ -403,6 +500,10 @@ impl<F: Fn(u64, u64) -> bool> Read for UploadReader<F> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Publication metadata remains explicit in the existing desktop API."
+)]
 pub fn upload_package_with_progress(
     registry_url: &str,
     token: &str,
@@ -443,8 +544,6 @@ pub fn upload_package_with_progress(
             saved.registry_url == registry_url
                 && saved.project_id == project_id
                 && saved.artifact_sha256 == artifact.sha256
-                && saved.voxelcore == voxelcore
-                && saved.voxelcore_main.as_ref() == voxelcore_main
         });
     let mut session = if let Some(saved) = saved {
         let response = client
@@ -457,20 +556,53 @@ pub fn upload_package_with_progress(
                 .json()
                 .map_err(|error| problem(error.to_string()))?;
             session.part_size = saved.part_size;
-            Some(session)
-        } else {
+            let metadata_matches = saved.voxelcore == voxelcore
+                && saved.voxelcore_main.as_ref() == voxelcore_main
+                && saved.channel.as_deref() == Some(channel)
+                && saved.changelog.as_deref() == Some(changelog);
+            if !metadata_matches && session.status == "uploading" {
+                let response = client
+                    .delete(format!("{registry_url}/uploads/{}", session.id))
+                    .bearer_auth(token)
+                    .send()
+                    .map_err(transfer_error)?;
+                if !response.status().is_success() {
+                    return Err(response_error(response));
+                }
+                None
+            } else if !metadata_matches
+                && matches!(
+                    session.status.as_str(),
+                    "queued" | "processing" | "published" | "awaiting_moderation"
+                )
+            {
+                return Err(problem(
+                    "Этот архив уже отправлен на обработку или опубликован. Изменённые параметры не применены. Проверьте версию в списке публикаций.",
+                ));
+            } else {
+                Some(session)
+            }
+        } else if matches!(response.status().as_u16(), 404 | 410) {
             None
+        } else {
+            return Err(response_error(response));
         }
     } else {
         None
     };
     if session.as_ref().is_some_and(|value| {
-        !matches!(value.status.as_str(), "uploading" | "queued" | "processing")
+        !matches!(
+            value.status.as_str(),
+            "uploading" | "queued" | "processing" | "published" | "awaiting_moderation"
+        )
     }) {
         session = None;
     }
     if let Some(existing) = &session
-        && matches!(existing.status.as_str(), "queued" | "processing")
+        && matches!(
+            existing.status.as_str(),
+            "queued" | "processing" | "published" | "awaiting_moderation"
+        )
     {
         return Ok(UploadReceipt {
             id: existing.id.clone(),
@@ -509,6 +641,8 @@ pub fn upload_package_with_progress(
                     project_id: project_id.into(),
                     artifact_sha256: artifact.sha256.clone(),
                     part_size: session.part_size,
+                    channel: Some(channel.into()),
+                    changelog: Some(changelog.into()),
                     voxelcore: voxelcore.into(),
                     voxelcore_main: voxelcore_main.cloned(),
                 })
@@ -521,6 +655,9 @@ pub fn upload_package_with_progress(
             session
         }
     };
+    if session.part_size == 0 || session.part_size > 64 * 1024 * 1024 {
+        return Err(problem("invalid upload part size"));
+    }
     let completed: std::collections::HashSet<_> =
         session.parts.iter().map(|part| part.number).collect();
     let mut file = fs::File::open(&artifact.path).map_err(|source| PackageProblem::Io {
@@ -587,7 +724,8 @@ pub fn upload_package_with_progress(
     let receipt = response
         .json()
         .map_err(|error| problem(error.to_string()))?;
-    let _ = fs::remove_file(state_path);
+    // Retain the receipt until the next attempt can confirm the server state.
+    // A lost completion response or interrupted moderation polling must be resumable.
     Ok(receipt)
 }
 
@@ -790,5 +928,318 @@ mod tests {
         assert!(zip.by_name("project.toml").is_ok());
         assert!(zip.by_name("modules/main.lua").is_ok());
         assert!(zip.by_name("user/worlds/private.dat").is_err());
+    }
+    fn upload_fixture(temp: &Path) -> PreparedArtifact {
+        let source = temp.join("source.zip");
+        zip_fixture(&source, &[("package.json", &manifest_fixture())]);
+        prepare_package(source, temp.join("out")).unwrap()
+    }
+
+    fn save_upload(artifact: &PreparedArtifact, registry: &str, channel: &str) -> PathBuf {
+        let path = artifact.path.parent().unwrap().join(format!(
+            ".upload-project-{}-{}.json",
+            artifact.manifest.version, artifact.sha256
+        ));
+        fs::write(
+            &path,
+            serde_json::to_vec(&SavedUpload {
+                id: "existing".into(),
+                registry_url: registry.into(),
+                project_id: "project".into(),
+                artifact_sha256: artifact.sha256.clone(),
+                part_size: 8 * 1024 * 1024,
+                channel: Some(channel.into()),
+                changelog: Some("notes".into()),
+                voxelcore: ">=0.31.4".into(),
+                voxelcore_main: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    // A closed listener makes unexpected duplicate POSTs fail rather than hang the test.
+    fn upload_server(
+        steps: Vec<(&'static str, Option<&'static str>)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for (expected, response) in steps {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                assert!(header.starts_with(expected), "{header}");
+                let length: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                bodies.push(String::from_utf8_lossy(&body).into_owned());
+                if let Some(response) = response {
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+                }
+            }
+            bodies
+        });
+        (url, thread)
+    }
+
+    #[test]
+    fn resume_returns_existing_terminal_publication_without_reupload() {
+        for status in ["published", "awaiting_moderation", "queued", "processing"] {
+            let body: &'static str = match status {
+                "published" => r#"{"id":"existing","status":"published"}"#,
+                "awaiting_moderation" => r#"{"id":"existing","status":"awaiting_moderation"}"#,
+                "queued" => r#"{"id":"existing","status":"queued"}"#,
+                _ => r#"{"id":"existing","status":"processing"}"#,
+            };
+            let (url, server) = upload_server(vec![("GET /uploads/existing ", Some(body))]);
+            let temp = tempfile::tempdir().unwrap();
+            let artifact = upload_fixture(temp.path());
+            let saved = save_upload(&artifact, &url, "stable");
+            let receipt = upload_package_with_progress(
+                &url,
+                "token",
+                "project",
+                &artifact,
+                "stable",
+                "notes",
+                ">=0.31.4",
+                None,
+                |_, _| true,
+            )
+            .unwrap();
+            assert_eq!(receipt.status, status);
+            assert!(saved.is_file());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn changed_upload_metadata_replaces_open_session_and_persists_completion() {
+        let (url, server) = upload_server(vec![
+            (
+                "GET /uploads/existing ",
+                Some(r#"{"id":"existing","status":"uploading"}"#),
+            ),
+            ("DELETE /uploads/existing ", Some("{}")),
+            (
+                "POST /uploads ",
+                Some(r#"{"id":"new","status":"uploading","part_size":8388608}"#),
+            ),
+            ("PUT /uploads/new/parts/1 ", Some("{}")),
+            (
+                "POST /uploads/new/complete ",
+                Some(r#"{"id":"new","status":"queued"}"#),
+            ),
+            (
+                "GET /uploads/new ",
+                Some(r#"{"id":"new","status":"published"}"#),
+            ),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = upload_fixture(temp.path());
+        let saved = save_upload(&artifact, &url, "alpha");
+        let receipt = upload_package_with_progress(
+            &url,
+            "token",
+            "project",
+            &artifact,
+            "stable",
+            "new notes",
+            ">=0.31.4",
+            None,
+            |_, _| true,
+        )
+        .unwrap();
+        assert_eq!(receipt.status, "queued");
+        assert!(saved.is_file());
+        let receipt = upload_package_with_progress(
+            &url,
+            "token",
+            "project",
+            &artifact,
+            "stable",
+            "new notes",
+            ">=0.31.4",
+            None,
+            |_, _| true,
+        )
+        .unwrap();
+        assert_eq!(receipt.status, "published");
+        let requests = server.join().unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&requests[2]).unwrap();
+        assert_eq!(sent["channel"], "stable");
+        assert_eq!(sent["changelog"], "new notes");
+    }
+
+    #[test]
+    fn lost_completion_response_resumes_accepted_upload() {
+        let (url, server) = upload_server(vec![
+            (
+                "POST /uploads ",
+                Some(r#"{"id":"new","status":"uploading","part_size":8388608}"#),
+            ),
+            ("PUT /uploads/new/parts/1 ", Some("{}")),
+            ("POST /uploads/new/complete ", None),
+            (
+                "GET /uploads/new ",
+                Some(r#"{"id":"new","status":"awaiting_moderation"}"#),
+            ),
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = upload_fixture(temp.path());
+        assert!(
+            upload_package_with_progress(
+                &url,
+                "token",
+                "project",
+                &artifact,
+                "stable",
+                "notes",
+                ">=0.31.4",
+                None,
+                |_, _| true
+            )
+            .is_err()
+        );
+        let receipt = upload_package_with_progress(
+            &url,
+            "token",
+            "project",
+            &artifact,
+            "stable",
+            "notes",
+            ">=0.31.4",
+            None,
+            |_, _| true,
+        )
+        .unwrap();
+        assert_eq!(receipt.status, "awaiting_moderation");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn changed_metadata_after_completion_is_reported() {
+        let (url, server) = upload_server(vec![(
+            "GET /uploads/existing ",
+            Some(r#"{"id":"existing","status":"published"}"#),
+        )]);
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = upload_fixture(temp.path());
+        save_upload(&artifact, &url, "stable");
+        let error = upload_package_with_progress(
+            &url,
+            "token",
+            "project",
+            &artifact,
+            "beta",
+            "notes",
+            ">=0.31.4",
+            None,
+            |_, _| true,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Изменённые параметры не применены")
+        );
+        server.join().unwrap();
+    }
+    #[test]
+    fn imports_nested_pack_with_macos_metadata_and_bom() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("input.zip");
+        let mut manifest = b"\xef\xbb\xbf".to_vec();
+        manifest.extend(manifest_fixture());
+        zip_fixture(
+            &source,
+            &[
+                ("./repository/content/my_pack/package.json", &manifest),
+                (
+                    "./repository/content/my_pack/scripts/main.lua",
+                    b"return true",
+                ),
+                ("./repository/README.md", b"repo docs"),
+                ("__MACOSX/._repository", b"metadata"),
+                (".DS_Store", b"metadata"),
+            ],
+        );
+        let prepared = prepare_package(&source, temp.path().join("out")).unwrap();
+        assert_eq!(prepared.manifest.id, "publish_test");
+        let mut archive = ZipArchive::new(fs::File::open(&prepared.path).unwrap()).unwrap();
+        assert!(archive.by_name("package.json").is_ok());
+        assert!(archive.by_name("scripts/main.lua").is_ok());
+        assert_eq!(archive.len(), 2);
+    }
+
+    #[test]
+    fn ambiguous_archives_list_packages_and_root_pack_keeps_bundled_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("input.zip");
+        let manifest = manifest_fixture();
+        zip_fixture(
+            &source,
+            &[
+                ("one/package.json", &manifest),
+                ("two/package.json", &manifest),
+            ],
+        );
+        let error = prepare_package(&source, temp.path().join("out"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("несколько паков") && error.contains("one") && error.contains("two")
+        );
+        zip_fixture(
+            &source,
+            &[
+                ("package.json", &manifest),
+                ("bundled/package.json", &manifest),
+            ],
+        );
+        let prepared = prepare_package(&source, temp.path().join("out")).unwrap();
+        let mut archive = ZipArchive::new(fs::File::open(prepared.path).unwrap()).unwrap();
+        assert!(archive.by_name("bundled/package.json").is_ok());
+    }
+
+    #[test]
+    fn local_pack_refuses_output_inside_source_and_cleans_failed_archives() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("package.json"), manifest_fixture()).unwrap();
+        assert!(
+            prepare_package(&source, source.join("out"))
+                .unwrap_err()
+                .to_string()
+                .contains("внутри пака")
+        );
+        #[cfg(unix)]
+        {
+            fs::write(source.join("bad:name"), b"data").unwrap();
+            let output = temp.path().join("out");
+            assert!(prepare_package(&source, &output).is_err());
+            assert_eq!(fs::read_dir(output).unwrap().count(), 0);
+        }
     }
 }
