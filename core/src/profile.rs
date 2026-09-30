@@ -1,3 +1,11 @@
+#[path = "materialization.rs"]
+mod materialization;
+use materialization::GameChanges;
+
+#[path = "profile_settings.rs"]
+mod settings_transfer;
+pub use settings_transfer::ProfileSettingsInfo;
+
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -1272,19 +1280,18 @@ impl ProfileStore {
                 continue;
             }
             if let Ok(materialized_revision) = fs::read_to_string(game.join(".vlauncher-revision"))
+                && safe_relative(Path::new(&materialized_revision)).is_ok()
             {
-                if safe_relative(Path::new(&materialized_revision)).is_ok() {
-                    let materialized_content = profile_path
-                        .join("snapshots")
-                        .join(materialized_revision)
-                        .join("content");
-                    if let Ok(entries) = fs::read_dir(materialized_content) {
-                        managed.extend(
-                            entries
-                                .filter_map(Result::ok)
-                                .filter_map(|entry| entry.file_name().into_string().ok()),
-                        );
-                    }
+                let materialized_content = profile_path
+                    .join("snapshots")
+                    .join(materialized_revision)
+                    .join("content");
+                if let Ok(entries) = fs::read_dir(materialized_content) {
+                    managed.extend(
+                        entries
+                            .filter_map(Result::ok)
+                            .filter_map(|entry| entry.file_name().into_string().ok()),
+                    );
                 }
             }
             let content = game.join("content");
@@ -1378,6 +1385,20 @@ impl ProfileStore {
             return invalid("profile does not exist");
         }
         fs::remove_dir_all(&path).map_err(|source| io_error(&path, source))?;
+        self.with_database(|database| {
+            database.execute(
+                "DELETE FROM profiles WHERE id = ?1",
+                [profile_id.to_string()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Remove a broken profile from the library without touching files that still exist.
+    pub fn forget_broken_profile(&self, profile_id: Uuid) -> Result<(), PackageProblem> {
+        if self.profile(profile_id)?.problem.is_none() {
+            return invalid("profile does not require recovery");
+        }
         self.with_database(|database| {
             database.execute(
                 "DELETE FROM profiles WHERE id = ?1",
@@ -1690,8 +1711,7 @@ impl ProfileStore {
             .iter()
             .filter(|package| package.kind == PackageKind::Project)
             .collect::<Vec<_>>();
-        if incoming_projects.len() > 1
-            || incoming_projects.first().is_some() && plan.packages.len() != 1
+        if incoming_projects.len() > 1 || !incoming_projects.is_empty() && plan.packages.len() != 1
         {
             return invalid("a project must be installed as an atomic package");
         }
@@ -1699,12 +1719,10 @@ impl ProfileStore {
             .packages
             .iter()
             .find(|package| package.kind == PackageKind::Project)
-        {
-            if incoming_projects.first().map(|package| package.id.as_str())
+            && incoming_projects.first().map(|package| package.id.as_str())
                 != Some(installed_project.id.as_str())
-            {
-                return invalid("project profiles can only update their installed project");
-            }
+        {
+            return invalid("project profiles can only update their installed project");
         }
         let operation_id = Uuid::new_v4();
         let profile_path = self.profile_path(profile_id);
@@ -1749,7 +1767,50 @@ impl ProfileStore {
         } else {
             fs::rename(&staging, &snapshot).map_err(|source| io_error(&staging, source))?;
         }
-        if let Err(error) = self.materialize_game_folder_locked(profile_id, &plan.revision) {
+        let roots = serde_json::to_string(&metadata.roots)
+            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
+        let root_requirements = serde_json::to_string(&metadata.root_requirements)
+            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
+        let result = self.materialize_game_folder_with_commit(profile_id, &plan.revision, || {
+            self.with_database(|database| {
+                let transaction = database.unchecked_transaction()?;
+                let (active, previous): (Option<String>, Option<String>) = transaction.query_row(
+                    "SELECT active_revision, previous_revision FROM profiles WHERE id = ?1",
+                    [profile_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let next_previous = if active.as_deref() == Some(plan.revision.as_str()) {
+                    previous
+                } else {
+                    active
+                };
+                transaction.execute(
+                    "UPDATE profiles SET previous_revision = ?1, active_revision = ?2,
+                 voxelcore_version = ?3, roots_json = ?4,
+                 root_requirements_json = ?5 WHERE id = ?6",
+                    params![
+                        next_previous,
+                        plan.revision,
+                        metadata.voxelcore_version,
+                        roots,
+                        root_requirements,
+                        profile_id.to_string()
+                    ],
+                )?;
+                transaction.execute(
+                    "INSERT INTO operations (id, profile_id, kind, revision, status, created_at)
+                 VALUES (?1, ?2, 'install', ?3, 'complete', ?4)",
+                    params![
+                        operation_id.to_string(),
+                        profile_id.to_string(),
+                        plan.revision,
+                        timestamp()
+                    ],
+                )?;
+                transaction.commit()
+            })
+        });
+        if let Err(error) = result {
             self.record_operation(
                 operation_id,
                 profile_id,
@@ -1759,47 +1820,6 @@ impl ProfileStore {
             )?;
             return Err(error);
         }
-        let roots = serde_json::to_string(&metadata.roots)
-            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
-        let root_requirements = serde_json::to_string(&metadata.root_requirements)
-            .map_err(|error| PackageProblem::Invalid(error.to_string()))?;
-        self.with_database(|database| {
-            let transaction = database.unchecked_transaction()?;
-            let (active, previous): (Option<String>, Option<String>) = transaction.query_row(
-                "SELECT active_revision, previous_revision FROM profiles WHERE id = ?1",
-                [profile_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            let next_previous = if active.as_deref() == Some(plan.revision.as_str()) {
-                previous
-            } else {
-                active
-            };
-            transaction.execute(
-                "UPDATE profiles SET previous_revision = ?1, active_revision = ?2,
-                 voxelcore_version = ?3, roots_json = ?4,
-                 root_requirements_json = ?5 WHERE id = ?6",
-                params![
-                    next_previous,
-                    plan.revision,
-                    metadata.voxelcore_version,
-                    roots,
-                    root_requirements,
-                    profile_id.to_string()
-                ],
-            )?;
-            transaction.execute(
-                "INSERT INTO operations (id, profile_id, kind, revision, status, created_at)
-                 VALUES (?1, ?2, 'install', ?3, 'complete', ?4)",
-                params![
-                    operation_id.to_string(),
-                    profile_id.to_string(),
-                    plan.revision,
-                    timestamp()
-                ],
-            )?;
-            transaction.commit()
-        })?;
         Ok(())
     }
 
@@ -1986,6 +2006,10 @@ impl ProfileStore {
         Ok(path.to_owned())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Publication metadata remains explicit in the existing desktop API."
+    )]
     pub fn prepare_modpack(
         &self,
         profile_id: Uuid,
@@ -2215,6 +2239,10 @@ impl ProfileStore {
         result
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Publication metadata remains explicit in the existing desktop API."
+    )]
     pub fn prepare_world_package(
         &self,
         profile_id: Uuid,
@@ -2248,6 +2276,10 @@ impl ProfileStore {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Publication metadata remains explicit in the existing desktop API."
+    )]
     pub fn prepare_world_from_path(
         &self,
         profile_id: Option<Uuid>,
@@ -2275,6 +2307,10 @@ impl ProfileStore {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Publication metadata remains explicit in the existing desktop API."
+    )]
     fn prepare_world_directory(
         &self,
         profile_id: Option<Uuid>,
@@ -2307,12 +2343,12 @@ impl ProfileStore {
             .filter(|package| matches!(package.kind, PackageKind::Mod | PackageKind::Library))
             .map(|package| (package.id.as_str(), package.version.as_str()))
             .collect::<HashMap<_, _>>();
-        let embedded = embedded_world_packages(&world)?;
+        let embedded = embedded_world_packages(world)?;
         let embedded_ids = embedded
             .iter()
             .map(|package| package.id.as_str())
             .collect::<HashSet<_>>();
-        let required_ids = world_required_pack_ids(&world)?;
+        let required_ids = world_required_pack_ids(world)?;
         let mut dependencies = Vec::new();
         for id in required_ids {
             if embedded_ids.contains(id.as_str()) {
@@ -2336,7 +2372,7 @@ impl ProfileStore {
         let packaged_world = source.join("world");
         fs::create_dir_all(&packaged_world).map_err(|error| io_error(&packaged_world, error))?;
         let result = (|| {
-            copy_world_for_publication(&world, &packaged_world)?;
+            copy_world_for_publication(world, &packaged_world)?;
             let manifest = serde_json::json!({
                 "schema_version": 1, "id": world_package_id(slug), "type": "world", "title": title,
                 "version": version, "creators": [creator],
@@ -2368,7 +2404,7 @@ impl ProfileStore {
                 .map_err(|error| {
                     PackageProblem::Invalid(format!("invalid profile file: {error}"))
                 })?;
-        if !matches!(definition.schema_version, 1 | 2 | 3)
+        if !matches!(definition.schema_version, 1..=3)
             || definition.name.trim().is_empty()
             || definition.name.chars().count() > 80
             || definition.roots.len() > 128
@@ -2651,11 +2687,11 @@ impl ProfileStore {
             return Err(error);
         }
         let internal_game = self.profile_path(profile.id).join("game");
-        if internal_game.exists() {
-            if let Err(error) = fs::remove_dir_all(&internal_game) {
-                let _ = self.delete_profile(profile.id);
-                return Err(io_error(&internal_game, error));
-            }
+        if internal_game.exists()
+            && let Err(error) = fs::remove_dir_all(&internal_game)
+        {
+            let _ = self.delete_profile(profile.id);
+            return Err(io_error(&internal_game, error));
         }
         self.profile(profile.id)
     }
@@ -2764,13 +2800,12 @@ impl ProfileStore {
         {
             return invalid("runtime executable or resources are missing");
         }
-        if let Some(build) = read_main_build(source)? {
-            if metadata.version != build.runtime_id()
+        if let Some(build) = read_main_build(source)?
+            && (metadata.version != build.runtime_id()
                 || metadata.platform != build.platform
-                || metadata.architecture != build.architecture
-            {
-                return invalid("runtime identity does not match its main build metadata");
-            }
+                || metadata.architecture != build.architecture)
+        {
+            return invalid("runtime identity does not match its main build metadata");
         }
 
         let temporary = self
@@ -3142,6 +3177,15 @@ impl ProfileStore {
         profile_id: Uuid,
         revision: &str,
     ) -> Result<PathBuf, PackageProblem> {
+        self.materialize_game_folder_with_commit(profile_id, revision, || Ok(()))
+    }
+
+    fn materialize_game_folder_with_commit(
+        &self,
+        profile_id: Uuid,
+        revision: &str,
+        commit: impl FnOnce() -> Result<(), PackageProblem>,
+    ) -> Result<PathBuf, PackageProblem> {
         let profile = self.profile_path(profile_id);
         let source = profile.join("snapshots").join(revision).join("content");
         if !source.is_dir() {
@@ -3153,180 +3197,171 @@ impl ProfileStore {
         if fs::read_to_string(&marker).is_ok_and(|installed| installed == revision)
             && game.join("content").is_dir()
         {
+            commit()?;
             return Ok(game);
         }
-        let newly_attached = self.with_database(|database| {
-            database.query_row(
-                "SELECT external_game_path IS NOT NULL FROM profiles WHERE id = ?1",
-                [profile_id.to_string()],
-                |row| row.get::<_, bool>(0),
-            )
-        })? && !marker.exists();
-        if newly_attached
-            && source
-                .read_dir()
-                .map_err(|error| io_error(&source, error))?
-                .next()
-                .is_none()
-        {
-            fs::create_dir_all(game.join("content")).map_err(|error| io_error(&game, error))?;
-            write_atomic(&marker, revision.as_bytes())?;
-            return Ok(game);
-        }
-
         let operation_id = Uuid::new_v4();
         ensure_space(&game, tree_size(&source)?.saturating_mul(2))?;
         let staging = game.join(format!(".vlauncher-content-staging-{operation_id}"));
-        let previous = game.join(format!(".vlauncher-content-previous-{operation_id}"));
-        copy_tree(&source, &staging)?;
-        let content = game.join("content");
-        // Пользователь мог сам положить сюда другие паки.
-        let old_source = fs::read_to_string(&marker)
-            .ok()
-            .filter(|revision| safe_relative(Path::new(revision)).is_ok())
-            .map(|revision| profile.join("snapshots").join(revision).join("content"));
-        let preserve = (|| {
-            if content.is_dir() {
-                for entry in fs::read_dir(&content).map_err(|e| io_error(&content, e))? {
-                    let entry = entry.map_err(|e| io_error(&content, e))?;
-                    if old_source
-                        .as_ref()
-                        .is_some_and(|old| old.join(entry.file_name()).exists())
-                    {
+        let mut changes = GameChanges::default();
+        changes.stage(staging.clone());
+        let result = (|| {
+            copy_tree(&source, &staging)?;
+            let content = game.join("content");
+            // Пользователь мог сам положить сюда другие паки.
+            let old_source = fs::read_to_string(&marker)
+                .ok()
+                .filter(|revision| safe_relative(Path::new(revision)).is_ok())
+                .map(|revision| profile.join("snapshots").join(revision).join("content"));
+            let preserve = (|| {
+                if content.is_dir() {
+                    for entry in fs::read_dir(&content).map_err(|e| io_error(&content, e))? {
+                        let entry = entry.map_err(|e| io_error(&content, e))?;
+                        if old_source
+                            .as_ref()
+                            .is_some_and(|old| old.join(entry.file_name()).exists())
+                        {
+                            continue;
+                        }
+                        let target = staging.join(entry.file_name());
+                        if target.exists() {
+                            return invalid(format!(
+                                "Локальный пакет '{}' совпадает с пакетом из каталога. Перенесите локальную копию из папки content перед запуском",
+                                entry.file_name().to_string_lossy()
+                            ));
+                        }
+                        let kind = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
+                        if kind.is_symlink() {
+                            return invalid(
+                                "Локальный контент содержит символическую ссылку. Перенесите её из папки content перед изменением состава",
+                            );
+                        }
+                        if kind.is_dir() {
+                            copy_tree(&entry.path(), &target)?;
+                        } else {
+                            fs::copy(entry.path(), &target).map_err(|e| io_error(&target, e))?;
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = preserve {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error);
+            }
+            changes.replace(&staging, &content)?;
+            let templates = profile
+                .join("snapshots")
+                .join(revision)
+                .join("world-templates");
+            if templates.is_dir() {
+                let worlds = game.join("worlds");
+                fs::create_dir_all(&worlds).map_err(|source| io_error(&worlds, source))?;
+                for entry in
+                    fs::read_dir(&templates).map_err(|source| io_error(&templates, source))?
+                {
+                    let template = entry.map_err(|source| io_error(&templates, source))?;
+                    let package_id = template.file_name().to_string_lossy().into_owned();
+                    let manifest = PackageManifest::read(template.path())?;
+                    let bundled = package_id.starts_with("__world_");
+                    let already_installed = fs::read_dir(&worlds)
+                        .map_err(|source| io_error(&worlds, source))?
+                        .filter_map(Result::ok)
+                        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                        .filter_map(|entry| {
+                            fs::read(entry.path().join(".vlauncher-world.json")).ok()
+                        })
+                        .filter_map(|bytes| {
+                            serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+                        })
+                        .any(|marker| {
+                            marker.get("package_id").and_then(|value| value.as_str())
+                                == Some(package_id.as_str())
+                                && (bundled
+                                    || marker
+                                        .get("package_version")
+                                        .and_then(|value| value.as_str())
+                                        == Some(manifest.version.as_str()))
+                        });
+                    if already_installed {
                         continue;
                     }
-                    let target = staging.join(entry.file_name());
-                    if target.exists() {
-                        return invalid(format!(
-                            "Локальный пакет '{}' совпадает с пакетом из каталога. Перенесите локальную копию из папки content перед запуском",
-                            entry.file_name().to_string_lossy()
-                        ));
+                    let legacy_destination = worlds.join(&package_id);
+                    if legacy_destination.exists() {
+                        let marker = serde_json::json!({
+                            "schema_version": 1,
+                            "package_id": package_id,
+                            "package_version": manifest.version,
+                            "title": manifest.title,
+                            "bundled": bundled
+                        });
+                        changes.write(
+                            &legacy_destination.join(".vlauncher-world.json"),
+                            &serde_json::to_vec_pretty(&marker)
+                                .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
+                        )?;
+                        continue;
                     }
-                    let kind = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
-                    if kind.is_symlink() {
-                        return invalid(
-                            "Локальный контент содержит символическую ссылку. Перенесите её из папки content перед изменением состава",
-                        );
+                    let base = world_folder_name(&manifest.title);
+                    let mut destination = worlds.join(&base);
+                    let mut suffix = 2;
+                    while destination.exists() {
+                        destination = worlds.join(format!("{base}-{suffix}"));
+                        suffix += 1;
                     }
-                    if kind.is_dir() {
-                        copy_tree(&entry.path(), &target)?;
-                    } else {
-                        fs::copy(entry.path(), &target).map_err(|e| io_error(&target, e))?;
+                    let staging = worlds.join(format!(".world-staging-{}", Uuid::new_v4()));
+                    let copied = copy_tree(&template.path().join("world"), &staging);
+                    if let Err(error) = copied {
+                        let _ = fs::remove_dir_all(&staging);
+                        return Err(error);
                     }
-                }
-            }
-            Ok(())
-        })();
-        if let Err(error) = preserve {
-            let _ = fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-        if content.exists() {
-            fs::rename(&content, &previous).map_err(|source| io_error(&content, source))?;
-        }
-        if let Err(source) = fs::rename(&staging, &content) {
-            if previous.exists() {
-                let _ = fs::rename(&previous, &content);
-            }
-            return Err(io_error(&content, source));
-        }
-        if previous.exists() {
-            fs::remove_dir_all(&previous).map_err(|source| io_error(&previous, source))?;
-        }
-        let templates = profile
-            .join("snapshots")
-            .join(revision)
-            .join("world-templates");
-        if templates.is_dir() {
-            let worlds = game.join("worlds");
-            fs::create_dir_all(&worlds).map_err(|source| io_error(&worlds, source))?;
-            for entry in fs::read_dir(&templates).map_err(|source| io_error(&templates, source))? {
-                let template = entry.map_err(|source| io_error(&templates, source))?;
-                let package_id = template.file_name().to_string_lossy().into_owned();
-                let manifest = PackageManifest::read(template.path())?;
-                let bundled = package_id.starts_with("__world_");
-                let already_installed = fs::read_dir(&worlds)
-                    .map_err(|source| io_error(&worlds, source))?
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                    .filter_map(|entry| fs::read(entry.path().join(".vlauncher-world.json")).ok())
-                    .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .any(|marker| {
-                        marker.get("package_id").and_then(|value| value.as_str())
-                            == Some(package_id.as_str())
-                            && (bundled
-                                || marker
-                                    .get("package_version")
-                                    .and_then(|value| value.as_str())
-                                    == Some(manifest.version.as_str()))
-                    });
-                if already_installed {
-                    continue;
-                }
-                let legacy_destination = worlds.join(&package_id);
-                if legacy_destination.exists() {
-                    let marker = serde_json::json!({
+                    let world_marker = serde_json::json!({
                         "schema_version": 1,
                         "package_id": package_id,
                         "package_version": manifest.version,
                         "title": manifest.title,
                         "bundled": bundled
                     });
-                    write_atomic(
-                        &legacy_destination.join(".vlauncher-world.json"),
-                        &serde_json::to_vec_pretty(&marker)
+                    if let Err(error) = write_atomic(
+                        &staging.join(".vlauncher-world.json"),
+                        &serde_json::to_vec_pretty(&world_marker)
                             .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
-                    )?;
-                    continue;
-                }
-                let base = world_folder_name(&manifest.title);
-                let mut destination = worlds.join(&base);
-                let mut suffix = 2;
-                while destination.exists() {
-                    destination = worlds.join(format!("{base}-{suffix}"));
-                    suffix += 1;
-                }
-                let staging = worlds.join(format!(".world-staging-{}", Uuid::new_v4()));
-                let copied = copy_tree(&template.path().join("world"), &staging);
-                if let Err(error) = copied {
-                    let _ = fs::remove_dir_all(&staging);
-                    return Err(error);
-                }
-                let world_marker = serde_json::json!({
-                    "schema_version": 1,
-                    "package_id": package_id,
-                    "package_version": manifest.version,
-                    "title": manifest.title,
-                    "bundled": bundled
-                });
-                if let Err(error) = write_atomic(
-                    &staging.join(".vlauncher-world.json"),
-                    &serde_json::to_vec_pretty(&world_marker)
-                        .map_err(|error| PackageProblem::Invalid(error.to_string()))?,
-                ) {
-                    let _ = fs::remove_dir_all(&staging);
-                    return Err(error);
-                }
-                if let Err(source) = fs::rename(&staging, &destination) {
-                    let _ = fs::remove_dir_all(&staging);
-                    return Err(io_error(&destination, source));
+                    ) {
+                        let _ = fs::remove_dir_all(&staging);
+                        return Err(error);
+                    }
+                    changes.stage(staging.clone());
+                    changes.replace(&staging, &destination)?;
                 }
             }
-        }
-        let modpacks = profile.join("snapshots").join(revision).join("modpacks");
-        if modpacks.is_dir() {
-            for entry in fs::read_dir(&modpacks).map_err(|source| io_error(&modpacks, source))? {
-                let defaults = entry
-                    .map_err(|source| io_error(&modpacks, source))?
-                    .path()
-                    .join("config");
-                if defaults.is_dir() {
-                    copy_tree_missing(&defaults, &game.join("config"))?;
+            let modpacks = profile.join("snapshots").join(revision).join("modpacks");
+            if modpacks.is_dir() {
+                let config = game.join("config");
+                let staged_config =
+                    changes.stage(game.join(format!(".vlauncher-config-{operation_id}")));
+                if config.exists() {
+                    copy_tree(&config, &staged_config)?;
+                }
+                for entry in
+                    fs::read_dir(&modpacks).map_err(|source| io_error(&modpacks, source))?
+                {
+                    let defaults = entry
+                        .map_err(|source| io_error(&modpacks, source))?
+                        .path()
+                        .join("config");
+                    if defaults.is_dir() {
+                        copy_tree_missing(&defaults, &staged_config)?;
+                    }
+                }
+                if staged_config.exists() {
+                    changes.replace(&staged_config, &config)?;
                 }
             }
-        }
-        write_atomic(&marker, revision.as_bytes())?;
-        Ok(game)
+            changes.write(&marker, revision.as_bytes())?;
+            commit()?;
+            Ok(game)
+        })();
+        changes.finish(result)
     }
 
     fn stage_packages(&self, plan: &InstallPlan, staging: &Path) -> Result<(), PackageProblem> {
@@ -3408,6 +3443,16 @@ impl ProfileStore {
         }
         let partial = target.with_extension("part");
         let existing = fs::metadata(&partial).map(|value| value.len()).unwrap_or(0);
+        if existing == package.artifact_size && partial.is_file() {
+            if verify_file(&partial, &package.artifact_sha256, package.artifact_size)? {
+                if !progress(&package.id, existing, package.artifact_size) {
+                    return invalid("download paused by user");
+                }
+                fs::rename(&partial, &target).map_err(|source| io_error(&target, source))?;
+                return Ok(target);
+            }
+            fs::remove_file(&partial).map_err(|source| io_error(&partial, source))?;
+        }
         if existing > package.artifact_size {
             fs::remove_file(&partial).map_err(|source| io_error(&partial, source))?;
         }
@@ -3430,6 +3475,11 @@ impl ProfileStore {
         let mut response = request.send().map_err(|error| {
             PackageProblem::Invalid(format!("artifact download failed: {error}"))
         })?;
+        if offset > 0 && response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            // Retry once without Range; never retain an unusable resume offset.
+            fs::remove_file(&partial).map_err(|source| io_error(&partial, source))?;
+            return self.fetch_artifact_with_progress(client, package, progress);
+        }
         if !response.status().is_success() {
             return invalid(format!("artifact server returned {}", response.status()));
         }
@@ -3456,6 +3506,7 @@ impl ProfileStore {
             }
             downloaded = downloaded.saturating_add(read as u64);
             if downloaded > package.artifact_size {
+                drop(output);
                 let _ = fs::remove_file(&partial);
                 return invalid("artifact server sent more data than declared");
             }
@@ -3472,6 +3523,7 @@ impl ProfileStore {
         output
             .sync_all()
             .map_err(|source| io_error(&partial, source))?;
+        drop(output);
         if !verify_file(&partial, &package.artifact_sha256, package.artifact_size)? {
             let _ = fs::remove_file(&partial);
             return invalid(format!("downloaded artifact mismatch for '{}'", package.id));
@@ -3933,10 +3985,11 @@ fn parse_voxelcore_version(text: &str) -> Option<String> {
             if let Ok(version) = semver::Version::parse(candidate) {
                 return Some(version.to_string());
             }
-        } else if components == 2 && shortened.is_none() {
-            if let Ok(version) = semver::Version::parse(&format!("{candidate}.0")) {
-                shortened = Some(version.to_string());
-            }
+        } else if components == 2
+            && shortened.is_none()
+            && let Ok(version) = semver::Version::parse(&format!("{candidate}.0"))
+        {
+            shortened = Some(version.to_string());
         }
     }
     shortened
@@ -4766,6 +4819,24 @@ mod tests {
                 .problem
                 .is_none()
         );
+        assert!(store.forget_broken_profile(healthy.id).is_err());
+        store.forget_broken_profile(damaged.id).unwrap();
+        assert!(store.profile_path(damaged.id).is_dir());
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(store.list().unwrap()[0].id, healthy.id);
+    }
+
+    #[test]
+    fn deleted_profile_folder_can_be_forgotten() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("Removed outside launcher").unwrap();
+        store.initialize_vanilla(profile.id, "0.31.4").unwrap();
+        fs::remove_dir_all(store.profile_path(profile.id)).unwrap();
+
+        assert!(store.list().unwrap()[0].problem.is_some());
+        store.forget_broken_profile(profile.id).unwrap();
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]
@@ -5085,8 +5156,8 @@ mod tests {
             .position(|arg| arg == "--project")
             .unwrap();
         assert!(
-            published_spec.arguments[argument + 1]
-                .ends_with("projects/11111111-1111-1111-1111-111111111111")
+            Path::new(&published_spec.arguments[argument + 1])
+                .ends_with(Path::new("projects").join("11111111-1111-1111-1111-111111111111"))
         );
         assert!(store.clear_profile(published.id).is_err());
         let mixed_plan = InstallPlan {
@@ -6006,5 +6077,180 @@ mod tests {
         let analysis = store.analyze_existing_game(&source).unwrap();
         assert_eq!(analysis.runtime_kind, ExistingRuntimeKind::Detected);
         assert_eq!(analysis.runtime_version.as_deref(), Some("0.31.4"));
+    }
+    #[test]
+    fn failed_world_install_restores_content_and_revision() {
+        for fail_database in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = ProfileStore::open(temp.path().join("state")).unwrap();
+            let profile = store.create("Rollback").unwrap();
+            store
+                .apply(
+                    profile.id,
+                    &InstallPlan {
+                        revision: "old".into(),
+                        packages: vec![package_archive(temp.path(), "1.0.0")],
+                    },
+                )
+                .unwrap();
+            let game = store.game_directory(profile.id).unwrap();
+            if fail_database {
+                store.with_database(|db| db.execute_batch("CREATE TRIGGER fail_install BEFORE UPDATE OF active_revision ON profiles BEGIN SELECT RAISE(ABORT, 'test DB failure'); END;")).unwrap();
+            } else {
+                fs::write(game.join("worlds"), b"blocked destination").unwrap();
+            }
+            let error = store
+                .apply(
+                    profile.id,
+                    &InstallPlan {
+                        revision: "new".into(),
+                        packages: vec![
+                            package_archive(temp.path(), "2.0.0"),
+                            world_archive(temp.path()),
+                        ],
+                    },
+                )
+                .unwrap_err();
+            if fail_database {
+                assert!(error.to_string().contains("test DB failure"));
+            }
+            assert_eq!(
+                store
+                    .profile(profile.id)
+                    .unwrap()
+                    .active_revision
+                    .as_deref(),
+                Some("old")
+            );
+            assert_eq!(
+                fs::read_to_string(game.join(".vlauncher-revision")).unwrap(),
+                "old"
+            );
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(game.join("content/demo_mod/package.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["version"], "1.0.0");
+            if fail_database {
+                assert_eq!(fs::read_dir(game.join("worlds")).unwrap().count(), 0);
+                store
+                    .with_database(|db| db.execute_batch("DROP TRIGGER fail_install"))
+                    .unwrap();
+                store
+                    .apply(
+                        profile.id,
+                        &InstallPlan {
+                            revision: "new".into(),
+                            packages: vec![
+                                package_archive(temp.path(), "2.0.0"),
+                                world_archive(temp.path()),
+                            ],
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(fs::read_dir(game.join("worlds")).unwrap().count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn complete_partial_is_verified_and_promoted_without_network() {
+        let artifact = b"complete archive";
+        let digest = hex::encode(Sha256::digest(artifact));
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let partial = store
+            .root
+            .join("cache/blobs")
+            .join(format!("{digest}.part"));
+        fs::write(&partial, artifact).unwrap();
+        let package = RemoteInstallPackage {
+            id: "demo_mod".into(),
+            title: None,
+            kind: PackageKind::Mod,
+            version: "1.0.0".into(),
+            artifact_sha256: digest,
+            artifact_size: artifact.len() as u64,
+            download_url: "http://127.0.0.1:1/unreachable".into(),
+            dependencies: vec![],
+        };
+        assert!(
+            store
+                .fetch_artifact_with_progress(&Client::new(), &package, &|_, _, _| false)
+                .is_err()
+        );
+        assert!(partial.is_file());
+        let result = store
+            .fetch_artifact_with_progress(&Client::new(), &package, &|_, _, _| true)
+            .unwrap();
+        assert_eq!(fs::read(result).unwrap(), artifact);
+        assert!(!partial.exists());
+    }
+
+    #[test]
+    fn invalid_partial_and_rejected_range_restart_download() {
+        for full_corrupt in [false, true] {
+            let artifact = b"complete archive";
+            let digest = hex::encode(Sha256::digest(artifact));
+            let temp = tempfile::tempdir().unwrap();
+            let store = ProfileStore::open(temp.path().join("state")).unwrap();
+            fs::write(
+                store
+                    .root
+                    .join("cache/blobs")
+                    .join(format!("{digest}.part")),
+                if full_corrupt {
+                    vec![0; artifact.len()]
+                } else {
+                    vec![0; 3]
+                },
+            )
+            .unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                for attempt in 0..if full_corrupt { 1 } else { 2 } {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut b = [0];
+                        stream.read_exact(&mut b).unwrap();
+                        request.push(b[0]);
+                    }
+                    let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                    if !full_corrupt && attempt == 0 {
+                        assert!(request.contains("range: bytes=3-"));
+                        stream.write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    } else {
+                        assert!(!request.contains("range:"));
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            artifact.len()
+                        )
+                        .unwrap();
+                        stream.write_all(artifact).unwrap();
+                    }
+                }
+            });
+            let package = RemoteInstallPackage {
+                id: "demo_mod".into(),
+                title: None,
+                kind: PackageKind::Mod,
+                version: "1.0.0".into(),
+                artifact_sha256: digest,
+                artifact_size: artifact.len() as u64,
+                download_url: format!("http://{address}/artifact"),
+                dependencies: vec![],
+            };
+            let result = store
+                .fetch_artifact_with_progress(&Client::new(), &package, &|_, _, _| true)
+                .unwrap();
+            assert_eq!(fs::read(result).unwrap(), artifact);
+            server.join().unwrap();
+        }
     }
 }
