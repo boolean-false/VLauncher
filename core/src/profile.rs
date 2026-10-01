@@ -3200,6 +3200,39 @@ impl ProfileStore {
             commit()?;
             return Ok(game);
         }
+        let old_snapshot = fs::read_to_string(&marker)
+            .ok()
+            .filter(|revision| safe_relative(Path::new(revision)).is_ok())
+            .map(|revision| profile.join("snapshots").join(revision));
+        let snapshot = profile.join("snapshots").join(revision);
+        let same_packages = old_snapshot.as_ref().is_some_and(|old| {
+            let read_plan = |root: &Path| {
+                fs::read(root.join("vlauncher.lock.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<InstallPlan>(&bytes).ok())
+            };
+            match (read_plan(old), read_plan(&snapshot)) {
+                (Some(old), Some(new)) => old.packages == new.packages,
+                _ => false,
+            }
+        });
+        // Engine selection changes the revision, but not the installed packages.
+        // A profile without managed game data also needs no content replacement,
+        // including an attached game whose revision marker has been deleted.
+        let no_managed_data = snapshot_game_data_is_empty(&snapshot)?
+            && match old_snapshot.as_ref() {
+                Some(old) => old.is_dir() && snapshot_game_data_is_empty(old)?,
+                None => true,
+            };
+        if game.join("content").is_dir() && (same_packages || no_managed_data) {
+            let mut changes = GameChanges::default();
+            let result = (|| {
+                changes.write(&marker, revision.as_bytes())?;
+                commit()?;
+                Ok(game)
+            })();
+            return changes.finish(result);
+        }
         let operation_id = Uuid::new_v4();
         ensure_space(&game, tree_size(&source)?.saturating_mul(2))?;
         let staging = game.join(format!(".vlauncher-content-staging-{operation_id}"));
@@ -4023,6 +4056,22 @@ fn immediate_directory_count(path: &Path) -> Result<u64, PackageProblem> {
         }
     }
     Ok(count)
+}
+
+fn snapshot_game_data_is_empty(snapshot: &Path) -> Result<bool, PackageProblem> {
+    for folder in ["content", "world-templates", "modpacks"] {
+        let path = snapshot.join(folder);
+        match fs::read_dir(&path) {
+            Ok(mut entries) => match entries.next() {
+                Some(Ok(_)) => return Ok(false),
+                Some(Err(error)) => return Err(io_error(&path, error)),
+                None => {}
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(&path, error)),
+        }
+    }
+    Ok(true)
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), PackageProblem> {
@@ -4982,6 +5031,162 @@ mod tests {
             fs::read_to_string(game.join("content/local_pack/file.txt")).unwrap(),
             "user content"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_changes_preserve_local_symlinks_without_replacing_game_data() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+
+        for managed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = ProfileStore::open(temp.path().join("state")).unwrap();
+            let profile = store.create_initialized("Development", "0.31.4").unwrap();
+            if managed {
+                store
+                    .apply(
+                        profile.id,
+                        &InstallPlan {
+                            revision: "managed".into(),
+                            packages: vec![package_archive(temp.path(), "1.0.0")],
+                        },
+                    )
+                    .unwrap();
+            }
+            let game = store.game_directory(profile.id).unwrap();
+            let local = game.join("content/local_pack");
+            fs::create_dir_all(local.join("tests/.user/content")).unwrap();
+            fs::write(local.join("file.txt"), "local content").unwrap();
+            let link = local.join("tests/.user/content/local_pack");
+            symlink(&local, &link).unwrap();
+            fs::create_dir_all(game.join("config")).unwrap();
+            fs::write(game.join("config/settings.toml"), "user settings").unwrap();
+            fs::create_dir_all(game.join("worlds/home")).unwrap();
+            fs::write(game.join("worlds/home/world.json"), "saved world").unwrap();
+            let content_inode = fs::metadata(game.join("content")).unwrap().ino();
+            let build = crate::mainline::MainBuild {
+                engine_version: Some("0.32.0".into()),
+                sha: "a".repeat(40),
+                run_id: 10,
+                artifact_id: 20,
+                digest: format!("sha256:{}", "b".repeat(64)),
+                size: 40,
+                created_at: "2026-09-08T00:00:00Z".into(),
+                expires_at: "2026-12-07T00:00:00Z".into(),
+                platform: "linux".into(),
+                architecture: "x86_64".into(),
+            };
+            store.select_main_build(profile.id, Some(build)).unwrap();
+            let revision = store.profile(profile.id).unwrap().active_revision.unwrap();
+            // The attached, unmanaged case must recover even without its marker.
+            if !managed {
+                fs::remove_file(game.join(".vlauncher-revision")).unwrap();
+                store
+                    .with_database(|database| {
+                        database.execute(
+                            "UPDATE profiles SET external_game_path = ?1 WHERE id = ?2",
+                            params![game.to_string_lossy(), profile.id.to_string()],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            assert_eq!(
+                store
+                    .materialize_game_folder(profile.id, &revision)
+                    .unwrap(),
+                game
+            );
+            assert_eq!(
+                fs::metadata(game.join("content")).unwrap().ino(),
+                content_inode
+            );
+            assert_eq!(fs::read_link(&link).unwrap(), local);
+            assert_eq!(
+                fs::read_to_string(game.join("config/settings.toml")).unwrap(),
+                "user settings"
+            );
+            assert_eq!(
+                fs::read_to_string(game.join("worlds/home/world.json")).unwrap(),
+                "saved world"
+            );
+            assert_eq!(
+                fs::read_to_string(game.join(".vlauncher-revision")).unwrap(),
+                revision
+            );
+            if managed {
+                assert!(game.join("content/demo_mod/package.json").is_file());
+                store.rollback(profile.id).unwrap();
+                let previous = store.profile(profile.id).unwrap().active_revision.unwrap();
+                store
+                    .materialize_game_folder(profile.id, &previous)
+                    .unwrap();
+                assert_eq!(
+                    fs::metadata(game.join("content")).unwrap().ino(),
+                    content_inode
+                );
+                // Real package updates still use the existing strict materialization.
+                assert!(
+                    store
+                        .apply(
+                            profile.id,
+                            &InstallPlan {
+                                revision: "updated".into(),
+                                packages: vec![package_archive(temp.path(), "2.0.0")],
+                            }
+                        )
+                        .is_err()
+                );
+                assert_eq!(fs::read_link(&link).unwrap(), local);
+                assert_eq!(
+                    store
+                        .profile(profile.id)
+                        .unwrap()
+                        .active_revision
+                        .as_deref(),
+                    Some(previous.as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_content_marker_rolls_back_when_commit_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path()).unwrap();
+        let profile = store.create_initialized("Vanilla", "0.31.4").unwrap();
+        let game = store.game_directory(profile.id).unwrap();
+        let marker = game.join(".vlauncher-revision");
+        let original = fs::read(&marker).unwrap();
+        let revision = profile.active_revision.unwrap();
+        copy_tree(
+            &store
+                .profile_path(profile.id)
+                .join("snapshots")
+                .join(&revision),
+            &store
+                .profile_path(profile.id)
+                .join("snapshots/old-revision"),
+        )
+        .unwrap();
+        // Exercise both an older marker and recovery of a missing marker.
+        for missing in [false, true] {
+            if missing {
+                fs::remove_file(&marker).unwrap();
+            } else {
+                fs::write(&marker, b"old-revision").unwrap();
+            }
+            let result = store.materialize_game_folder_with_commit(profile.id, &revision, || {
+                invalid("simulated commit failure")
+            });
+            assert!(result.is_err());
+            if missing {
+                assert!(!marker.exists());
+            } else {
+                assert_eq!(fs::read(&marker).unwrap(), b"old-revision");
+            }
+            fs::write(&marker, &original).unwrap();
+        }
     }
 
     #[test]

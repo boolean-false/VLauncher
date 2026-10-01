@@ -54,7 +54,9 @@ import {
   type Project,
   type ProjectMedia,
   type ProjectMember,
+  type Release,
 } from "../api";
+import { previousReleaseMainRequirement } from "../releaseCompatibility";
 import {
   compareSemVer,
   formatBytes,
@@ -328,6 +330,18 @@ export function Creator({
       : "",
   );
   const [mainBuilds, setMainBuilds] = useState<MainBuild[]>([]);
+  const mainBuildRequest = useRef(0);
+  const mainCompatibilityDraft = useRef({
+    key: "",
+    edited: false,
+    restored: false,
+  });
+  const [mainRequirementSource, setMainRequirementSource] = useState("");
+  const editMainCompatibility = () => {
+    mainBuildRequest.current += 1;
+    mainCompatibilityDraft.current.edited = true;
+    setMainRequirementSource("");
+  };
   const [projectReleasePreferences, setProjectReleasePreferences] = useState<
     Record<string, ProjectReleasePreference>
   >(() => {
@@ -637,7 +651,13 @@ export function Creator({
     setAllowMain(false);
     setMainMinCommit("");
     setMainBuilds([]);
-  }, [prepared?.sha256]);
+    setMainRequirementSource("");
+    mainCompatibilityDraft.current = {
+      key: `${selectedProject}:${prepared.sha256}`,
+      edited: false,
+      restored: false,
+    };
+  }, [prepared?.sha256, selectedProject]);
 
   const refresh = useCallback(
     async (value: string) => {
@@ -713,6 +733,47 @@ export function Creator({
       (section === "release" ||
         (section === "manage" && projectTab === "versions")),
   );
+  const selectedReleaseProject = projects.find(
+    (project) => project.slug === selectedProject,
+  );
+  const publishedReleaseData = useRegistryResource<Release[]>(
+    `/projects/${encodeURIComponent(selectedReleaseProject?.id ?? "")}/releases`,
+    undefined,
+    projectActive &&
+      section === "release" &&
+      !!prepared &&
+      !["modpack", "project", "runtime"].includes(
+        selectedReleaseProject?.type ?? "",
+      ),
+  );
+  useEffect(() => {
+    if (!prepared || !publishedReleaseData.data || !latestStableVoxelCore)
+      return;
+    const draft = mainCompatibilityDraft.current;
+    if (
+      draft.key !== `${selectedProject}:${prepared.sha256}` ||
+      draft.edited ||
+      draft.restored
+    )
+      return;
+    if (["modpack", "project"].includes(prepared.manifest.type)) return;
+    draft.restored = true;
+    const previous = previousReleaseMainRequirement(
+      publishedReleaseData.data,
+      minimumVoxelCoreVersion(packageVoxelCoreRequirement(prepared)),
+      latestStableVoxelCore,
+    );
+    if (previous) {
+      setAllowMain(true);
+      setMainMinCommit(previous.min_commit);
+      setMainRequirementSource(publishedReleaseData.data[0].version);
+    }
+  }, [
+    prepared?.sha256,
+    selectedProject,
+    publishedReleaseData.data,
+    latestStableVoxelCore,
+  ]);
   const mediaData = useRegistryResource<ProjectMedia[]>(
     `${projectPath}/media`,
     token,
@@ -1379,6 +1440,12 @@ export function Creator({
   const mainTargetVersion = prepared
     ? minimumVoxelCoreVersion(voxelcoreRequirement)
     : "";
+  const previousCompatibilityRelease = publishedReleaseData.data?.[0];
+  const previousMainRequirement = previousReleaseMainRequirement(
+    publishedReleaseData.data ?? [],
+    minimumVoxelCoreVersion(previousCompatibilityRelease?.voxelcore ?? ""),
+    latestStableVoxelCore,
+  );
   const futureVoxelCore =
     !!mainTargetVersion &&
     !!latestStableVoxelCore &&
@@ -1391,9 +1458,16 @@ export function Creator({
       normalizeVersion(build.engine_version ?? "") === mainTargetVersion,
   );
   const loadCompatibleMainBuilds = async () => {
+    const request = ++mainBuildRequest.current;
+    const draftKey = mainCompatibilityDraft.current.key;
     const catalog = await invoke<{ builds: MainBuild[] }>(
       "list_mainline_builds",
     );
+    if (
+      mainCompatibilityDraft.current.key !== draftKey ||
+      mainBuildRequest.current !== request
+    )
+      return;
     setMainBuilds(catalog.builds);
     const matching = catalog.builds.filter(
       (build) =>
@@ -1403,8 +1477,7 @@ export function Creator({
       throw new Error(
         `Для VoxelCore ${mainTargetVersion} нет доступных DEV-сборок`,
       );
-    if (!matching.some((build) => build.sha === mainMinCommit))
-      setMainMinCommit(matching[0].sha);
+    setMainMinCommit((current) => current || matching[0].sha);
   };
   return (
     <>
@@ -2638,14 +2711,55 @@ export function Creator({
                   token={token}
                 />
                 {prepared && (
-                  <VersionRequirementEditor
-                    value={voxelcoreRequirement}
-                    versions={publishedVoxelCoreVersions}
-                    onChange={setVoxelcoreRequirement}
-                    exactOnly={
-                      current.type === "modpack" || current.type === "project"
-                    }
-                  />
+                  <>
+                    <VersionRequirementEditor
+                      value={voxelcoreRequirement}
+                      versions={publishedVoxelCoreVersions}
+                      onChange={(value) => {
+                        editMainCompatibility();
+                        if (
+                          minimumVoxelCoreVersion(value) !== mainTargetVersion
+                        ) {
+                          setAllowMain(false);
+                          setMainMinCommit("");
+                          setMainBuilds([]);
+                        }
+                        setVoxelcoreRequirement(value);
+                      }}
+                      exactOnly={
+                        current.type === "modpack" || current.type === "project"
+                      }
+                    />
+                    {previousCompatibilityRelease &&
+                      previousMainRequirement &&
+                      !mainRequirementSource &&
+                      !["modpack", "project"].includes(
+                        prepared.manifest.type,
+                      ) && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => {
+                            editMainCompatibility();
+                            setVoxelcoreRequirement(
+                              normalizeVersionRequirement(
+                                previousCompatibilityRelease.voxelcore,
+                              ),
+                            );
+                            setAllowMain(true);
+                            setMainMinCommit(
+                              previousMainRequirement.min_commit,
+                            );
+                            setMainRequirementSource(
+                              previousCompatibilityRelease.version,
+                            );
+                          }}
+                        >
+                          Взять требование к движку из версии{" "}
+                          {previousCompatibilityRelease.version}
+                        </button>
+                      )}
+                  </>
                 )}
               </div>
             )}
@@ -2669,6 +2783,7 @@ export function Creator({
                       checked={allowMain}
                       onChange={(event) => {
                         const checked = event.target.checked;
+                        editMainCompatibility();
                         setAllowMain(checked);
                         if (checked) void perform(loadCompatibleMainBuilds);
                       }}
@@ -2677,6 +2792,17 @@ export function Creator({
                   </label>
                   {allowMain && (
                     <div className="main-compatibility-fields">
+                      {mainRequirementSource && (
+                        <p>
+                          Требование к DEV-сборке перенесено из версии{" "}
+                          {mainRequirementSource}.
+                        </p>
+                      )}
+                      {mainMinCommit && (
+                        <small>
+                          Минимальный коммит: <code>{mainMinCommit}</code>
+                        </small>
+                      )}
                       <button
                         type="button"
                         disabled={working}
@@ -2697,9 +2823,10 @@ export function Creator({
                                 ? mainMinCommit
                                 : ""
                             }
-                            onChange={(event) =>
-                              setMainMinCommit(event.target.value)
-                            }
+                            onChange={(event) => {
+                              editMainCompatibility();
+                              setMainMinCommit(event.target.value);
+                            }}
                           >
                             <option value="">
                               Выберите проверенную сборку
@@ -2725,11 +2852,12 @@ export function Creator({
                             value={mainMinCommit}
                             spellCheck={false}
                             placeholder="40 символов"
-                            onChange={(event) =>
+                            onChange={(event) => {
+                              editMainCompatibility();
                               setMainMinCommit(
                                 event.target.value.trim().toLowerCase(),
-                              )
-                            }
+                              );
+                            }}
                           />
                         </label>
                       </details>
