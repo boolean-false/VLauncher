@@ -103,3 +103,69 @@ test("explicit experimental update handles empty catalogs", async () => {
     /пока недоступна/,
   );
 });
+
+test("published stable release is verified before querying DEV builds", async () => {
+  const result = await resolveWithBuildFallback(
+    async () => {
+      throw gate;
+    },
+    async () => {
+      throw new Error("must not fetch DEV builds");
+    },
+    async () => {
+      throw new Error("must not verify DEV builds");
+    },
+    async () => ({ value: "stable 0.32 plan" }),
+  );
+  assert.deepEqual(result, { value: "stable 0.32 plan" });
+});
+
+test("stable upgrade can resolve a future mod without a DEV commit gate", async () => {
+  const result = await resolveWithBuildFallback(
+    async () => {
+      throw { code: "no_compatible_release" };
+    },
+    async () => {
+      throw new Error("must not fetch DEV builds");
+    },
+    async () => {
+      throw new Error("must not verify DEV builds");
+    },
+    async () => ({ value: "stable full dependency plan" }),
+  );
+  assert.equal(result.value, "stable full dependency plan");
+});
+
+test("unreleased target still falls back to a verified DEV build", async () => {
+  const result = await resolveWithBuildFallback(
+    async () => {
+      throw { code: "no_compatible_release" };
+    },
+    async () => [build(1)],
+    async () => "DEV plan",
+    async () => {
+      throw gate;
+    },
+  );
+  assert.equal(result.value, "DEV plan");
+  assert.equal(result.build?.artifact_id, 1);
+});
+
+test("stable verification transport errors do not trigger a DEV switch", async () => {
+  const unavailable = { code: "network_unavailable" };
+  await assert.rejects(
+    resolveWithBuildFallback(
+      async () => {
+        throw gate;
+      },
+      async () => {
+        throw new Error("must not fetch");
+      },
+      async () => "DEV plan",
+      async () => {
+        throw unavailable;
+      },
+    ),
+    (error) => error === unavailable,
+  );
+});

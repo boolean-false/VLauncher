@@ -124,12 +124,44 @@ jobs:
           )
           PY
       - name: Build and sign update files
+        if: runner.os != 'macOS'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} --config release-config.json
         env:
           APPLE_SIGNING_IDENTITY: '-'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+          VLAUNCHER_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+      - name: Build and sign macOS app
+        if: runner.os == 'macOS'
+        run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles app --config release-config.json
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+          VLAUNCHER_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
+      - name: Package macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # Retry disk-image packaging without rebuilding the app or Rust dependencies.
+          for attempt in 1 2 3; do
+            if npm run tauri -- bundle --target "$RUST_TARGET" --bundles dmg --config release-config.json --verbose; then
+              exit 0
+            fi
+            echo "::warning::DMG packaging attempt $attempt failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+          exit 1
+        env:
+          CI: 'true'
+          RUST_TARGET: ${{ matrix.rust_target }}
+          APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VLAUNCHER_REGISTRY_URL: ${{ secrets.VLAUNCHER_REGISTRY_URL }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -36,11 +36,21 @@ export async function resolveWithBuildFallback<T>(
   initial: () => Promise<T>,
   loadBuilds: () => Promise<MainBuild[]>,
   verify: (build: MainBuild) => Promise<T>,
+  tryStable?: () => Promise<{ value: T } | undefined>,
 ): Promise<{ value: T; build?: MainBuild }> {
   try {
     return { value: await initial() };
   } catch (error) {
-    const requirement = mainRequirementFromResolutionError(error);
+    let requirement = mainRequirementFromResolutionError(error);
+    if (tryStable && isRuntimeCompatibilityError(error)) {
+      try {
+        const stable = await tryStable();
+        if (stable) return stable;
+      } catch (reason) {
+        if (!isRuntimeCompatibilityError(reason)) throw reason;
+        requirement = mainRequirementFromResolutionError(reason) ?? requirement;
+      }
+    }
     if (!requirement) throw error;
     const builds = await loadBuilds();
     return selectVerifiedBuild(

@@ -203,11 +203,12 @@ export function Catalog({
       const roots = [...new Set([...targetProfile.roots, item.packageId!])];
       const requirements = { ...targetProfile.root_requirements };
       delete requirements[item.packageId!];
+      const channel = item.project?.latest_release?.channel ?? "stable";
       const plan = await resolveProject(
         roots,
         catalogEngine,
         requirements,
-        ["stable"],
+        channel === "stable" ? ["stable"] : ["stable", channel],
         {},
         undefined,
         profileRuntimeContext(targetProfile),
@@ -2397,6 +2398,19 @@ export function InstallPreview({
               Понимаю, что DEV-сборка может быть несовместима с модами и мирами
             </label>
           )}
+        </div>
+      ) : plan.plan.runtime?.kind === "stable" &&
+        (profile.main_build ||
+          plan.plan.voxelcore_version !== engineVersion(profile)) ? (
+        <div className="notice">
+          <strong>
+            Будет использован стабильный VoxelCore{" "}
+            {versionLabel(plan.plan.voxelcore_version)}
+          </strong>
+          <span>
+            Совместимость всего набора пакетов проверена. Если движок ещё не
+            установлен, он будет скачан перед применением изменений.
+          </span>
         </div>
       ) : (
         profile.main_build && (

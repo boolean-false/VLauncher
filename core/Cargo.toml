@@ -1,6 +1,6 @@
 [package]
 name = "vlauncher-core"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 description = "Package and profile code used by VLauncher"
 publish = false
