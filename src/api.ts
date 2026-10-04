@@ -89,9 +89,14 @@ export type ProjectMedia = {
 };
 export const loadProject = (slug: string) =>
   registryRequest<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
-export const loadReleases = (slug: string, compatibilityVersion?: string) =>
+export const loadReleases = (
+  slug: string,
+  compatibilityVersion?: string,
+  force = false,
+) =>
   registryRequest<Release[]>(
     `/projects/${encodeURIComponent(slug)}/releases${compatibilityVersion ? `?${new URLSearchParams({ latest_voxelcore_version: compatibilityVersion })}` : ""}`,
+    force ? { cache: "reload" } : undefined,
   );
 export const loadRuntimeReleases = (platform: string, architecture: string) =>
   registryRequest<RuntimeRelease[]>(

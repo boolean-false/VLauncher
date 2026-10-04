@@ -124,10 +124,12 @@ export function ExperimentalDestination({
   copy,
   onChange,
   busy,
+  experimental = true,
 }: {
   copy: boolean;
   onChange: (copy: boolean) => void;
   busy: boolean;
+  experimental?: boolean;
 }) {
   const group = useId();
   return (
@@ -140,7 +142,8 @@ export function ExperimentalDestination({
           checked={copy}
           onChange={() => onChange(true)}
         />
-        В копии профиля с мирами и настройками (рекомендуется)
+        В копии профиля с мирами и настройками
+        {experimental ? " (рекомендуется)" : ""}
       </label>
       <label className="checkbox-row">
         <input
@@ -154,7 +157,9 @@ export function ExperimentalDestination({
       <small>
         {copy
           ? "Исходный профиль сохранится. Копия займёт дополнительное место на диске."
-          : "Возврат прежней версии движка не восстанавливает изменённые миры. Сохраните их резервную копию перед запуском."}
+          : experimental
+            ? "Возврат прежней версии движка не восстанавливает изменённые миры. Сохраните их резервную копию перед запуском."
+            : "Обновление изменит состав выбранного профиля. Копия позволит проверить новые версии отдельно."}
       </small>
     </fieldset>
   );
