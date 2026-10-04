@@ -123,10 +123,26 @@ jobs:
               encoding="utf-8",
           )
           PY
+      - name: Fetch Rust dependencies
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          for attempt in 1 2 3; do
+            if cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET"; then
+              exit 0
+            fi
+            echo "::warning::Rust dependency fetch attempt $attempt failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+          exit 1
       - name: Build and sign update files
         if: runner.os != 'macOS'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} --config release-config.json
         env:
+          CARGO_NET_OFFLINE: 'true'
           APPLE_SIGNING_IDENTITY: '-'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -136,6 +152,7 @@ jobs:
         if: runner.os == 'macOS'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles app --config release-config.json
         env:
+          CARGO_NET_OFFLINE: 'true'
           APPLE_SIGNING_IDENTITY: '-'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
