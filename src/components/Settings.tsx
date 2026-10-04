@@ -455,7 +455,7 @@ export function Settings({
                 Очистить кэш
               </button>
             </section>
-            <div className="section-heading">
+            <div className="section-heading runtime-catalog-heading">
               <div>
                 <h2>Версии VoxelCore · GitHub</h2>
                 <p>Официальные релизы VoxelCore для вашей системы.</p>

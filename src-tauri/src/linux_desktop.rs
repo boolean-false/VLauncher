@@ -2,7 +2,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 #[cfg(unix)]
@@ -51,19 +51,26 @@ pub fn open_folder(path: &Path) -> Result<(), String> {
     let mut command = Command::new("/usr/bin/xdg-open");
     let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
     clean_environment(&mut command, appdir.as_deref());
-    let output = command
-        .arg(path)
-        .output()
+    command.arg(path);
+    start_folder_opener(&mut command)
+}
+
+fn start_folder_opener(command: &mut Command) -> Result<(), String> {
+    // xdg-open may remain attached to the file manager. Its descendants can also
+    // keep output pipes open after xdg-open exits, so do not capture or await them.
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| format!("Не удалось запустить xdg-open: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Не удалось открыть папку ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
+    // Reap the launcher process without holding the UI operation open.
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if !status.success() => eprintln!("Не удалось открыть папку: {status}"),
+        Err(error) => eprintln!("Не удалось дождаться xdg-open: {error}"),
+        _ => {}
+    });
+    Ok(())
 }
 
 fn desktop_exec(path: &Path) -> Result<String, String> {
@@ -220,6 +227,43 @@ pub fn prepare_game_appimage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_opener_returns_while_file_manager_is_still_running() {
+        let directory = tempfile::tempdir().unwrap();
+        let release = directory.path().join("release");
+        let finished = directory.path().join("finished");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "for attempt in $(seq 1 200); do [ -f \"$1\" ] && break; sleep 0.01; done; printf done > \"$2\"",
+            "folder-opener-test",
+        ]).arg(&release).arg(&finished);
+        let started = std::time::Instant::now();
+        start_folder_opener(&mut command).unwrap();
+        let elapsed = started.elapsed();
+        // Release the mock manager even if the timing assertion fails.
+        fs::write(&release, b"").unwrap();
+        assert!(elapsed < std::time::Duration::from_secs(1));
+        for _ in 0..200 {
+            if finished.is_file() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("mock file manager did not finish");
+    }
+
+    #[test]
+    fn folder_opener_reports_failure_to_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = Command::new(directory.path().join("missing-opener"));
+        assert!(
+            start_folder_opener(&mut command)
+                .unwrap_err()
+                .contains("Не удалось запустить xdg-open")
+        );
+    }
 
     #[test]
     fn game_appimage_uses_its_own_environment_file() {

@@ -126,6 +126,7 @@ export function Modal({
   className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const backdropPress = useRef(false);
   const id = useId();
   useEffect(() => {
     const dialog = ref.current!;
@@ -146,8 +147,28 @@ export function Modal({
         e.preventDefault();
         if (!busy) close();
       }}
+      onPointerDownCapture={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        backdropPress.current =
+          e.button === 0 &&
+          e.target === e.currentTarget &&
+          (e.clientX < r.left ||
+            e.clientX > r.right ||
+            e.clientY < r.top ||
+            e.clientY > r.bottom);
+      }}
+      onPointerCancel={() => {
+        backdropPress.current = false;
+      }}
       onClick={(e) => {
-        if (closeOnBackdrop && e.target === ref.current && !busy) {
+        const startedOnBackdrop = backdropPress.current;
+        backdropPress.current = false;
+        if (
+          startedOnBackdrop &&
+          closeOnBackdrop &&
+          e.target === ref.current &&
+          !busy
+        ) {
           const r = ref.current.getBoundingClientRect();
           if (
             e.clientX < r.left ||

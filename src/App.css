@@ -597,6 +597,10 @@ main > div[hidden] {
   margin-top: 0;
 }
 
+.runtime-catalog-heading {
+  margin-top: 24px;
+}
+
 .mainline-settings {
   display: grid;
   gap: 18px;
