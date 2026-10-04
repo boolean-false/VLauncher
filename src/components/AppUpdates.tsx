@@ -3,6 +3,7 @@ import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { friendlyError, type RunTask } from "../model";
 import { checkForAppUpdate, type AppUpdateChannel } from "../appUpdates";
+import { retryDownload } from "../downloadRetry";
 
 export function AppUpdates({
   channel,
@@ -19,11 +20,19 @@ export function AppUpdates({
   const [ready, setReady] = useState(false);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
+  const [details, setDetails] = useState("");
+  const downloadControl = useRef<AbortController | null>(null);
+  useEffect(() => () => downloadControl.current?.abort(), []);
   const blocked = useRef(running || busy);
   blocked.current = running || busy;
 
   useEffect(() => {
     if (import.meta.env.DEV) return;
+    downloadControl.current?.abort();
+    setUpdate(null);
+    setReady(false);
+    setMessage("");
+    setDetails("");
     let stopped = false;
     let offered: Update | null = null;
     let checking = false;
@@ -48,6 +57,7 @@ export function AppUpdates({
     const timer = setInterval(() => void poll(), 4 * 60 * 60 * 1000);
     return () => {
       stopped = true;
+      downloadControl.current?.abort();
       clearInterval(timer);
       void offered?.close().catch(() => {});
     };
@@ -57,19 +67,36 @@ export function AppUpdates({
     if (!update) return;
     setWorking(true);
     setMessage("");
+    setDetails("");
     try {
       if (!ready) {
+        const control = new AbortController();
+        downloadControl.current = control;
         let received = 0;
         let total = 0;
-        await update.download((event) => {
-          if (event.event === "Started") total = event.data.contentLength ?? 0;
-          if (event.event === "Progress") received += event.data.chunkLength;
-          setMessage(
-            total
-              ? `Загрузка обновления: ${Math.min(100, Math.round((received / total) * 100))}%`
-              : "Загружаем обновление…",
-          );
-        });
+        await retryDownload(
+          () => {
+            received = 0;
+            total = 0;
+            return update.download((event) => {
+              if (control.signal.aborted) return;
+              if (event.event === "Started")
+                total = event.data.contentLength ?? 0;
+              if (event.event === "Progress")
+                received += event.data.chunkLength;
+              setMessage(
+                total
+                  ? `Загрузка обновления: ${Math.min(100, Math.round((received / total) * 100))}%`
+                  : "Загружаем обновление…",
+              );
+            });
+          },
+          control.signal,
+          (attempt, delay) =>
+            setMessage(
+              `Соединение прервано. Повторяем загрузку через ${delay / 1000} с · попытка ${attempt} из 3.`,
+            ),
+        );
         setReady(true);
         setMessage("");
       } else if (!blocked.current) {
@@ -84,8 +111,14 @@ export function AppUpdates({
           );
       }
     } catch (error) {
-      setMessage(friendlyError(error));
+      setMessage(
+        downloadControl.current?.signal.aborted
+          ? "Обновление отменено."
+          : friendlyError(error),
+      );
+      if (!downloadControl.current?.signal.aborted) setDetails(String(error));
     } finally {
+      downloadControl.current = null;
       setWorking(false);
     }
   };
@@ -105,6 +138,12 @@ export function AppUpdates({
               ? "Обновление загружено. Можно перезапустить приложение."
               : "Доступна новая версия приложения.")}
         </p>
+        {details && details !== message && (
+          <details>
+            <summary>Технические подробности</summary>
+            <pre>{details}</pre>
+          </details>
+        )}
         {update.body && (
           <details>
             <summary>Что нового</summary>
@@ -115,6 +154,18 @@ export function AppUpdates({
           <small>Завершите игру и текущие операции перед установкой.</small>
         )}
       </div>
+      {working && !ready && (
+        <button
+          onClick={() => {
+            downloadControl.current?.abort();
+            setMessage(
+              "Отменяем обновление… Ожидаем завершения текущего запроса.",
+            );
+          }}
+        >
+          Отменить
+        </button>
+      )}
       <button
         disabled={working || (ready && (running || busy))}
         onClick={() => void accept()}

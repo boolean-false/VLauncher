@@ -54,26 +54,38 @@ pub async fn install_mainline_build(
     let cancelled = control.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
-        vlauncher_core::mainline::install(
-            &store,
-            &build,
-            super::registry_url(),
-            |completed, total| {
-                let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+        super::download_retry::retry(
+            &cancelled,
+            |attempt| {
                 let _ = app.emit(
-                    "transfer-progress",
-                    super::TransferEvent {
-                        kind: "download",
-                        completed,
-                        total,
-                        bytes_per_second: speed,
-                        eta_seconds: total
-                            .saturating_sub(completed)
-                            .checked_div(speed)
-                            .unwrap_or(0),
-                    },
+                    "download-retry",
+                    format!("Повторяем загрузку DEV-сборки · попытка {attempt} из 3…"),
                 );
-                !cancelled.load(std::sync::atomic::Ordering::SeqCst)
+            },
+            || {
+                vlauncher_core::mainline::install(
+                    &store,
+                    &build,
+                    super::registry_url(),
+                    |completed, total| {
+                        let speed =
+                            (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+                        let _ = app.emit(
+                            "transfer-progress",
+                            super::TransferEvent {
+                                kind: "download",
+                                completed,
+                                total,
+                                bytes_per_second: speed,
+                                eta_seconds: total
+                                    .saturating_sub(completed)
+                                    .checked_div(speed)
+                                    .unwrap_or(0),
+                            },
+                        );
+                        !cancelled.load(std::sync::atomic::Ordering::SeqCst)
+                    },
+                )
             },
         )
     })

@@ -405,6 +405,37 @@ fn install_versions(
     cancelled: &AtomicBool,
     locked: &HashMap<(u64, u64), ExternalPackageLock>,
 ) -> Result<Vec<vlauncher_core::ExternalPackage>, String> {
+    super::download_retry::retry(
+        cancelled,
+        |attempt| {
+            let _ = app.emit(
+                "download-retry",
+                format!("Повторяем загрузку VoxelWorld · попытка {attempt} из 3…"),
+            );
+        },
+        || {
+            install_versions_once(
+                app,
+                store,
+                profile_id,
+                client,
+                versions.clone(),
+                cancelled,
+                locked,
+            )
+        },
+    )
+}
+
+fn install_versions_once(
+    app: &tauri::AppHandle,
+    store: &ProfileStore,
+    profile_id: Uuid,
+    client: &reqwest::blocking::Client,
+    versions: Vec<(VoxelWorldVersion, String)>,
+    cancelled: &AtomicBool,
+    locked: &HashMap<(u64, u64), ExternalPackageLock>,
+) -> Result<Vec<vlauncher_core::ExternalPackage>, String> {
     let downloads = tempfile::tempdir().map_err(|error| error.to_string())?;
     let prepared = tempfile::tempdir().map_err(|error| error.to_string())?;
     let mut packages = Vec::new();
@@ -419,10 +450,10 @@ fn install_versions(
         let mut response = client
             .get(url)
             .send()
-            .map_err(|_| "Не удалось скачать архив VoxelWorld".to_string())?;
+            .map_err(|error| format!("Не удалось скачать архив VoxelWorld: {error}"))?;
         if !response.status().is_success() {
             return Err(format!(
-                "VoxelWorld не вернул архив: {}",
+                "VoxelWorld не вернул архив: HTTP {}",
                 response.status().as_u16()
             ));
         }

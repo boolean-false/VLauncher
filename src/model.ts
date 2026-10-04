@@ -77,11 +77,17 @@ export type GameEvent = {
   stream: string;
   message: string;
   success?: boolean;
+  exit_code?: number | null;
+  signal?: number | null;
+  duration_ms?: number | null;
+  runtime_version?: string | null;
+  output_tail?: { stream: string; message: string }[] | null;
 };
 export type Task = {
   id: number;
   title: string;
   detail: string;
+  technicalDetails?: string;
   status: "working" | "done" | "error";
   time: string;
   completed?: number;
@@ -215,7 +221,61 @@ export function requireEngineVersion(version: string): string {
 
 export const friendlyError = (value: unknown) => {
   const text = String(value);
+  const structured = value as {
+    code?: string;
+    status?: number;
+    details?: { package?: string; requirements?: string[]; cycle?: string[] };
+  } | null;
+  if (structured?.code === "no_compatible_release") {
+    const details = structured.details;
+    const packageName = details?.package
+      ? `пак «${details.package}»`
+      : "набор паков";
+    const requirements = Array.isArray(details?.requirements)
+      ? ` Требования к версии пака: ${details.requirements.join(", ")}.`
+      : "";
+    return `Не удалось подобрать ${packageName} для этого профиля.${requirements} Откройте карточку проекта и выберите другую версию либо проверьте закреплённые версии и зависимости в профиле.`;
+  }
+  if (structured?.code === "dependency_cycle") {
+    const cycle = Array.isArray(structured.details?.cycle)
+      ? `: ${structured.details.cycle.join(" → ")}`
+      : "";
+    return `Зависимости паков образуют цикл${cycle}. Выберите другие версии этих паков или сообщите их авторам.`;
+  }
+  if (structured?.code === "package_conflict")
+    return "Выбранные паки несовместимы друг с другом. Проверьте зависимости в карточках проектов и удалите конфликтующий пак либо выберите другие версии. Подробности доступны в журнале операций.";
+  const status =
+    structured?.status?.toString() ??
+    text.match(
+      /(?:status:?\s*|returned\s+|HTTP\s+(?:status\s+(?:server|client)\s+error\s*\()?)(\d{3})\b/i,
+    )?.[1];
+  if (status === "503")
+    return "Сервер загрузки временно недоступен. Повторите попытку позже. Если ошибка сохраняется, проверьте доступность файла через браузер.";
+  if (status === "502")
+    return "Сервер не смог получить файл. Повторите попытку немного позже.";
+  if (status === "429")
+    return "Сервер ограничил частоту запросов. Подождите немного и повторите попытку.";
   const translations: [string, string][] = [
+    [
+      "timed out",
+      "Сервер не ответил вовремя. Проверьте подключение и повторите попытку.",
+    ],
+    [
+      "error sending request",
+      "Не удалось связаться с сервером. Проверьте подключение к интернету, VPN или прокси и повторите попытку.",
+    ],
+    [
+      "signature",
+      "Не удалось проверить подлинность файла. Установка остановлена. Повторно скачайте файл из официального источника; если ошибка повторится, сообщите разработчику.",
+    ],
+    [
+      "downloaded artifact mismatch",
+      "Скачанный файл повреждён или не соответствует выбранной версии. Повторите загрузку.",
+    ],
+    [
+      "Permission denied",
+      "Нет доступа к файлу или папке. Закройте использующие их программы и проверьте права доступа.",
+    ],
     [
       "profile has no VoxelCore version",
       "Выберите версию VoxelCore в разделе «Управление» профиля.",
@@ -307,8 +367,26 @@ export const friendlyError = (value: unknown) => {
     ],
   ];
   return (
-    translations.find(([fragment]) => text.includes(fragment))?.[1] ?? text
+    translations.find(([fragment]) => text.includes(fragment))?.[1] ??
+    text.replace(/^Error:\s*/, "").replace(/^invalid package manifest:\s*/, "")
   );
+};
+
+export const technicalError = (error: unknown): string => {
+  if (error && typeof error === "object") {
+    const { code, status, details } = error as {
+      code?: string;
+      status?: number;
+      details?: unknown;
+    };
+    if (code || status || details)
+      return JSON.stringify(
+        { message: String(error), code, status, details },
+        null,
+        2,
+      );
+  }
+  return String(error);
 };
 export const formatBytes = (bytes: number) =>
   bytes < 1024 * 1024

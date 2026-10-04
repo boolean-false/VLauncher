@@ -1,3 +1,5 @@
+mod download_retry;
+mod game_diagnostics;
 mod github_releases;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
@@ -105,6 +107,16 @@ struct GameEvent {
     stream: &'static str,
     message: String,
     success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signal: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_tail: Option<Vec<game_diagnostics::OutputLine>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1257,7 +1269,7 @@ fn restore_profile_settings(app: tauri::AppHandle, profile_id: String) -> Result
 }
 
 #[tauri::command]
-fn clone_profile(
+async fn clone_profile(
     app: tauri::AppHandle,
     profile_id: String,
     name: String,
@@ -1266,9 +1278,14 @@ fn clone_profile(
     let id = profile_id
         .parse()
         .map_err(|_| "invalid profile id".to_owned())?;
-    profile_store(&app)?
-        .clone_profile(id, &name)
-        .map_err(|error| error.to_string())
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .clone_profile(id, &name)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1523,26 +1540,38 @@ async fn install_official_runtime(
     let cancelled = control.cancelled.clone();
     let started = Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
-        vlauncher_core::official::install_official_runtime(
-            &store,
-            &version,
-            registry_url(),
-            |completed, total| {
-                let speed = (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+        download_retry::retry(
+            &cancelled,
+            |attempt| {
                 let _ = app.emit(
-                    "transfer-progress",
-                    TransferEvent {
-                        kind: "download",
-                        completed,
-                        total,
-                        bytes_per_second: speed,
-                        eta_seconds: total
-                            .saturating_sub(completed)
-                            .checked_div(speed)
-                            .unwrap_or(0),
-                    },
+                    "download-retry",
+                    format!("Повторяем загрузку VoxelCore · попытка {attempt} из 3…"),
                 );
-                !cancelled.load(Ordering::SeqCst)
+            },
+            || {
+                vlauncher_core::official::install_official_runtime(
+                    &store,
+                    &version,
+                    registry_url(),
+                    |completed, total| {
+                        let speed =
+                            (completed as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64;
+                        let _ = app.emit(
+                            "transfer-progress",
+                            TransferEvent {
+                                kind: "download",
+                                completed,
+                                total,
+                                bytes_per_second: speed,
+                                eta_seconds: total
+                                    .saturating_sub(completed)
+                                    .checked_div(speed)
+                                    .unwrap_or(0),
+                            },
+                        );
+                        !cancelled.load(Ordering::SeqCst)
+                    },
+                )
             },
         )
     })
@@ -1569,6 +1598,10 @@ async fn install_runtime(
     let started = Instant::now();
     tauri::async_runtime::spawn_blocking(move || {
         store.install_signed_runtime_with_progress(&plan, |id, completed, _| {
+            if let Some(package) = id.strip_prefix("__retry__:") {
+                let _ = app.emit("download-retry", format!("Повторяем загрузку {package}…"));
+                return !cancelled.load(Ordering::SeqCst);
+            }
             let aggregate = if let Ok(mut values) = progress.lock() {
                 values.insert(id.to_owned(), completed);
                 values.values().copied().sum()
@@ -1602,9 +1635,13 @@ fn stream_output(
     profile_id: String,
     stream: &'static str,
     reader: impl std::io::Read + Send + 'static,
-) {
+    tail: Arc<Mutex<game_diagnostics::OutputTail>>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            if let Ok(mut tail) = tail.lock() {
+                tail.push(stream, &line);
+            }
             let _ = app.emit(
                 "game-log",
                 GameEvent {
@@ -1612,10 +1649,15 @@ fn stream_output(
                     stream,
                     message: line,
                     success: None,
+                    exit_code: None,
+                    signal: None,
+                    duration_ms: None,
+                    output_tail: None,
+                    runtime_version: None,
                 },
             );
         }
-    });
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1639,6 +1681,41 @@ fn system_interpreter() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "could not find the system dynamic linker".to_owned())?;
     path.canonicalize()
         .map_err(|error| format!("could not resolve the system dynamic linker: {error}"))
+}
+
+#[tauri::command]
+async fn check_profile_health(
+    app: tauri::AppHandle,
+    profile_id: String,
+    runtime_version: String,
+) -> Result<Vec<vlauncher_core::profile::ProfileIssue>, String> {
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .check_health(id, &runtime_version)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn restore_profile_package(
+    app: tauri::AppHandle,
+    profile_id: String,
+    package_id: String,
+) -> Result<(), String> {
+    ensure_stopped(&app, &profile_id)?;
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .restore_missing_package(id, &package_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1694,11 +1771,26 @@ fn launch_profile(
         .spawn()
         .map_err(|error| format!("could not start VoxelCore: {error}"))?;
     let process_id = child.id();
+    let started = Instant::now();
+    let tail = Arc::new(Mutex::new(game_diagnostics::OutputTail::default()));
+    let mut readers = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        stream_output(app.clone(), profile_id.clone(), "stdout", stdout);
+        readers.push(stream_output(
+            app.clone(),
+            profile_id.clone(),
+            "stdout",
+            stdout,
+            tail.clone(),
+        ));
     }
     if let Some(stderr) = child.stderr.take() {
-        stream_output(app.clone(), profile_id.clone(), "stderr", stderr);
+        readers.push(stream_output(
+            app.clone(),
+            profile_id.clone(),
+            "stderr",
+            stderr,
+            tail.clone(),
+        ));
     }
     let child = Arc::new(Mutex::new(child));
     children.insert(profile_id.clone(), child.clone());
@@ -1719,15 +1811,31 @@ fn launch_profile(
                     .lock()
                     .map(|mut profile_ids| profile_ids.remove(&profile_id))
                     .unwrap_or(false);
-                let _ = app.emit(
-                    "game-exit",
-                    finished_game_event(
-                        profile_id,
-                        status.to_string(),
-                        status.success(),
-                        stopped_by_user,
-                    ),
+                let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                // Drain final output, but do not wait indefinitely for descendants
+                // that inherited the game's stdout/stderr handles.
+                let drain = Instant::now();
+                while readers.iter().any(|reader| !reader.is_finished())
+                    && drain.elapsed() < Duration::from_millis(200)
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let mut event = finished_game_event(
+                    profile_id,
+                    status.to_string(),
+                    status.success(),
+                    stopped_by_user,
                 );
+                event.exit_code = status.code();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    event.signal = status.signal();
+                }
+                event.duration_ms = Some(duration_ms);
+                event.runtime_version = Some(runtime_version);
+                event.output_tail = tail.lock().ok().map(|tail| tail.snapshot());
+                let _ = app.emit("game-exit", event);
                 break;
             }
             std::thread::sleep(Duration::from_millis(250));
@@ -1782,6 +1890,11 @@ fn finished_game_event(
             status_message
         },
         success: Some(stopped_by_user || status_success),
+        exit_code: None,
+        signal: None,
+        duration_ms: None,
+        output_tail: None,
+        runtime_version: None,
     }
 }
 
@@ -2011,6 +2124,13 @@ async fn apply_remote_install_plan(
                 &verified,
                 main_build,
                 |package, completed, _| {
+                    if let Some(package) = package.strip_prefix("__retry__:") {
+                        let _ = app.emit(
+                            "download-retry",
+                            format!("Повторяем загрузку {package} после временной ошибки сервера…"),
+                        );
+                        return !cancelled.load(Ordering::SeqCst);
+                    }
                     let aggregate = if let Ok(mut values) = progress.lock() {
                         values.insert(package.to_owned(), completed);
                         values.values().copied().sum()
@@ -2191,6 +2311,8 @@ pub fn run() {
             clear_cache,
             install_runtime,
             launch_profile,
+            check_profile_health,
+            restore_profile_package,
             stop_profile,
             apply_install_plan,
             apply_remote_install_plan,
