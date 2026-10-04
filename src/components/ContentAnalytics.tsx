@@ -26,7 +26,7 @@ const sources: Record<string, string> = {
 };
 
 const formatCount = (value: number | null | undefined) =>
-  Number.isFinite(value) ? Math.max(0, value!).toLocaleString("ru") : "—";
+  Number.isFinite(value) ? Math.max(0, value!).toLocaleString("ru") : "-";
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 

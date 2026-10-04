@@ -201,7 +201,7 @@ export function ProfileSettingsTransfer({
                             setControls(event.target.checked)
                           }
                         />
-                        Горячие клавиши{!info.controls && " — ещё не сохранены"}
+                        Горячие клавиши{!info.controls && " - ещё не сохранены"}
                       </label>
                       <label className="checkbox-row">
                         <input
@@ -213,7 +213,7 @@ export function ProfileSettingsTransfer({
                           }
                         />
                         Графика, звук и остальные настройки игры
-                        {!info.settings && " — ещё не сохранены"}
+                        {!info.settings && " - ещё не сохранены"}
                       </label>
                     </fieldset>
                   )}
