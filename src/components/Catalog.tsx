@@ -1,4 +1,5 @@
 import { ProjectGallery } from "./ProjectGallery";
+import { prepareContentAddition } from "../contentAddition";
 import { recordContent } from "../telemetry";
 import { useContentInspector } from "./ContentInspector";
 import { PrivateImage } from "./PrivateImage";
@@ -25,6 +26,7 @@ import {
   type CategoryOption,
   createReport,
   resolveProject,
+  loadReleases,
   type Project,
   type ProjectDetail,
   type Release,
@@ -200,20 +202,26 @@ export function Catalog({
     )
       return;
     void run(`Проверка · ${item.title}`, async () => {
-      const roots = [...new Set([...targetProfile.roots, item.packageId!])];
-      const requirements = { ...targetProfile.root_requirements };
-      delete requirements[item.packageId!];
-      const channel = item.project?.latest_release?.channel ?? "stable";
-      const plan = await resolveProject(
+      const release = item.project?.latest_release;
+      if (!release)
+        throw new Error("У проекта нет доступного выпуска. Обновите каталог.");
+      const { roots, requirements, channels } = await prepareContentAddition(
+        targetProfile,
+        item.packageId!,
+        release,
+        loadReleases,
+      );
+      const { plan, mainBuild } = await resolveWithCompatibleRuntime(
         roots,
         catalogEngine,
         requirements,
-        channel === "stable" ? ["stable"] : ["stable", channel],
+        channels,
         {},
         undefined,
         profileRuntimeContext(targetProfile),
       );
       preview({
+        mainBuild,
         profile: targetProfile,
         plan,
         title: `Добавить ${item.title} · ${targetProfile.name}`,
@@ -1629,6 +1637,9 @@ export function ProjectView({
     projectResult.refresh();
     releasesResult.refresh();
   };
+  const [createNew, setCreateNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newEngine, setNewEngine] = useState("");
   const [failed, setFailed] = useState(false);
   const [installError, setInstallError] = useState("");
   const [reportToken, setReportToken] = useState("");
@@ -1665,9 +1676,10 @@ export function ProjectView({
   const installableProfiles = profiles.filter(
     (item) => !isProjectProfile(item),
   );
-  const profile =
-    installableProfiles.find((item) => item.id === selected) ??
-    installableProfiles[0];
+  const profile = createNew
+    ? undefined
+    : (installableProfiles.find((item) => item.id === selected) ??
+      installableProfiles[0]);
   const standalone = project?.type === "modpack" || project?.type === "project";
   const installedModpackProfile = standalone
     ? profiles.find((item) =>
@@ -1689,7 +1701,8 @@ export function ProjectView({
     project?.type === "mod" &&
     !!project.package_id &&
     (profile?.manual_packages?.includes(project.package_id) ?? false);
-  const createsProjectProfile = !standalone && !installableProfiles.length;
+  const createsProjectProfile =
+    !standalone && (createNew || !installableProfiles.length);
   const install = () => {
     if (!release || !project) return;
     setInstallError("");
@@ -1704,7 +1717,7 @@ export function ProjectView({
           );
         }
         const createProjectProfile =
-          !standalone && !profile && !installableProfiles.length;
+          !standalone && !profile && (createNew || !installableProfiles.length);
         if (!standalone && !profile && !createProjectProfile) return;
         const pendingProfile: LocalProfile | undefined = createProjectProfile
           ? {
@@ -1729,21 +1742,26 @@ export function ProjectView({
             "Контент-пак ещё не получил идентификатор из package.json.",
           );
         }
+        const addition = !directProject
+          ? await prepareContentAddition(
+              targetProfile,
+              project.package_id!,
+              release,
+              loadReleases,
+            )
+          : undefined;
         const roots = directProject
           ? (targetProfile?.roots ?? []).filter((root) => root !== project.id)
-          : [
-              ...new Set([
-                ...(targetProfile?.roots ?? []),
-                project.package_id!,
-              ]),
-            ];
-        const requirements = { ...(targetProfile?.root_requirements ?? {}) };
+          : addition!.roots;
+        const requirements = addition?.requirements ?? {
+          ...(targetProfile?.root_requirements ?? {}),
+        };
         delete requirements[project.id];
-        if (!directProject) requirements[project.package_id!] = `=${version}`;
         const channels =
-          release.channel === "stable"
+          addition?.channels ??
+          (release.channel === "stable"
             ? ["stable"]
-            : ["stable", release.channel];
+            : ["stable", release.channel]);
         let voxelcoreVersion = standalone
           ? modpackEngine
           : engineVersion(targetProfile);
@@ -1763,16 +1781,18 @@ export function ProjectView({
           );
         let result: Awaited<ReturnType<typeof resolveWithCompatibleRuntime>>;
         if (createProjectProfile) {
-          const candidates = [
-            ...new Set(
-              [
-                exactVoxelCoreVersion(release.voxelcore),
-                ...publishedVoxelCoreVersions,
-                parseVersionRequirement(release.voxelcore).minimum ?? "",
-                latestVoxelCore,
-              ].filter(Boolean),
-            ),
-          ].sort((left, right) => compareSemVer(right, left));
+          const candidates = newEngine
+            ? [newEngine]
+            : [
+                ...new Set(
+                  [
+                    exactVoxelCoreVersion(release.voxelcore),
+                    ...publishedVoxelCoreVersions,
+                    parseVersionRequirement(release.voxelcore).minimum ?? "",
+                    latestVoxelCore,
+                  ].filter(Boolean),
+                ),
+              ].sort((left, right) => compareSemVer(right, left));
           let resolved: typeof result | undefined;
           let gatedVersion = "";
           let lastError: unknown = new Error(
@@ -1801,7 +1821,7 @@ export function ProjectView({
               if (!isRuntimeCompatibilityError(reason)) throw reason;
             }
           }
-          if (!resolved && gatedVersion) {
+          if (!resolved && gatedVersion && !newEngine) {
             voxelcoreVersion = gatedVersion;
             runtime = { kind: "stable", version: gatedVersion };
             resolved = await makePlan();
@@ -1814,8 +1834,8 @@ export function ProjectView({
         const { plan } = result;
         selectedMainBuild = result.mainBuild ?? null;
         voxelcoreVersion = plan.plan.voxelcore_version;
-        const automaticProfileName = createProjectProfile
-          ? `VoxelCore ${formatVoxelCoreVersion(voxelcoreVersion)}${selectedMainBuild ? " · DEV" : ""}`
+        const newProfileName = createProjectProfile
+          ? newName.trim() || project.title
           : undefined;
         preview({
           mainBuild: selectedMainBuild,
@@ -1836,7 +1856,7 @@ export function ProjectView({
               : targetProfile!,
           plan,
           title: createProjectProfile
-            ? `Новый профиль · ${automaticProfileName}`
+            ? `Новый профиль · ${newProfileName}`
             : standalone
               ? targetProfile
                 ? `${project.title} · ${installedModpack?.version} → ${version}`
@@ -1847,7 +1867,7 @@ export function ProjectView({
               ? (project.cover_url ?? release.preview_url ?? undefined)
               : undefined,
           newProfileName:
-            standalone && !targetProfile ? project.title : automaticProfileName,
+            standalone && !targetProfile ? project.title : newProfileName,
         });
         close();
       } catch (error) {
@@ -1986,11 +2006,18 @@ export function ProjectView({
                         <label>
                           Установить в профиль
                           <Select
-                            value={profile?.id ?? ""}
-                            onChange={(e) => select(e.target.value)}
+                            value={createNew ? "__new__" : (profile?.id ?? "")}
+                            onChange={(e) => {
+                              setCreateNew(e.target.value === "__new__");
+                              if (e.target.value !== "__new__")
+                                select(e.target.value);
+                            }}
                           >
                             <option value="" disabled>
                               Выберите профиль
+                            </option>
+                            <option value="__new__">
+                              ＋ Создать новый профиль…
                             </option>
                             {installableProfiles.map((p) => (
                               <option key={p.id} value={p.id}>
@@ -2009,6 +2036,37 @@ export function ProjectView({
                         </div>
                       ))}
                   </div>
+                  {createsProjectProfile && (
+                    <div className="form-columns">
+                      <label>
+                        Название профиля
+                        <input
+                          value={newName}
+                          placeholder={project.title}
+                          maxLength={100}
+                          onChange={(event) => setNewName(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Версия VoxelCore
+                        <Select
+                          value={newEngine}
+                          onChange={(event) => setNewEngine(event.target.value)}
+                        >
+                          <option value="">Подобрать совместимую</option>
+                          {publishedVoxelCoreVersions.map((value) => (
+                            <option key={value} value={value}>
+                              {formatVoxelCoreVersion(value)} · стабильная
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                      <small>
+                        Профиль будет создан после подтверждения состава
+                        установки.
+                      </small>
+                    </div>
+                  )}
                   {standalone && (
                     <div className="notice modpack-profile-notice">
                       <strong>
@@ -2067,7 +2125,7 @@ export function ProjectView({
                       <strong>DEV-сборка VoxelCore</strong>
                       <span>
                         {createsProjectProfile
-                          ? `Нажмите «Создать профиль и установить» — лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
+                          ? `Нажмите «Создать профиль и установить» - лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
                           : `После выбора профиля лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`}
                       </span>
                     </div>
@@ -2254,7 +2312,7 @@ export function ProjectView({
                                 ? "Установить проект"
                                 : "Установить сборку"
                             : createsProjectProfile
-                              ? "Создать профиль и установить"
+                              ? "Продолжить"
                               : "Посмотреть состав установки"}
                       </button>
                     )}
@@ -2270,6 +2328,19 @@ export function ProjectView({
     </ProjectSurface>
   );
 }
+function PreviewPackageTitle({
+  id,
+  fallback,
+}: {
+  id: string;
+  fallback: string;
+}) {
+  const { data } = useRegistryResource<ProjectDetail>(
+    `/projects/${encodeURIComponent(id)}`,
+  );
+  return <>{data?.title || fallback}</>;
+}
+
 export function InstallPreview({
   mainBuild,
   profile,
@@ -2294,6 +2365,7 @@ export function InstallPreview({
   const versionLabel = useVoxelCoreVersionLabel();
   const inspect = useContentInspector();
   const [failed, setFailed] = useState(false);
+  const [showUnchanged, setShowUnchanged] = useState(false);
   const runtimeChanged =
     !!mainBuild && mainBuild.artifact_id !== profile.main_build?.artifact_id;
   const [copy, setCopy] = useState(
@@ -2323,7 +2395,7 @@ export function InstallPreview({
     const old = profile.packages.find((p) => p.id === pkg.id);
     return {
       id: pkg.id,
-      title: pkg.title || pkg.id,
+      title: pkg.title || old?.title || pkg.id,
       version:
         old && old.version !== pkg.version
           ? `${old.version} → ${pkg.version}`
@@ -2379,8 +2451,45 @@ export function InstallPreview({
     externalChanges.some((c) => c.status !== "Без изменений") ||
     JSON.stringify([...profile.roots].sort()) !==
       JSON.stringify([...plan.plan.roots].sort());
+  const allChanges = [...changes, ...externalChanges];
+  const count = (status: string) =>
+    allChanges.filter((item) => item.status === status).length;
+  const engineChanged =
+    runtimeChanged ||
+    (plan.plan.runtime?.kind ?? "stable") !==
+      (profile.main_build ? "main" : "stable") ||
+    plan.plan.voxelcore_version !== engineVersion(profile);
   return (
     <Modal title={title} close={close} busy={busy}>
+      {changed && (
+        <div
+          className={
+            engineChanged || count("Удалить") ? "notice" : "install-summary"
+          }
+          role="status"
+        >
+          <strong>Что изменится в профиле</strong>
+          <span>
+            {[
+              ["Добавить", "Добавится"],
+              ["Изменить", "Изменится"],
+              ["Удалить", "Удалится"],
+            ]
+              .filter(([status]) => count(status) > 0)
+              .map(([status, label]) => `${label}: ${count(status)}`)
+              .join(" · ")}
+          </span>
+          {engineChanged && (
+            <span>{`Движок: ${profileEngineLabel(profile)} → ${mainBuild ? mainBuildLabel(mainBuild) : `VoxelCore ${versionLabel(plan.plan.voxelcore_version)} · стабильная`}`}</span>
+          )}
+          {count("Удалить") > 0 && (
+            <span>
+              Существующие миры сохранятся, но для их открытия могут требоваться
+              удаляемые паки.
+            </span>
+          )}
+        </div>
+      )}
       {mainBuild ? (
         <div className="notice main-commit-requirement">
           <strong>Будет использована DEV-сборка VoxelCore</strong>
@@ -2428,9 +2537,18 @@ export function InstallPreview({
             движком потребуется проверить самостоятельно.
           </p>
         )}
-      {runtimeChanged && !newProfileName && !copyCreated && (
-        <ExperimentalDestination copy={copy} onChange={setCopy} busy={busy} />
-      )}
+      {changed &&
+        !newProfileName &&
+        !copyCreated &&
+        !profile.external_project_path &&
+        !profile.external_runtime && (
+          <ExperimentalDestination
+            copy={copy}
+            onChange={setCopy}
+            busy={busy}
+            experimental={runtimeChanged}
+          />
+        )}
       {copyCreated && (
         <p className="notice">
           Копия профиля создана. Повторная попытка продолжит установку в неё.
@@ -2455,110 +2573,138 @@ export function InstallPreview({
           <span>{modpack.project_permissions.join(", ")}</span>
         </div>
       )}
-      {!!changes.length && (
+      {count("Без изменений") > 0 && (
+        <button
+          className="unchanged-toggle"
+          aria-expanded={showUnchanged}
+          onClick={() => setShowUnchanged((value) => !value)}
+        >
+          {showUnchanged ? "Скрыть" : "Показать"} без изменений ·{" "}
+          {count("Без изменений")}
+        </button>
+      )}
+      {changes.some((c) => showUnchanged || c.status !== "Без изменений") && (
         <div className="install-changes">
-          {changes.map((c) => (
-            <div key={c.id}>
-              <div>
-                {c.id.startsWith("__world_") ? (
-                  <strong>{c.title}</strong>
-                ) : (
-                  <button
-                    className="dependency-project-link"
-                    onClick={() =>
-                      inspect({
-                        source: "vspace",
-                        slug: c.id,
-                        version:
-                          plan.plan.packages.find((pkg) => pkg.id === c.id)
-                            ?.version || c.oldVersion,
-                        parent: profile.name,
-                      })
-                    }
-                  >
-                    {c.title}
-                  </button>
-                )}
-                <small>
-                  {c.id.startsWith("__world_")
-                    ? "Стартовая карта"
-                    : c.dependency
-                      ? "Зависимость"
-                      : "Выбранный пакет"}{" "}
-                  · {c.version}
-                </small>
-              </div>
-              <div className="actions">
-                {skipVersion &&
-                  c.status === "Изменить" &&
-                  !c.dependency &&
-                  c.oldVersion && (
+          {changes
+            .filter((c) => showUnchanged || c.status !== "Без изменений")
+            .map((c) => (
+              <div key={c.id}>
+                <div>
+                  {c.id.startsWith("__world_") ? (
+                    <strong>{c.title}</strong>
+                  ) : (
                     <button
-                      disabled={busy}
-                      onClick={() => void skipVersion(c.id, c.oldVersion!)}
+                      className="dependency-project-link"
+                      onClick={() =>
+                        inspect({
+                          source: "vspace",
+                          slug: c.id,
+                          version:
+                            plan.plan.packages.find((pkg) => pkg.id === c.id)
+                              ?.version || c.oldVersion,
+                          parent: profile.name,
+                        })
+                      }
                     >
-                      Оставить {c.oldVersion}
+                      <PreviewPackageTitle id={c.id} fallback={c.title} />
                     </button>
                   )}
-                <span
-                  className={c.status === "Удалить" ? "danger-text" : "muted"}
-                >
-                  {c.status}
-                </span>
+                  <small>
+                    {c.id.startsWith("__world_")
+                      ? "Стартовая карта"
+                      : c.dependency
+                        ? "Зависимость"
+                        : "Выбранный пакет"}{" "}
+                    · {c.version}
+                  </small>
+                </div>
+                <div className="actions">
+                  {skipVersion &&
+                    c.status === "Изменить" &&
+                    !c.dependency &&
+                    c.oldVersion && (
+                      <button
+                        disabled={busy}
+                        onClick={() => void skipVersion(c.id, c.oldVersion!)}
+                      >
+                        Оставить {c.oldVersion}
+                      </button>
+                    )}
+                  <span
+                    className={c.status === "Удалить" ? "danger-text" : "muted"}
+                  >
+                    {c.status}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
         </div>
       )}
-      {!!externalChanges.length && (
+      {externalChanges.some(
+        (item) => showUnchanged || item.status !== "Без изменений",
+      ) && (
         <>
           <h3>VoxelWorld</h3>
           <div className="install-changes">
-            {externalChanges.map((item) => (
-              <div key={`voxelworld-${item.id}`}>
-                <div>
-                  <button
-                    className="dependency-project-link"
-                    onClick={() =>
-                      inspect({
-                        source: item.source,
-                        slug: item.slug,
-                        title: item.title,
-                        version: item.version,
-                        versionId: item.version_id,
-                        parent: profile.name,
-                      })
+            {externalChanges
+              .filter(
+                (item) => showUnchanged || item.status !== "Без изменений",
+              )
+              .map((item) => (
+                <div key={`voxelworld-${item.id}`}>
+                  <div>
+                    <button
+                      className="dependency-project-link"
+                      onClick={() =>
+                        inspect({
+                          source: item.source,
+                          slug: item.slug,
+                          title: item.title,
+                          version: item.version,
+                          versionId: item.version_id,
+                          parent: profile.name,
+                        })
+                      }
+                    >
+                      {item.title}
+                    </button>
+                    <small>
+                      {item.id} · {item.version} · зафиксированная версия
+                    </small>
+                  </div>
+                  <span
+                    className={
+                      item.status === "Удалить" ? "danger-text" : "muted"
                     }
                   >
-                    {item.title}
-                  </button>
-                  <small>
-                    {item.id} · {item.version} · зафиксированная версия
-                  </small>
+                    {item.status}
+                  </span>
                 </div>
-                <span
-                  className={
-                    item.status === "Удалить" ? "danger-text" : "muted"
-                  }
-                >
-                  {item.status}
-                </span>
-              </div>
-            ))}
+              ))}
           </div>
         </>
       )}
-      <p className="muted">
-        Размер архивов:{" "}
-        {formatBytes(
-          plan.plan.packages.reduce((sum, p) => sum + p.artifact_size, 0) +
-            (plan.plan.external_packages ?? []).reduce(
-              (sum, p) => sum + p.artifact_size,
-              0,
-            ),
-        )}
-        . Часть файлов может быть в кэше.
-      </p>
+      {changed && (
+        <p className="muted">
+          Размер архивов с изменениями:{" "}
+          {formatBytes(
+            plan.plan.packages
+              .filter(
+                (pkg) =>
+                  profile.packages.find((old) => old.id === pkg.id)?.version !==
+                  pkg.version,
+              )
+              .reduce((sum, pkg) => sum + pkg.artifact_size, 0) +
+              externalChanges
+                .filter(
+                  (pkg) =>
+                    pkg.status === "Добавить" || pkg.status === "Изменить",
+                )
+                .reduce((sum, pkg) => sum + pkg.artifact_size, 0),
+          )}
+          . Часть файлов может быть в кэше.
+        </p>
+      )}
       {plan.plan.packages.some((p) => p.type === "world") && (
         <p>
           Карта появится в папке миров при следующем запуске. Уже созданные миры

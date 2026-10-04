@@ -601,6 +601,13 @@ main > div[hidden] {
   margin-top: 24px;
 }
 
+.task-list details pre,
+.update-notice details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .mainline-settings {
   display: grid;
   gap: 18px;
@@ -4354,4 +4361,81 @@ input[type="checkbox"]:disabled {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
+}
+
+.content-update-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+  color: var(--muted);
+}
+.content-version {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  min-width: 128px;
+  gap: 6px;
+}
+.content-version code {
+  width: auto;
+  white-space: nowrap;
+}
+.install-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.unchanged-toggle {
+  margin: 12px 0;
+}
+
+.content-version .version-notes-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.content-version .version-notes-link:hover {
+  color: var(--accent-text);
+}
+.update-release-notes {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.release-notes-transition {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.game-failure-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.game-failure-status dt {
+  color: var(--muted);
+}
+.game-failure-status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.game-failure-output {
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.world-content-error {
+  white-space: pre-wrap;
 }

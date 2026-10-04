@@ -1947,7 +1947,7 @@ export function Creator({
                     ? draft.type === "project"
                       ? "Должен совпадать с name в project.toml. Это постоянный адрес проекта."
                       : "Можно продиктовать или отправить человеку. Допустимы латинские буквы, цифры, дефис и подчёркивание."
-                    : "Нужно от 2 до 48 символов; первый символ — латинская буква."}
+                    : "Нужно от 2 до 48 символов; первый символ - латинская буква."}
                 </small>
               </label>
             )}
@@ -2612,7 +2612,7 @@ export function Creator({
                   </span>
                 )}
                 {worldContentError && (
-                  <p className="notice error" role="alert">
+                  <p className="notice error world-content-error" role="alert">
                     Не удалось проверить карту: {worldContentError}
                   </p>
                 )}
@@ -2772,7 +2772,7 @@ export function Creator({
                       VoxelCore {mainTargetVersion} ещё не выпущен
                     </strong>
                     <span>
-                      Последняя стабильная версия — {latestStableVoxelCore}. Без
+                      Последняя стабильная версия - {latestStableVoxelCore}. Без
                       дополнительной настройки релиз станет доступен после
                       выхода VoxelCore {mainTargetVersion}.
                     </span>

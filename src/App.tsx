@@ -1,3 +1,6 @@
+import { GameFailureDetails } from "./components/GameFailureDetails";
+import { UpdateReleaseNotes } from "./components/UpdateReleaseNotes";
+import { useContentUpdates } from "./useContentUpdates";
 import { ProfileSettingsTransfer } from "./components/ProfileSettingsTransfer";
 import { AnalyticsConsent } from "./components/AnalyticsConsent";
 import { VoxelWorldIntroduction } from "./components/VoxelWorldIntroduction";
@@ -47,6 +50,7 @@ import {
   type RunTask,
   formatBytes,
   friendlyError,
+  technicalError,
 } from "./model";
 import {
   VoxelCoreVersionProvider,
@@ -194,11 +198,42 @@ export default function App() {
   }, [updateChannel]);
   const [logs, setLogs] = useState<GameEvent[]>([]);
   const [tasks, setTasks] = useState<Task[]>(storedTasks);
+  useEffect(() => {
+    const subscription = listen<string>("download-retry", ({ payload }) => {
+      setTasks((items) =>
+        items.map((item) =>
+          item.status === "working" ? { ...item, detail: payload } : item,
+        ),
+      );
+    });
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, []);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [showGameFailure, setShowGameFailure] = useState(false);
   const [gameFailure, setGameFailure] = useState<{
     profileId: string;
     message: string;
+    event: GameEvent;
+  } | null>(null);
+  const [releaseNotes, setReleaseNotes] = useState<{
+    profile: LocalProfile;
+    packageId: string;
+    title: string;
+    installed: string;
+    target: string;
+    channels: string[];
+  } | null>(null);
+  const [profileHealth, setProfileHealth] = useState<{
+    profile: LocalProfile;
+    issues: {
+      kind: "runtime" | "package" | "project";
+      component: string;
+      message: string;
+      repairable: boolean;
+    }[];
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const taskLock = useRef(false);
@@ -254,6 +289,20 @@ export default function App() {
     setScreen("catalog");
   }, []);
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
+  const contentUpdates = useContentUpdates(
+    profile,
+    screen === "library" && tab === "content" && !busy,
+  );
+  const contentUpdateCount = Object.keys(contentUpdates.versions).length;
+  let contentUpdateMessage = "Обновлений для текущего движка нет.";
+  if (contentUpdates.loading) contentUpdateMessage = "Проверяем обновления…";
+  else if (contentUpdates.error)
+    contentUpdateMessage = `Не удалось проверить обновления: ${contentUpdates.error}`;
+  else if (contentUpdateCount)
+    contentUpdateMessage = `Доступно обновлений: ${contentUpdateCount}`;
+  else if (Object.keys(contentUpdates.newer).length)
+    contentUpdateMessage =
+      "Есть новые версии, требующие проверки совместимости.";
   const installedModpack = profileModpack(profile);
   const installedProject = profileProject(profile);
   const projectProfile = !!profile?.external_project_path || !!installedProject;
@@ -416,6 +465,7 @@ export default function App() {
       update({
         status: "error",
         detail: friendlyError(e),
+        technicalDetails: technicalError(e),
         completed: undefined,
         total: undefined,
       });
@@ -468,7 +518,9 @@ export default function App() {
         setGameFailure({
           profileId: payload.profile_id,
           message: `VoxelCore завершился с ошибкой: ${payload.message}`,
+          event: payload,
         });
+        setShowGameFailure(true);
         setTasks((items) =>
           [
             {
@@ -579,7 +631,21 @@ export default function App() {
     setTab("logs");
     void run(`Запуск · ${profile.name}`, async (stage) => {
       setGameFailure(null);
-      const version = engineVersion(profile);
+      const version = requireEngineVersion(engineVersion(profile));
+      stage("Проверяем движок, ресурсы и установленные паки…");
+      const issues = await invoke<NonNullable<typeof profileHealth>["issues"]>(
+        "check_profile_health",
+        {
+          profileId: profile.id,
+          runtimeVersion: profile.main_build
+            ? mainRuntimeId(profile.main_build)
+            : version,
+        },
+      );
+      if (issues.length) {
+        setProfileHealth({ profile, issues });
+        return;
+      }
       if (profile.main_build) {
         if (
           !runtimes.some(
@@ -600,6 +666,9 @@ export default function App() {
       if (!profile.active_revision)
         await invoke("initialize_vanilla", { profileId: profile.id, version });
       stage("Запуск VoxelCore…");
+      setLogs((items) =>
+        items.filter((line) => line.profile_id !== profile.id),
+      );
       await invoke("launch_profile", {
         profileId: profile.id,
         runtimeVersion: profile.main_build
@@ -738,6 +807,40 @@ export default function App() {
         );
         setPendingPlan({ profile, plan, mainBuild, title, allowVersionSkips });
       });
+  };
+  const previewPackageUpdate = (
+    target: LocalProfile,
+    packageId: string,
+    title: string,
+    version: string,
+    channels: string[],
+  ) => {
+    void checkProfile(target, "Проверка обновления", async () => {
+      const requirements = Object.fromEntries(
+        target.roots.map((id) => [
+          id,
+          id === packageId
+            ? `=${version}`
+            : `=${target.packages.find((pkg) => pkg.id === id)?.version || "0.0.0"}`,
+        ]),
+      );
+      requirements[packageId] = `=${version}`;
+      const plan = await resolveProject(
+        target.roots,
+        engineVersion(target),
+        requirements,
+        channels,
+        { [packageId]: version },
+        undefined,
+        profileRuntimeContext(target),
+      );
+      setPendingPlan({
+        profile: target,
+        plan,
+        title: `Обновление ${title}`,
+        mainBuild: target.main_build,
+      });
+    });
   };
   const changeRuntime = (target: LocalProfile, selection: string) => {
     if (selection === profileRuntimeId(target)) return;
@@ -1071,17 +1174,11 @@ export default function App() {
               <div className="notice error" role="alert">
                 <div className="notice-copy">
                   <strong>{gameFailure.message}</strong>
-                  <p>Откройте вывод игры, чтобы увидеть причину.</p>
+                  <p>Посмотрите код завершения и последние строки лога.</p>
                 </div>
                 <div className="notice-actions">
-                  <button
-                    onClick={() => {
-                      setSelected(gameFailure.profileId);
-                      setScreen("library");
-                      setTab("logs");
-                    }}
-                  >
-                    Открыть логи
+                  <button onClick={() => setShowGameFailure(true)}>
+                    Подробности
                   </button>
                   <button
                     className="icon-button"
@@ -1491,32 +1588,20 @@ export default function App() {
                               </div>
                               <div className="actions">
                                 <button
-                                  disabled={busy}
-                                  onClick={() =>
+                                  disabled={busy || contentUpdates.loading}
+                                  onClick={() => {
+                                    contentUpdates.refresh();
                                     void refresh().catch((error) =>
                                       setLoadError(String(error)),
-                                    )
-                                  }
+                                    );
+                                  }}
                                 >
-                                  Обновить список
+                                  {contentUpdates.loading
+                                    ? "Проверяем…"
+                                    : profile.roots.length
+                                      ? "Проверить снова"
+                                      : "Обновить список"}
                                 </button>
-                                {!!profile.roots.length && (
-                                  <button
-                                    disabled={busy || running.has(profile.id)}
-                                    onClick={() =>
-                                      changeRoots(
-                                        profile.roots,
-                                        "Проверка обновлений",
-                                        false,
-                                        true,
-                                      )
-                                    }
-                                  >
-                                    {installedModpack
-                                      ? "Проверить обновление сборки"
-                                      : "Проверить обновления"}
-                                  </button>
-                                )}
                                 <button
                                   disabled={busy}
                                   onClick={() => {
@@ -1529,6 +1614,34 @@ export default function App() {
                                 </button>
                               </div>
                             </div>
+                            {!!profile.roots.length && (
+                              <div
+                                className="content-update-status"
+                                role="status"
+                              >
+                                <span>{contentUpdateMessage}</span>
+                                {contentUpdateCount > 0 && (
+                                  <button
+                                    disabled={busy || running.has(profile.id)}
+                                    onClick={() =>
+                                      setPendingPlan({
+                                        profile,
+                                        plan: contentUpdates.plan!,
+                                        mainBuild: profile.main_build,
+                                        title: "Обновление контента",
+                                      })
+                                    }
+                                  >
+                                    Обновить все
+                                  </button>
+                                )}
+                                {!!profile.external_packages?.length && (
+                                  <small>
+                                    Автопроверка относится к пакам VSpace.
+                                  </small>
+                                )}
+                              </div>
+                            )}
                             {!profile.packages.some(
                               (pkg) =>
                                 pkg.kind !== "modpack" &&
@@ -1589,7 +1702,77 @@ export default function App() {
                                           });
                                         }}
                                       />
-                                      <code>{pkg.version}</code>
+                                      <div className="content-version">
+                                        <code>
+                                          {pkg.version}
+                                          {contentUpdates.versions[pkg.id] && (
+                                            <>
+                                              {" → "}
+                                              <button
+                                                className="version-notes-link"
+                                                aria-label={`Изменения ${pkg.title || pkg.id} · ${contentUpdates.versions[pkg.id]}`}
+                                                title="Посмотреть список изменений"
+                                                onClick={() =>
+                                                  setReleaseNotes({
+                                                    profile,
+                                                    packageId: pkg.id,
+                                                    title: pkg.title || pkg.id,
+                                                    installed: pkg.version,
+                                                    target:
+                                                      contentUpdates.versions[
+                                                        pkg.id
+                                                      ],
+                                                    channels:
+                                                      contentUpdates.channels,
+                                                  })
+                                                }
+                                              >
+                                                {
+                                                  contentUpdates.versions[
+                                                    pkg.id
+                                                  ]
+                                                }
+                                              </button>
+                                            </>
+                                          )}
+                                        </code>
+                                        {contentUpdates.versions[pkg.id] ? (
+                                          <button
+                                            disabled={
+                                              busy || running.has(profile.id)
+                                            }
+                                            onClick={() =>
+                                              previewPackageUpdate(
+                                                profile,
+                                                pkg.id,
+                                                pkg.title || pkg.id,
+                                                contentUpdates.versions[pkg.id],
+                                                contentUpdates.channels,
+                                              )
+                                            }
+                                          >
+                                            Обновить
+                                          </button>
+                                        ) : contentUpdates.newer[pkg.id] ? (
+                                          <button
+                                            onClick={() =>
+                                              inspect({
+                                                source: "vspace",
+                                                slug: pkg.id,
+                                                version:
+                                                  contentUpdates.newer[pkg.id],
+                                                title: pkg.title || pkg.id,
+                                                parent: profile.name,
+                                                engine: engineVersion(profile),
+                                              })
+                                            }
+                                          >
+                                            Версия{" "}
+                                            {contentUpdates.newer[pkg.id]} ·
+                                            проверить совместимость
+                                          </button>
+                                        ) : null}
+                                      </div>
                                       {profile.roots.includes(pkg.id) ? (
                                         <button
                                           className="icon-button"
@@ -2095,6 +2278,144 @@ export default function App() {
             </div>
           </Modal>
         )}
+        {gameFailure && showGameFailure && (
+          <GameFailureDetails
+            key={`${gameFailure.profileId}:${gameFailure.event.message}:${gameFailure.event.duration_ms}`}
+            profileName={
+              profiles.find((item) => item.id === gameFailure.profileId)
+                ?.name || gameFailure.profileId
+            }
+            engine={engineVersion(
+              profiles.find((item) => item.id === gameFailure.profileId),
+            )}
+            event={gameFailure.event}
+            logs={logs}
+            close={() => setShowGameFailure(false)}
+            openLog={() => {
+              setShowGameFailure(false);
+              setSelected(gameFailure.profileId);
+              setScreen("library");
+              setTab("logs");
+            }}
+          />
+        )}
+        {releaseNotes && (
+          <UpdateReleaseNotes
+            key={`${releaseNotes.profile.id}:${releaseNotes.packageId}:${releaseNotes.target}`}
+            {...releaseNotes}
+            busy={busy}
+            canUpdate={!running.has(releaseNotes.profile.id)}
+            close={() => setReleaseNotes(null)}
+            update={() => {
+              const notes = releaseNotes;
+              setReleaseNotes(null);
+              previewPackageUpdate(
+                notes.profile,
+                notes.packageId,
+                notes.title,
+                notes.target,
+                notes.channels,
+              );
+            }}
+          />
+        )}
+        {profileHealth && (
+          <Modal
+            title={`Проверка · ${profileHealth.profile.name}`}
+            busy={busy}
+            close={() => setProfileHealth(null)}
+          >
+            {profileHealth.issues.length ? (
+              profileHealth.issues.map((issue) => (
+                <section
+                  className="setting-row"
+                  key={`${issue.kind}:${issue.component}`}
+                >
+                  <p>{issue.message}</p>
+                  {issue.repairable && (
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        void run("Восстановление профиля", async (stage) => {
+                          const target = profileHealth.profile;
+                          if (issue.kind === "runtime") {
+                            if (target.main_build) {
+                              stage("Восстанавливаем закреплённую DEV-сборку…");
+                              setOfficialTransfer(true);
+                              try {
+                                await invoke("install_mainline_build", {
+                                  build: target.main_build,
+                                });
+                              } finally {
+                                setOfficialTransfer(false);
+                              }
+                            } else
+                              await installEngine(
+                                engineVersion(target),
+                                stage,
+                                true,
+                              );
+                          } else {
+                            stage(`Восстанавливаем ${issue.component}…`);
+                            await invoke("restore_profile_package", {
+                              profileId: target.id,
+                              packageId: issue.component,
+                            });
+                          }
+                          await refresh();
+                          const issues = await invoke<
+                            NonNullable<typeof profileHealth>["issues"]
+                          >("check_profile_health", {
+                            profileId: target.id,
+                            runtimeVersion: target.main_build
+                              ? mainRuntimeId(target.main_build)
+                              : engineVersion(target),
+                          });
+                          setProfileHealth({ profile: target, issues });
+                        })
+                      }
+                    >
+                      Восстановить
+                    </button>
+                  )}
+                </section>
+              ))
+            ) : (
+              <p>
+                Движок, ресурсы и установленные паки найдены. Профиль готов к
+                запуску.
+              </p>
+            )}
+            {tasks[0]?.status === "error" && (
+              <p className="notice error">{tasks[0].detail}</p>
+            )}
+            <RuntimeProgress
+              task={currentTask?.status === "working" ? currentTask : undefined}
+              cancel={
+                busy && (officialTransfer || transferActive)
+                  ? () => void invoke("cancel_transfer")
+                  : undefined
+              }
+            />
+            <div className="actions">
+              <button disabled={busy} onClick={() => setProfileHealth(null)}>
+                Закрыть
+              </button>
+              {!profileHealth.issues.length && (
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    const target = profileHealth.profile;
+                    setProfileHealth(null);
+                    launchProfile(target);
+                  }}
+                >
+                  Запустить
+                </button>
+              )}
+            </div>
+          </Modal>
+        )}
         {pendingPlan && (
           <InstallPreview
             {...pendingPlan}
@@ -2155,9 +2476,17 @@ export default function App() {
                     !pendingPlan.newProfileName
                   ) {
                     stage("Создаём копию профиля с мирами и настройками…");
+                    const changingMainBuild =
+                      pendingPlan.mainBuild &&
+                      pendingPlan.mainBuild.artifact_id !==
+                        pendingPlan.profile.main_build?.artifact_id;
+                    const suffix = changingMainBuild ? "DEV" : "обновление";
+                    const name = [...pendingPlan.profile.name]
+                      .slice(0, 60)
+                      .join("");
                     const cloned = await invoke<LocalProfile>("clone_profile", {
                       profileId: pendingPlan.profile.id,
-                      name: `${pendingPlan.profile.name.slice(0, 60)} — DEV`,
+                      name: `${name} - ${suffix}`,
                     });
                     installedProfileId = cloned.id;
                     setPendingPlan({
@@ -2256,7 +2585,7 @@ export default function App() {
                   stage("Копируем профиль с мирами и настройками…");
                   target = await invoke<LocalProfile>("clone_profile", {
                     profileId: target.id,
-                    name: `${target.name.slice(0, 60)} — DEV`,
+                    name: `${target.name.slice(0, 60)} - DEV`,
                   });
                   setRuntimeChange({
                     ...runtimeChange,
@@ -2581,7 +2910,7 @@ function ConnectLocalProject({
             }}
           >
             <option value="experimental">
-              DEV-сборка — последняя доступная
+              DEV-сборка - последняя доступная
             </option>
             {mainBuilds.map((build) => (
               <option key={mainRuntimeId(build)} value={mainRuntimeId(build)}>
@@ -3064,7 +3393,7 @@ function ProfileSettings({
                 onChange={(event) => setRuntimeVersion(event.target.value)}
               >
                 <option value="experimental-latest">
-                  DEV-сборка — последняя совместимая
+                  DEV-сборка - последняя совместимая
                 </option>
                 {!runtimeVersion && (
                   <option value="" disabled>
@@ -3799,6 +4128,13 @@ function Activity({
                 <div className="grow">
                   <strong>{task.title}</strong>
                   <p>{task.detail}</p>
+                  {task.technicalDetails &&
+                    task.technicalDetails !== task.detail && (
+                      <details>
+                        <summary>Технические подробности</summary>
+                        <pre>{task.technicalDetails}</pre>
+                      </details>
+                    )}
                 </div>
                 <small>{task.time}</small>
               </article>
