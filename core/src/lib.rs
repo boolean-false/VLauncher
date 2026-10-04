@@ -1,3 +1,4 @@
+mod launch_path;
 pub mod mainline;
 pub mod manifest;
 pub mod official;

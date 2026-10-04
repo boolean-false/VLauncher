@@ -1,6 +1,9 @@
 #[path = "materialization.rs"]
 mod materialization;
 use materialization::GameChanges;
+#[path = "profile_health.rs"]
+mod health;
+pub use health::ProfileIssue;
 
 #[path = "profile_settings.rs"]
 mod settings_transfer;
@@ -107,12 +110,16 @@ pub fn embedded_world_packages(world: &Path) -> Result<Vec<EmbeddedWorldPackage>
         return Ok(Vec::new());
     }
     if !content.is_dir() {
-        return invalid("world content must be a directory");
+        return Err(PackageProblem::WorldContent("В карте найден файл «content», но здесь должна быть папка с паками. Исправьте структуру карты и выберите её заново.".into()));
     }
     let mut packages = Vec::new();
-    let mut ids = HashSet::new();
-    for entry in fs::read_dir(&content).map_err(|source| io_error(&content, source))? {
-        let entry = entry.map_err(|source| io_error(&content, source))?;
+    let mut ids = HashMap::new();
+    let mut entries = fs::read_dir(&content)
+        .map_err(|source| io_error(&content, source))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| io_error(&content, source))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
         if entry.file_name() == ".DS_Store" || entry.file_name() == "Thumbs.db" {
             continue;
         }
@@ -121,27 +128,40 @@ pub fn embedded_world_packages(world: &Path) -> Result<Vec<EmbeddedWorldPackage>
             .map_err(|source| io_error(&entry.path(), source))?
             .is_dir()
         {
-            return invalid(format!(
-                "world content contains a non-package: {}",
-                entry.path().display()
-            ));
+            return Err(PackageProblem::WorldContent(format!(
+                "В папке content найден элемент «{}», который не является папкой пака. Переместите посторонние файлы из content и повторите проверку.",
+                entry.file_name().to_string_lossy()
+            )));
         }
+        let folder = format!("content/{}", entry.file_name().to_string_lossy());
         let manifest_path = entry.path().join("package.json");
-        let bytes = fs::read(&manifest_path).map_err(|source| io_error(&manifest_path, source))?;
+        let bytes = fs::read(&manifest_path).map_err(|source| {
+            PackageProblem::WorldContent(if source.kind() == std::io::ErrorKind::NotFound {
+                format!("В папке «{folder}» нет package.json — файла описания пака. Добавьте полную копию пака или уберите постороннюю папку из content, затем повторите проверку.")
+            } else {
+                format!("Не удалось прочитать «{folder}/package.json». Проверьте доступ к файлу и повторите проверку. Причина: {source}")
+            })
+        })?;
         let manifest: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|source| PackageProblem::Json {
-                path: manifest_path.clone(),
-                source,
+            serde_json::from_slice(&bytes).map_err(|source| {
+                PackageProblem::WorldContent(format!(
+                    "Файл «{folder}/package.json» повреждён или содержит ошибку JSON (строка {}, столбец {}). Замените его исправной копией из исходного пака или обратитесь к автору пака, затем повторите проверку.",
+                    source.line(), source.column()
+                ))
             })?;
         let id = manifest
             .get("id")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        if id.is_empty() || !ids.insert(id.to_owned()) {
-            return invalid(format!(
-                "world content has a missing or duplicate package id in {}",
-                manifest_path.display()
-            ));
+        if id.trim().is_empty() {
+            return Err(PackageProblem::WorldContent(format!(
+                "В файле «{folder}/package.json» не указан идентификатор пака: поле id должно содержать непустой текст. Восстановите файл из исходного пака или обратитесь к его автору. Название папки не заменяет идентификатор."
+            )));
+        }
+        if let Some(previous) = ids.insert(id.to_owned(), folder.clone()) {
+            return Err(PackageProblem::WorldContent(format!(
+                "В карте найдены два пака с одинаковым идентификатором «{id}».\nПапки: «{previous}» и «{folder}».\nОставьте нужный вариант пака и повторите добавление карты. Лаунчер не может автоматически выбрать, какой вариант нужен карте. Простое переименование папки не изменит идентификатор внутри package.json."
+            )));
         }
         packages.push(EmbeddedWorldPackage {
             id: id.to_owned(),
@@ -3071,9 +3091,13 @@ impl ProfileStore {
         // Для неизвестной версии запускаем без дополнительных аргументов.
         let mut arguments = vec![
             "--res".into(),
-            runtime_path.join(&resources).to_string_lossy().into_owned(),
+            crate::launch_path::engine_path(&runtime_path.join(&resources))?
+                .to_string_lossy()
+                .into_owned(),
             "--dir".into(),
-            user_folder.to_string_lossy().into_owned(),
+            crate::launch_path::engine_path(&user_folder)?
+                .to_string_lossy()
+                .into_owned(),
         ];
         let project_path = if let Some(path) = profile.external_project_path.as_ref() {
             VoxelCoreProject::read(path)?;
@@ -3100,12 +3124,16 @@ impl ProfileStore {
                 return invalid("VoxelCore project is unavailable");
             }
             arguments.push("--project".into());
-            arguments.push(project_path.to_string_lossy().into_owned());
+            arguments.push(
+                crate::launch_path::engine_path(&project_path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         Ok(LaunchSpec {
-            executable: runtime_path.join(executable),
+            executable: crate::launch_path::engine_path(&runtime_path.join(executable))?,
             arguments,
-            working_directory: runtime_path,
+            working_directory: crate::launch_path::engine_path(&runtime_path)?,
             log_path: logs.join("latest.log"),
         })
     }
@@ -3455,6 +3483,29 @@ impl ProfileStore {
         package: &RemoteInstallPackage,
         progress: &dyn Fn(&str, u64, u64) -> bool,
     ) -> Result<PathBuf, PackageProblem> {
+        for attempt in 0..3 {
+            match self.fetch_artifact_once(client, package, progress) {
+                Err(PackageProblem::RetryableDownload(_)) if attempt < 2 => {
+                    let label = format!("__retry__:{}", package.id);
+                    for _ in 0..(10 * (attempt + 1)) {
+                        if !progress(&label, 0, package.artifact_size) {
+                            return invalid("download paused by user");
+                        }
+                        std::thread::sleep(Duration::from_millis(if cfg!(test) { 1 } else { 100 }));
+                    }
+                }
+                result => return result,
+            }
+        }
+        unreachable!()
+    }
+
+    fn fetch_artifact_once(
+        &self,
+        client: &Client,
+        package: &RemoteInstallPackage,
+        progress: &dyn Fn(&str, u64, u64) -> bool,
+    ) -> Result<PathBuf, PackageProblem> {
         if package.artifact_sha256.len() != 64
             || !package
                 .artifact_sha256
@@ -3506,12 +3557,25 @@ impl ProfileStore {
             request = request.header(RANGE, format!("bytes={offset}-"));
         }
         let mut response = request.send().map_err(|error| {
-            PackageProblem::Invalid(format!("artifact download failed: {error}"))
+            if error.is_timeout() || error.is_connect() || error.is_body() {
+                PackageProblem::RetryableDownload(format!("artifact download failed: {error}"))
+            } else {
+                PackageProblem::Invalid(format!("artifact download failed: {error}"))
+            }
         })?;
         if offset > 0 && response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             // Retry once without Range; never retain an unusable resume offset.
             fs::remove_file(&partial).map_err(|source| io_error(&partial, source))?;
-            return self.fetch_artifact_with_progress(client, package, progress);
+            return self.fetch_artifact_once(client, package, progress);
+        }
+        if matches!(
+            response.status().as_u16(),
+            408 | 429 | 500 | 502 | 503 | 504
+        ) {
+            return Err(PackageProblem::RetryableDownload(format!(
+                "artifact server returned {}",
+                response.status()
+            )));
         }
         if !response.status().is_success() {
             return invalid(format!("artifact server returned {}", response.status()));
@@ -3531,9 +3595,11 @@ impl ProfileStore {
         let mut downloaded = if append { offset } else { 0 };
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let read = response
-                .read(&mut buffer)
-                .map_err(|source| io_error(&partial, source))?;
+            let read = response.read(&mut buffer).map_err(|error| {
+                PackageProblem::RetryableDownload(format!(
+                    "artifact download connection closed: {error}"
+                ))
+            })?;
             if read == 0 {
                 break;
             }
@@ -3557,6 +3623,11 @@ impl ProfileStore {
             .sync_all()
             .map_err(|source| io_error(&partial, source))?;
         drop(output);
+        if downloaded < package.artifact_size {
+            return Err(PackageProblem::RetryableDownload(
+                "artifact download connection closed before completion".into(),
+            ));
+        }
         if !verify_file(&partial, &package.artifact_sha256, package.artifact_size)? {
             let _ = fs::remove_file(&partial);
             return invalid(format!("downloaded artifact mismatch for '{}'", package.id));
@@ -4352,7 +4423,8 @@ fn safe_profile_folder_name(name: &str) -> String {
     let mut folder = String::new();
     let mut replaced = false;
     for character in name.trim().chars() {
-        let forbidden = character.is_control()
+        let forbidden = !character.is_ascii()
+            || character.is_control()
             || matches!(
                 character,
                 '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
@@ -4366,7 +4438,7 @@ fn safe_profile_folder_name(name: &str) -> String {
             folder.push(character);
             replaced = false;
         }
-        if folder.chars().count() >= 64 {
+        if folder.len() >= 64 {
             break;
         }
     }
@@ -4393,6 +4465,36 @@ fn safe_profile_folder_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_profile_names_preserve_data_and_have_ascii_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("library")).unwrap();
+        let first = store.create("Шахта").unwrap();
+        let second = store.create("Другой мир").unwrap();
+        assert_ne!(store.profile_path(first.id), store.profile_path(second.id));
+        assert_eq!(first.name, "Шахта");
+        assert_eq!(second.name, "Другой мир");
+        fs::write(store.profile_path(first.id).join("marker"), b"saved world").unwrap();
+        store.rename(first.id, "Новая шахта").unwrap();
+        assert_eq!(
+            fs::read(store.profile_path(first.id).join("marker")).unwrap(),
+            b"saved world"
+        );
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .find(|p| p.id == first.id)
+                .unwrap()
+                .name,
+            "Новая шахта"
+        );
+        for id in [first.id, second.id] {
+            assert!(store.profile_path(id).file_name().unwrap().is_ascii());
+        }
+    }
     use ed25519_dalek::{Signer, SigningKey};
     use std::{
         io::{Read, Write},
@@ -4947,6 +5049,77 @@ mod tests {
         assert!(cleared.join("content").read_dir().unwrap().next().is_none());
         store.delete_profile(profile.id).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updating_a_clone_keeps_original_content_and_worlds() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let original = store.create("Original").unwrap();
+        store
+            .apply(
+                original.id,
+                &InstallPlan {
+                    revision: "original".into(),
+                    packages: vec![package_archive(temp.path(), "1.0.0")],
+                },
+            )
+            .unwrap();
+        let original_game = store.game_directory(original.id).unwrap();
+        fs::create_dir_all(original_game.join("worlds/home")).unwrap();
+        fs::write(
+            original_game.join("worlds/home/world.json"),
+            "original world",
+        )
+        .unwrap();
+        fs::write(original_game.join("settings.json"), "original settings").unwrap();
+        let copy = store.clone_profile(original.id, "Update copy").unwrap();
+        store
+            .apply(
+                copy.id,
+                &InstallPlan {
+                    revision: "updated-copy".into(),
+                    packages: vec![package_archive(temp.path(), "2.0.0")],
+                },
+            )
+            .unwrap();
+        let copied_game = store.game_directory(copy.id).unwrap();
+        assert_eq!(
+            fs::read_to_string(copied_game.join("worlds/home/world.json")).unwrap(),
+            "original world"
+        );
+        assert_eq!(
+            fs::read_to_string(copied_game.join("settings.json")).unwrap(),
+            "original settings"
+        );
+        fs::write(
+            copied_game.join("worlds/home/world.json"),
+            "changed by new game",
+        )
+        .unwrap();
+        fs::write(copied_game.join("settings.json"), "new settings").unwrap();
+        assert_eq!(
+            fs::read_to_string(original_game.join("worlds/home/world.json")).unwrap(),
+            "original world"
+        );
+        assert_eq!(
+            fs::read_to_string(original_game.join("settings.json")).unwrap(),
+            "original settings"
+        );
+        let profiles = store.list().unwrap();
+        assert_eq!(
+            profiles
+                .iter()
+                .find(|p| p.id == original.id)
+                .unwrap()
+                .packages[0]
+                .version,
+            "1.0.0"
+        );
+        assert_eq!(
+            profiles.iter().find(|p| p.id == copy.id).unwrap().packages[0].version,
+            "2.0.0"
+        );
     }
 
     #[test]
@@ -5704,6 +5877,69 @@ mod tests {
     }
 
     #[test]
+    fn world_duplicate_error_names_both_packs_in_folder_and_zip() {
+        let temp = tempfile::tempdir().unwrap();
+        let world = temp.path().join("world");
+        fs::create_dir_all(&world).unwrap();
+        fs::write(world.join("world.json"), "{}").unwrap();
+        let zip_path = temp.path().join("world.zip");
+        let mut zip = ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        zip.start_file("Voxelpunk/world.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"{}").unwrap();
+        for folder in ["water_waves", "blocks_waves"] {
+            let relative = format!("content/{folder}/package.json");
+            fs::create_dir_all(world.join("content").join(folder)).unwrap();
+            let manifest = br#"{"id":"water_waves"}"#;
+            fs::write(world.join(&relative), manifest).unwrap();
+            zip.start_file(
+                format!("Voxelpunk/{relative}"),
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(manifest).unwrap();
+        }
+        zip.finish().unwrap();
+        let error = inspect_world_source(&world).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            inspect_world_source(&zip_path).unwrap_err().to_string()
+        );
+        assert!(error.contains("идентификатором «water_waves»"));
+        assert!(error.contains("content/blocks_waves"));
+        assert!(error.contains("content/water_waves"));
+        assert!(error.contains("Оставьте нужный вариант"));
+        assert!(!error.contains("invalid package manifest"));
+        assert!(!error.contains(&temp.path().to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn world_manifest_errors_explain_missing_id_file_and_invalid_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("content/example");
+        fs::create_dir_all(&folder).unwrap();
+        let error = embedded_world_packages(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("нет package.json"));
+        for manifest in ["{}", r#"{"id":null}"#, r#"{"id":123}"#, r#"{"id":"  "}"#] {
+            fs::write(folder.join("package.json"), manifest).unwrap();
+            let error = embedded_world_packages(temp.path())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("поле id должно содержать непустой текст"));
+            assert!(error.contains("content/example/package.json"));
+        }
+        fs::write(folder.join("package.json"), "{bad json}").unwrap();
+        let error = embedded_world_packages(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ошибку JSON"));
+        assert!(error.contains("строка 1"));
+        assert!(error.contains("обратитесь к автору"));
+    }
+
+    #[test]
     fn prepares_external_world_folder_and_wrapped_zip_with_embedded_packs() {
         let temp = tempfile::tempdir().unwrap();
         let store = ProfileStore::open(temp.path().join("state")).unwrap();
@@ -6356,6 +6592,112 @@ mod tests {
                 assert_eq!(fs::read_dir(game.join("worlds")).unwrap().count(), 1);
             }
         }
+    }
+
+    #[test]
+    fn profile_health_restores_missing_pack_without_touching_worlds_or_existing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("Health").unwrap();
+        store
+            .apply(
+                profile.id,
+                &InstallPlan {
+                    revision: "health".into(),
+                    packages: vec![package_archive(temp.path(), "1.0.0")],
+                },
+            )
+            .unwrap();
+        let game = store.game_directory(profile.id).unwrap();
+        fs::create_dir_all(game.join("worlds/home")).unwrap();
+        fs::write(game.join("worlds/home/world.json"), b"saved world").unwrap();
+        let package = game.join("content/demo_mod");
+        fs::remove_dir_all(&package).unwrap();
+        let issues = store.check_health(profile.id, "0.32.0").unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.component == "runtime" && i.repairable)
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.component == "demo_mod" && i.repairable)
+        );
+        store
+            .restore_missing_package(profile.id, "demo_mod")
+            .unwrap();
+        assert_eq!(PackageManifest::read(&package).unwrap().version, "1.0.0");
+        assert!(
+            !store
+                .check_health(profile.id, "0.32.0")
+                .unwrap()
+                .iter()
+                .any(|i| i.component == "demo_mod")
+        );
+        fs::write(package.join("custom.lua"), b"user changes").unwrap();
+        assert!(
+            store
+                .restore_missing_package(profile.id, "demo_mod")
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(package.join("custom.lua")).unwrap(),
+            b"user changes"
+        );
+        assert_eq!(
+            fs::read(game.join("worlds/home/world.json")).unwrap(),
+            b"saved world"
+        );
+        fs::remove_file(package.join("package.json")).unwrap();
+        assert!(
+            store
+                .check_health(profile.id, "0.32.0")
+                .unwrap()
+                .iter()
+                .any(|i| i.component == "demo_mod" && !i.repairable)
+        );
+    }
+
+    #[test]
+    fn artifact_download_retries_503_and_honors_cancel_during_backoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for status in [503, 200] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                stream.read(&mut request).unwrap();
+                let body = if status == 200 { "file" } else { "busy" };
+                write!(stream, "HTTP/1.1 {status} Response\r\nContent-Length: 4\r\nConnection: close\r\n\r\n{body}").unwrap();
+            }
+        });
+        let package = RemoteInstallPackage {
+            id: "demo_mod".into(),
+            title: None,
+            kind: PackageKind::Mod,
+            version: "1.0.0".into(),
+            artifact_sha256: hex::encode(Sha256::digest(b"file")),
+            artifact_size: 4,
+            download_url: format!("http://{addr}/file"),
+            dependencies: vec![],
+        };
+        let path = store
+            .fetch_artifact_with_progress(&Client::new(), &package, &|_, _, _| true)
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"file");
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+        let mut unavailable = package;
+        unavailable.download_url = "http://127.0.0.1:1/unavailable".into();
+        let error = store
+            .fetch_artifact_with_progress(&Client::new(), &unavailable, &|id, _, _| {
+                !id.starts_with("__retry__:")
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("download paused by user"));
     }
 
     #[test]

@@ -295,7 +295,7 @@ pub fn install(
         return Err(match response.status().as_u16() {
             404 | 410 => "Артефакт удалён или срок его хранения истёк".into(),
             503 => "VSpace временно не может получить сборку main. Повторите позже".into(),
-            status => format!("VSpace не отдал сборку main (ошибка {status})"),
+            status => format!("VSpace не отдал сборку main (HTTP {status})"),
         });
     }
     let stage = tempfile::tempdir().map_err(|e| e.to_string())?;

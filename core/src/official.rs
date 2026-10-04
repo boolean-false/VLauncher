@@ -541,6 +541,12 @@ mod tests {
         let profile = store
             .create_initialized("Проверка Windows", "0.31.4")
             .unwrap();
+        let error = store.launch_spec(profile.id, "0.31.4").unwrap_err();
+        assert!(error.to_string().contains("Перенесите библиотеку"));
+        let destination = dir.path().join("Library");
+        store.copy_library_to(&destination).unwrap();
+        let store = ProfileStore::open(&destination).unwrap();
+        let runtime = store.list_runtimes().unwrap().remove(0);
         let spec = store.launch_spec(profile.id, "0.31.4").unwrap();
         assert!(spec.executable.is_file());
         assert_eq!(

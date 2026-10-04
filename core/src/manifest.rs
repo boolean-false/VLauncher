@@ -31,6 +31,10 @@ pub enum PackageProblem {
     #[error("invalid package manifest: {0}")]
     Invalid(String),
     #[error("{0}")]
+    WorldContent(String),
+    #[error("{0}")]
+    RetryableDownload(String),
+    #[error("{0}")]
     Remote(String),
 }
 
