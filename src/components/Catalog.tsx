@@ -493,10 +493,13 @@ export function Catalog({
     );
   }
   return (
-    <>
-      <header className="page-heading">
+    <section className="catalog-page">
+      <header className="page-heading catalog-heading">
         <div>
           <h1>Каталог</h1>
+          {!targetProfile && (
+            <p>Контент-паки, сборки, проекты и карты для VoxelCore.</p>
+          )}
           {targetProfile && (
             <p>
               Для профиля <strong>{targetProfile.name}</strong> · VoxelCore{" "}
@@ -655,9 +658,26 @@ export function Catalog({
           Не удалось обновить каталог. Показаны ранее загруженные данные.
         </ErrorNotice>
       )}
-      <p className="catalog-refresh-status" role="status">
-        {updating && !loading ? "Обновляем результаты…" : ""}
-      </p>
+      <div className="catalog-results-heading">
+        <h2>
+          {query.trim()
+            ? "Результаты поиска"
+            : kind === "world"
+              ? "Карты"
+              : kind === "modpack"
+                ? "Сборки"
+                : kind === "project"
+                  ? "Проекты"
+                  : "Контент-паки"}
+        </h2>
+        <p className="catalog-refresh-status" role="status">
+          {loading
+            ? "Загружаем…"
+            : updating
+              ? "Обновляем…"
+              : `Найдено: ${page.total.toLocaleString("ru")}`}
+        </p>
+      </div>
       {error && (jointCatalog || !previous.current) ? (
         <ErrorNotice retry={() => setRetry(null)}>
           <strong>Каталог недоступен</strong>
@@ -774,12 +794,17 @@ export function Catalog({
                     );
                   }}
                 >
-                  <div className="catalog-card-top">
+                  <div className={`catalog-card-visual ${project.kind}`}>
                     {project.project ? (
                       <ProjectIcon project={project.project} />
                     ) : (
                       <ExternalProjectIcon project={project.voxelWorld!} />
                     )}
+                    <span className="catalog-card-open" aria-hidden="true">
+                      <Icon name="arrow" size={18} />
+                    </span>
+                  </div>
+                  <div className="catalog-card-top">
                     <div>
                       <span className="eyebrow supporting-label">
                         {kinds[project.kind]}
@@ -814,7 +839,7 @@ export function Catalog({
                   })()}
                   <p>{project.summary || "Автор пока не добавил описание."}</p>
                   <footer>
-                    <span>{project.footer}</span>
+                    <span>{project.footer || "Версия не опубликована"}</span>
                     <span>
                       <Icon name="download" size={14} />
                       {project.downloads.toLocaleString("ru")}
@@ -901,7 +926,7 @@ export function Catalog({
           </div>
         </>
       )}
-    </>
+    </section>
   );
 }
 function ExternalProjectIcon({ project }: { project: VoxelWorldMod }) {
@@ -934,25 +959,17 @@ function ProjectIcon({
       src={image}
       alt=""
       fallback={
-        <span className="project-icon">
-          <Icon name="package" size={26} />
+        <span className="project-icon project-monogram" aria-hidden="true">
+          {project.title.trim().slice(0, 2)}
         </span>
       }
     />
   ) : (
-    <span className={`project-icon ${project.type}`}>
-      <Icon
-        name={
-          project.type === "world"
-            ? "world"
-            : project.type === "modpack"
-              ? "catalog"
-              : project.type === "project"
-                ? "terminal"
-                : "package"
-        }
-        size={26}
-      />
+    <span
+      className={`project-icon project-monogram ${project.type}`}
+      aria-hidden="true"
+    >
+      {project.title.trim().slice(0, 2)}
     </span>
   );
 }
@@ -1071,6 +1088,47 @@ function ModpackContents({
     </section>
   );
 }
+function ProjectHeader({
+  icon,
+  title,
+  kind,
+  author,
+  source,
+  summary,
+  downloads,
+}: {
+  icon: ReactNode;
+  title: string;
+  kind: string;
+  author: string;
+  source?: string;
+  summary: string;
+  downloads: number;
+}) {
+  return (
+    <header className="project-hero">
+      <div className="project-hero-icon">{icon}</div>
+      <div className="project-hero-copy">
+        <div className="project-byline">
+          <span className="project-kind">{kind}</span>
+          {source && <span>{source}</span>}
+          {author && (
+            <span>
+              от <strong>{author}</strong>
+            </span>
+          )}
+        </div>
+        <h1>{title}</h1>
+        {summary && <p>{summary}</p>}
+        <span className="project-downloads">
+          <Icon name="download" size={15} />
+          Загрузки · {downloads.toLocaleString("ru")}
+        </span>
+      </div>
+    </header>
+  );
+}
+
 function ProjectSurface({
   title,
   close,
@@ -1086,10 +1144,10 @@ function ProjectSurface({
         <button className="project-back" onClick={close}>
           ← К каталогу
         </button>
-        <div>
-          <span className="supporting-label">Каталог / проект</span>
-          <h1>{title}</h1>
-        </div>
+        <span className="project-breadcrumb-separator" aria-hidden="true">
+          /
+        </span>
+        <span className="project-breadcrumb-current">{title}</span>
       </header>
       {children}
     </section>
@@ -1214,17 +1272,17 @@ function VoxelWorldProjectView({
                 Не удалось обновить данные. Показана сохранённая карточка.
               </ErrorNotice>
             )}
+            <ProjectHeader
+              icon={<ExternalProjectIcon project={project} />}
+              title={project.title}
+              kind="Контент-пак"
+              author={project.author.name}
+              source="VoxelWorld"
+              summary={project.description}
+              downloads={project.downloads}
+            />
             <div className="project-page-layout">
               <div className="project-page-content">
-                <div className="project-detail-title">
-                  <ExternalProjectIcon project={project} />
-                  <div>
-                    <span>
-                      Контент-пак · VoxelWorld · {project.author.name}
-                    </span>
-                    <p>{project.description}</p>
-                  </div>
-                </div>
                 <section className="project-overview">
                   <h2>О проекте</h2>
                   <div className="project-description selectable">
@@ -1248,10 +1306,6 @@ function VoxelWorldProjectView({
                   )}
                 </section>
                 <dl className="metadata">
-                  <div>
-                    <dt>Загрузки</dt>
-                    <dd>{project.downloads.toLocaleString("ru")}</dd>
-                  </div>
                   <div>
                     <dt>Обновлён</dt>
                     <dd>
@@ -1321,6 +1375,39 @@ function VoxelWorldProjectView({
                         </Select>
                       </label>
                     </div>
+                  </>
+                ) : (
+                  <p className="notice">У проекта пока нет доступных версий.</p>
+                )}
+                <div className="modal-actions project-install-action">
+                  {!!versions.length && (
+                    <button
+                      className="primary"
+                      disabled={
+                        busy ||
+                        checkingCompatibility ||
+                        !profile ||
+                        !profileEngine ||
+                        !selectedVersion ||
+                        !versionDetail ||
+                        running.has(profile.id)
+                      }
+                      onClick={() => void install()}
+                    >
+                      <Icon name="download" size={18} />
+                      {checkingCompatibility
+                        ? "Проверяем…"
+                        : profile?.external_packages?.some(
+                              (item) => item.project_id === project.id,
+                            )
+                          ? "Обновить"
+                          : "Установить"}
+                    </button>
+                  )}
+                  <button onClick={openProject}>Открыть на VoxelWorld</button>
+                </div>
+                {!!versions.length && (
+                  <>
                     {selectedVersion && (
                       <div className="release-info">
                         <span>
@@ -1346,8 +1433,10 @@ function VoxelWorldProjectView({
                       </details>
                     )}
                     {!!versionDetail?.dependencies?.length && (
-                      <section className="release-dependencies">
-                        <h3>Зависимости</h3>
+                      <details className="release-dependencies">
+                        <summary>
+                          Зависимости · {versionDetail.dependencies.length}
+                        </summary>
                         {versionDetail.dependencies.map((dependency) => (
                           <div
                             className="dependency-card"
@@ -1378,7 +1467,7 @@ function VoxelWorldProjectView({
                             </footer>
                           </div>
                         ))}
-                      </section>
+                      </details>
                     )}
                     {versionResult.loading && (
                       <p role="status">Проверяем зависимости…</p>
@@ -1415,35 +1504,7 @@ function VoxelWorldProjectView({
                       подписи или контрольной суммы.
                     </div>
                   </>
-                ) : (
-                  <p className="notice">У проекта пока нет доступных версий.</p>
                 )}
-                <div className="modal-actions">
-                  <button onClick={openProject}>Открыть на VoxelWorld</button>
-                  {!!versions.length && (
-                    <button
-                      className="primary"
-                      disabled={
-                        busy ||
-                        checkingCompatibility ||
-                        !profile ||
-                        !profileEngine ||
-                        !selectedVersion ||
-                        !versionDetail ||
-                        running.has(profile.id)
-                      }
-                      onClick={() => void install()}
-                    >
-                      {checkingCompatibility
-                        ? "Проверяем…"
-                        : profile?.external_packages?.some(
-                              (item) => item.project_id === project.id,
-                            )
-                          ? "Обновить"
-                          : "Установить"}
-                    </button>
-                  )}
-                </div>
               </aside>
             </div>
           </>
@@ -1890,25 +1951,30 @@ export function ProjectView({
             </ErrorNotice>
           )}
           {releasesResult.loading && <p role="status">Загружаем версии…</p>}
+          <ProjectHeader
+            icon={<ProjectIcon project={project} />}
+            title={project.title}
+            kind={kinds[project.type]}
+            author={typeof project.owner === "string" ? project.owner : ""}
+            summary={project.summary}
+            downloads={project.downloads}
+          />
           <div className="project-page-layout">
             <div className="project-page-content">
-              <div className="project-detail-title">
-                <ProjectIcon project={project} />
-                <div>
-                  <span>
-                    {kinds[project.type]} ·{" "}
-                    {typeof project.owner === "string" ? project.owner : ""}
-                  </span>
-                  <p>{project.summary}</p>
-                </div>
-              </div>
-              {!!project.gallery_urls?.length && (
+              {!!project.gallery_urls?.length ? (
                 <ProjectGallery
                   key={project.id}
                   urls={project.gallery_urls}
                   title={project.title}
                 />
-              )}
+              ) : project.type === "world" && project.cover_url ? (
+                <ProjectGallery
+                  key={project.id}
+                  urls={[project.cover_url]}
+                  title={project.title}
+                  cover
+                />
+              ) : null}
               <section className="project-overview">
                 <h2>{project.type === "modpack" ? "О сборке" : "О проекте"}</h2>
                 <div className="project-description selectable">
@@ -1927,10 +1993,6 @@ export function ProjectView({
                 />
               )}
               <dl className="metadata">
-                <div>
-                  <dt>Загрузки</dt>
-                  <dd>{project.downloads.toLocaleString("ru")}</dd>
-                </div>
                 <div>
                   <dt>Обновлён</dt>
                   <dd>
@@ -2067,6 +2129,53 @@ export function ProjectView({
                       </small>
                     </div>
                   )}
+                  <div className="modal-actions project-install-action">
+                    {installedModpackProfile && selectedModpackIsInstalled ? (
+                      <button
+                        className="primary"
+                        onClick={() => openProfile(installedModpackProfile.id)}
+                      >
+                        Открыть профиль · {installedModpackProfile.name}
+                      </button>
+                    ) : (
+                      <button
+                        className="primary"
+                        disabled={
+                          busy ||
+                          (!standalone &&
+                            !createsProjectProfile &&
+                            (!profile || !engineVersion(profile))) ||
+                          (standalone &&
+                            !exactVoxelCoreVersion(release?.voxelcore ?? "")) ||
+                          (standalone &&
+                            !!installedModpackProfile &&
+                            running.has(installedModpackProfile.id)) ||
+                          (!standalone && manualCollision) ||
+                          (!standalone &&
+                            !!profile &&
+                            running.has(profile.id)) ||
+                          !release?.download_url
+                        }
+                        onClick={install}
+                      >
+                        <Icon name="download" size={18} />
+                        {busy
+                          ? "Проверяем…"
+                          : standalone
+                            ? installedModpackProfile
+                              ? `Обновить до ${version}`
+                              : project.type === "project"
+                                ? "Установить проект"
+                                : "Установить сборку"
+                            : createsProjectProfile
+                              ? "Продолжить"
+                              : "Перейти к установке"}
+                      </button>
+                    )}
+                  </div>
+                  <p className="install-action-hint">
+                    Состав и зависимости проверим перед установкой.
+                  </p>
                   {standalone && (
                     <div className="notice modpack-profile-notice">
                       <strong>
@@ -2125,7 +2234,7 @@ export function ProjectView({
                       <strong>DEV-сборка VoxelCore</strong>
                       <span>
                         {createsProjectProfile
-                          ? `Нажмите «Создать профиль и установить» - лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
+                          ? `При переходе к установке лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`
                           : `После выбора профиля лаунчер проверит доступность подходящей DEV-сборки VoxelCore ${formatVoxelCoreVersion(mainRequirement.target_version)}.`}
                       </span>
                     </div>
@@ -2137,8 +2246,10 @@ export function ProjectView({
                     </details>
                   )}
                   {!standalone && !!release?.dependencies?.length && (
-                    <section className="release-dependencies">
-                      <h3>Зависимости</h3>
+                    <details className="release-dependencies">
+                      <summary>
+                        Зависимости · {release.dependencies.length}
+                      </summary>
                       {release.dependencies.map((dependency) => (
                         <div
                           key={`${dependency.kind}-${dependency.id}`}
@@ -2176,11 +2287,13 @@ export function ProjectView({
                           </footer>
                         </div>
                       ))}
-                    </section>
+                    </details>
                   )}
                   {project.type === "modpack" && !!releaseComponents.length && (
-                    <section className="release-dependencies">
-                      <h3>Стартовые карты</h3>
+                    <details className="release-dependencies">
+                      <summary>
+                        Стартовые карты · {releaseComponents.length}
+                      </summary>
                       {releaseComponents.map((component) => (
                         <div key={component.key} className="dependency-card">
                           <div className="dependency-card-heading">
@@ -2197,7 +2310,7 @@ export function ProjectView({
                           </footer>
                         </div>
                       ))}
-                    </section>
+                    </details>
                   )}
                   {!!release?.attestation?.assertion?.manifest?.capabilities
                     ?.length && (
@@ -2274,49 +2387,6 @@ export function ProjectView({
                       {reportStatus && <small>{reportStatus}</small>}
                     </details>
                   )}
-                  <div className="modal-actions">
-                    {installedModpackProfile && selectedModpackIsInstalled ? (
-                      <button
-                        className="primary"
-                        onClick={() => openProfile(installedModpackProfile.id)}
-                      >
-                        Открыть профиль · {installedModpackProfile.name}
-                      </button>
-                    ) : (
-                      <button
-                        className="primary"
-                        disabled={
-                          busy ||
-                          (!standalone &&
-                            !createsProjectProfile &&
-                            (!profile || !engineVersion(profile))) ||
-                          (standalone &&
-                            !exactVoxelCoreVersion(release?.voxelcore ?? "")) ||
-                          (standalone &&
-                            !!installedModpackProfile &&
-                            running.has(installedModpackProfile.id)) ||
-                          (!standalone && manualCollision) ||
-                          (!standalone &&
-                            !!profile &&
-                            running.has(profile.id)) ||
-                          !release?.download_url
-                        }
-                        onClick={install}
-                      >
-                        {busy
-                          ? "Проверяем…"
-                          : standalone
-                            ? installedModpackProfile
-                              ? `Обновить до ${version}`
-                              : project.type === "project"
-                                ? "Установить проект"
-                                : "Установить сборку"
-                            : createsProjectProfile
-                              ? "Продолжить"
-                              : "Посмотреть состав установки"}
-                      </button>
-                    )}
-                  </div>
                 </>
               ) : (
                 <p className="notice">У проекта пока нет доступных релизов.</p>

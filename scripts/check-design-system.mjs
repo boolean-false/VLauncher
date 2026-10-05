@@ -11,7 +11,7 @@ for (const path of files) {
     const at = `${path}:${index + 1}`;
     if (path !== tokenFile && /#[\da-f]{3,8}\b|\brgba?\(|\bhsla?\(/i.test(line)) errors.push(`${at}: color outside tokens`);
     if (path !== tokenFile && /--[\w-]+\s*:/.test(line)) errors.push(`${at}: token redefinition outside tokens`);
-    if (/border-radius\s*:/.test(line) && !/border-radius\s*:\s*(var\(--radius\)|inherit)/.test(line)) errors.push(`${at}: corner radius outside tokens`);
+    if (/border-radius\s*:/.test(line) && !/border-radius\s*:\s*(var\(--radius(?:-small)?\)|inherit)/.test(line)) errors.push(`${at}: corner radius outside tokens`);
     if (/text-transform\s*:\s*uppercase/i.test(line)) errors.push(`${at}: uppercase interface label`);
     const tracking = line.match(/letter-spacing\s*:\s*([\d.]+)(px|em|rem)/i);
     if (tracking && Number(tracking[1]) > 0 && !line.includes('ds-allow-letter-spacing')) errors.push(`${at}: positive interface tracking`);

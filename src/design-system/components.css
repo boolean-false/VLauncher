@@ -52,9 +52,9 @@ button {
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  min-height: 36px;
+  min-height: 38px;
   padding: 7px 13px;
-  cursor: default;
+  cursor: pointer;
   white-space: nowrap;
   transition:
     background 0.12s,
@@ -304,7 +304,7 @@ dialog p {
   font-size: 13px;
 }
 summary {
-  cursor: default;
+  cursor: pointer;
   color: var(--muted);
   font-size: 12px;
 }

@@ -12,17 +12,17 @@
 }
 
 .workbench .sidebar {
-  width: 224px;
-  padding: 28px 12px 12px;
+  width: 212px;
+  padding: 30px 14px 14px;
   border-color: var(--line);
   background: var(--surface-inset);
 }
 
 .workbench .brand {
-  padding: 0 12px 32px;
+  padding: 0 10px 36px;
 }
 
-.workbench .sidebar nav { gap: 1px; }
+.workbench .sidebar nav { gap: 6px; }
 .workbench .sidebar nav button,
 .workbench .sidebar-bottom button {
   position: relative;
@@ -35,10 +35,11 @@
 .workbench .sidebar-bottom button.active {
   color: var(--accent-text);
   background: var(--accent-bg);
-  box-shadow: inset 2px 0 var(--accent);
+  box-shadow: none;
+  font-weight: 600;
 }
 
-.workbench .sidebar-profiles { margin-top: 36px; }
+.workbench .sidebar-profiles { margin-top: 32px; }
 .workbench .sidebar-label {
   padding-left: 13px;
 }
@@ -91,8 +92,8 @@
 .workbench .statusbar {
   background: var(--surface-inset);
   border-color: var(--line);
-  font-family: var(--mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: 11px;
 }
 .workbench .status-dot { border-radius: var(--radius); }
 
@@ -128,8 +129,8 @@
 }
 .library-page .game-emblem img { border-radius: var(--radius); }
 .library-page .game-title h2 {
-  font: 400 clamp(23px, 2.5vw, 36px)/1.25 var(--mono);
-  letter-spacing: -1.6px;
+  font: 650 clamp(23px, 2.5vw, 36px)/1.25 var(--font-ui);
+  letter-spacing: -1px;
   margin: 8px 0 12px;
   color: var(--text);
 }
@@ -175,9 +176,9 @@
 .library-page .launch-area button {
   min-width: 172px;
   min-height: 48px;
-  font-family: var(--mono);
+  font-family: var(--font-ui);
   font-size: 14px;
-  font-weight: 400;
+  font-weight: 650;
 }
 .library-page .launch-area small {
   color: var(--muted);
@@ -440,3 +441,36 @@
 .workbench .attach-folder-options small {
   color: var(--muted);
 }
+
+/* Воздух и единая типографика оболочки. */
+.workbench .brand-wordmark { font-size: 23px; font-weight: 750; letter-spacing: -0.8px; }
+.workbench .brand-wordmark svg { color: var(--accent); }
+.workbench .sidebar { border-right-color: color-mix(in srgb, var(--line) 50%, transparent); }
+.workbench .sidebar-bottom { border-top-color: color-mix(in srgb, var(--line) 50%, transparent); }
+.workbench .sidebar nav button:hover:not(.active),
+.workbench .sidebar-bottom button:hover:not(.active) { background: var(--panel); color: var(--text); }
+.workbench .profile-link.selected { background: var(--panel); border-color: transparent; }
+.workbench .profile-initial { border: 0; font-family: var(--font-ui); font-weight: 600; }
+.workbench .statusbar { border-color: color-mix(in srgb, var(--line) 50%, transparent); }
+.workbench .library-page .game-heading { padding: 26px; margin-bottom: 24px; background: var(--panel); border-radius: var(--radius); }
+.workbench .library-page .game-title h2 { margin-top: 6px; }
+@media (max-width: 1100px) {
+  .workbench .sidebar { width: 190px; padding-inline: 10px; }
+  .workbench main { padding: 26px 24px 36px; }
+}
+@media (max-width: 640px) {
+  .workbench .sidebar { width: 64px; padding: 20px 8px 10px; }
+  .workbench .brand { justify-content: center; padding: 0 0 25px; }
+  .workbench .brand-wordmark > span { display: none; }
+  .workbench .sidebar nav button,
+  .workbench .sidebar-bottom button { justify-content: center; font-size: 0; gap: 0; padding: 12px; }
+  .workbench .sidebar-label { justify-content: center; padding: 0; font-size: 0; }
+  .workbench .profile-link { justify-content: center; padding: 7px 0; }
+  .workbench .profile-link > span:last-of-type:not(.profile-initial),
+  .workbench .profile-link.selected::after,
+  .workbench .sidebar-hint { display: none; }
+  .workbench main { padding: 22px 16px 30px; }
+  .workbench .library-page .game-heading { padding: 18px; flex-wrap: wrap; }
+}
+
+.workbench input[type="checkbox"] { border-radius: var(--radius-small); }

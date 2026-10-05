@@ -869,6 +869,11 @@ export function Creator({
   };
   const createProject = async () => {
     if (!token) return;
+    if (draft.type === "world" && !draft.license.trim()) {
+      throw new Error(
+        "Укажите лицензию карты: условия её использования и распространения.",
+      );
+    }
     setError("");
     try {
       const created = await createCreatorProject(token, {
@@ -893,6 +898,11 @@ export function Creator({
     if (!token) return;
     const current = projects.find((item) => item.slug === selectedProject);
     if (!current) return;
+    if (current.type === "world" && !current.license?.trim()) {
+      throw new Error(
+        "Укажите лицензию карты: условия её использования и распространения.",
+      );
+    }
     try {
       await updateCreatorProject(token, current.slug, {
         title: current.title,
@@ -1969,8 +1979,13 @@ export function Creator({
               token={token}
             />
             <label>
-              Лицензия · необязательно
+              {draft.type === "world"
+                ? "Лицензия карты · обязательно"
+                : "Лицензия · необязательно"}
               <input
+                aria-label="Лицензия проекта"
+                required={draft.type === "world"}
+                aria-invalid={draft.type === "world" && !draft.license.trim()}
                 maxLength={128}
                 value={draft.license}
                 placeholder="Например, MIT, CC BY 4.0 или название своей лицензии"
@@ -1978,7 +1993,16 @@ export function Creator({
                   setDraft({ ...draft, license: event.target.value })
                 }
               />
-              <small>
+              <small
+                className={
+                  draft.type === "world" && !draft.license.trim()
+                    ? "danger-text"
+                    : undefined
+                }
+              >
+                {draft.type === "world" &&
+                  !draft.license.trim() &&
+                  "Для публикации карты нужна лицензия. "}
                 Укажите условия автора. Для собственной лицензии добавьте текст
                 или ссылку в описание.
               </small>
@@ -1993,7 +2017,8 @@ export function Creator({
               disabled={
                 !draft.title.trim() ||
                 !draft.summary.trim() ||
-                (draft.type !== "mod" && !validProjectSlug(draft.slug))
+                (draft.type !== "mod" && !validProjectSlug(draft.slug)) ||
+                (draft.type === "world" && !draft.license.trim())
               }
               onClick={() => void perform(createProject)}
             >
@@ -2646,10 +2671,17 @@ export function Creator({
                     </span>
                   </div>
                 )}
+                {!current.license?.trim() && (
+                  <p className="notice error" role="alert">
+                    Для публикации карты нужна лицензия. Укажите условия
+                    использования в описании проекта и сохраните карточку.
+                  </p>
+                )}
                 <button
                   className="primary small"
                   disabled={
                     working ||
+                    !current.license?.trim() ||
                     !worldSourceReady ||
                     !!worldContentError ||
                     !!worldMissingPackages.length ||
@@ -3053,9 +3085,15 @@ export function Creator({
                   token={token}
                 />
                 <label>
-                  Лицензия проекта
+                  {current.type === "world"
+                    ? "Лицензия карты · обязательно"
+                    : "Лицензия проекта"}
                   <input
                     aria-label="Лицензия проекта"
+                    required={current.type === "world"}
+                    aria-invalid={
+                      current.type === "world" && !current.license?.trim()
+                    }
                     maxLength={128}
                     placeholder="Не указана"
                     value={current.license ?? ""}
@@ -3063,6 +3101,11 @@ export function Creator({
                       updateSelected({ license: event.target.value })
                     }
                   />
+                  {current.type === "world" && !current.license?.trim() && (
+                    <small className="danger-text">
+                      Укажите условия использования и распространения карты.
+                    </small>
+                  )}
                 </label>
                 <CategoryPicker
                   kind={current.type}
@@ -3071,6 +3114,10 @@ export function Creator({
                 />
                 <button
                   className="primary small"
+                  disabled={
+                    working ||
+                    (current.type === "world" && !current.license?.trim())
+                  }
                   onClick={() => void perform(saveProject)}
                 >
                   Сохранить описание

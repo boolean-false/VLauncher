@@ -5,9 +5,11 @@ import { PrivateImage } from "./PrivateImage";
 export function ProjectGallery({
   urls,
   title,
+  cover = false,
 }: {
   urls: string[];
   title: string;
+  cover?: boolean;
 }) {
   const [selected, setSelected] = useState(0);
   const [expanded, setExpanded] = useState(false);
@@ -55,20 +57,31 @@ export function ProjectGallery({
     </div>
   );
   return (
-    <section className="project-screenshots" aria-label="Скриншоты проекта">
+    <section
+      className="project-screenshots"
+      aria-label={cover ? "Обложка проекта" : "Скриншоты проекта"}
+    >
       <header>
-        <h2>Скриншоты</h2>
+        <h2>{cover ? "Обложка" : "Скриншоты"}</h2>
         {urls.length > 1 && navigation}
       </header>
       <button
         type="button"
-        className="project-screenshot-main"
+        className={`project-screenshot-main${cover ? " project-cover-preview" : ""}`}
         onClick={() => setExpanded(true)}
-        aria-label={`Открыть скриншот ${index + 1} проекта ${title}`}
+        aria-label={
+          cover
+            ? `Открыть обложку проекта ${title}`
+            : `Открыть скриншот ${index + 1} проекта ${title}`
+        }
       >
         <PrivateImage
           src={urls[index]}
-          alt={`Скриншот ${index + 1} проекта ${title}`}
+          alt={
+            cover
+              ? `Обложка проекта ${title}`
+              : `Скриншот ${index + 1} проекта ${title}`
+          }
         />
       </button>
       {urls.length > 1 && (
@@ -91,14 +104,22 @@ export function ProjectGallery({
       )}
       {expanded && (
         <Modal
-          title={`Скриншот ${index + 1} из ${urls.length}`}
+          title={
+            cover
+              ? `Обложка · ${title}`
+              : `Скриншот ${index + 1} из ${urls.length}`
+          }
           className="catalog-image-dialog"
           close={() => setExpanded(false)}
         >
           <div className="media-full-preview">
             <PrivateImage
               src={urls[index]}
-              alt={`Скриншот ${index + 1} проекта ${title}`}
+              alt={
+                cover
+                  ? `Обложка проекта ${title}`
+                  : `Скриншот ${index + 1} проекта ${title}`
+              }
             />
           </div>
           {urls.length > 1 && navigation}

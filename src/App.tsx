@@ -96,6 +96,7 @@ import "./design-system/tokens.css";
 import "./design-system/components.css";
 import "./App.css";
 import "./Workbench.css";
+import "./components/Catalog.css";
 
 type Screen =
   | "library"

@@ -29,14 +29,14 @@ const preset = (id: string, name: string, tokens: ThemeTokens, radius = 0): Them
 
 export const themePresets: ThemeConfig[] = [
   preset("ink-paper", "Стандартная", {
-    bg: "#171b20", "surface-inset": "#12161a", panel: "#1e242b", "surface-2": "#272f37",
-    line: "#35414c", text: "#e8e7e0", muted: "#aab2bc", accent: "#dad9ca",
-    "accent-text": "#dad9ca", "accent-bg": "#30332f", "accent-hover": "#ecebdf",
-    "on-accent": "#23251f", "focus-ring": "#dad9ca", warning: "#dbc08e",
+    bg: "#181a1b", "surface-inset": "#121415", panel: "#222526", "surface-2": "#2b2f30",
+    line: "#373d3d", text: "#eff1ec", muted: "#a5adaa", accent: "#c4e887",
+    "accent-text": "#c4e887", "accent-bg": "#303b26", "accent-hover": "#d6f3a5",
+    "on-accent": "#1d2912", "focus-ring": "#c4e887", warning: "#dbc08e",
     "warning-bg": "#302a20", "warning-line": "#6d5938", danger: "#e7a5a1",
     "danger-bg": "#342523", "danger-line": "#754b46", success: "#b9cd95",
     "success-bg": "#283022", "success-line": "#526340", overlay: "#090d0bb8",
-  }),
+  }, 10),
   preset("jetbrains-linen", "JetBrains", {
     bg: "#1e1f22", "surface-inset": "#242528", panel: "#2b2d30", "surface-2": "#393b40",
     line: "#43454a", text: "#dfe1e5", muted: "#9da0a8", accent: "#d4c49d",

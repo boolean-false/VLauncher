@@ -10,19 +10,19 @@
 :root {
   --font-ui: Inter, "Noto Sans", system-ui, sans-serif;
   --mono: "Workbench Mono", monospace;
-  --bg: #171b20;
-  --surface-inset: #12161a;
-  --panel: #1e242b;
-  --surface-2: #272f37;
-  --line: #35414c;
-  --text: #e8e7e0;
-  --muted: #aab2bc;
-  --accent: #dad9ca;
-  --accent-text: #dad9ca;
-  --accent-bg: #30332f;
-  --accent-hover: #ecebdf;
-  --on-accent: #23251f;
-  --focus-ring: #dad9ca;
+  --bg: #181a1b;
+  --surface-inset: #121415;
+  --panel: #222526;
+  --surface-2: #2b2f30;
+  --line: #373d3d;
+  --text: #eff1ec;
+  --muted: #a5adaa;
+  --accent: #c4e887;
+  --accent-text: #c4e887;
+  --accent-bg: #303b26;
+  --accent-hover: #d6f3a5;
+  --on-accent: #1d2912;
+  --focus-ring: #c4e887;
   --warning: #dbc08e;
   --warning-bg: #302a20;
   --warning-line: #6d5938;
@@ -33,5 +33,6 @@
   --success-bg: #283022;
   --success-line: #526340;
   --overlay: #090e12b8;
-  --radius: 0px;
+  --radius: 10px;
+  --radius-small: min(var(--radius), 4px);
 }

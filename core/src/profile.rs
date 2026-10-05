@@ -3225,8 +3225,13 @@ impl ProfileStore {
         if fs::read_to_string(&marker).is_ok_and(|installed| installed == revision)
             && game.join("content").is_dir()
         {
-            commit()?;
-            return Ok(game);
+            let mut changes = GameChanges::default();
+            let result = (|| {
+                repair_published_world_players(&game, &mut changes)?;
+                commit()?;
+                Ok(game)
+            })();
+            return changes.finish(result);
         }
         let old_snapshot = fs::read_to_string(&marker)
             .ok()
@@ -3255,6 +3260,7 @@ impl ProfileStore {
         if game.join("content").is_dir() && (same_packages || no_managed_data) {
             let mut changes = GameChanges::default();
             let result = (|| {
+                repair_published_world_players(&game, &mut changes)?;
                 changes.write(&marker, revision.as_bytes())?;
                 commit()?;
                 Ok(game)
@@ -3418,6 +3424,7 @@ impl ProfileStore {
                     changes.replace(&staged_config, &config)?;
                 }
             }
+            repair_published_world_players(&game, &mut changes)?;
             changes.write(&marker, revision.as_bytes())?;
             commit()?;
             Ok(game)
@@ -4211,6 +4218,57 @@ fn copy_world_for_publication(source: &Path, destination: &Path) -> Result<(), P
             fs::copy(entry.path(), &target).map_err(|error| io_error(&target, error))?;
         }
     }
+    if let Some(bytes) = world_without_player_metadata(destination)? {
+        write_atomic(&destination.join("world.json"), &bytes)?;
+    }
+    Ok(())
+}
+
+fn world_without_player_metadata(world: &Path) -> Result<Option<Vec<u8>>, PackageProblem> {
+    if world.join("player.json").exists() {
+        return Ok(None);
+    }
+    let path = world.join("world.json");
+    if !path.is_file() || path.is_symlink() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|error| io_error(&path, error))?;
+    let mut metadata: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| PackageProblem::Invalid(format!("{}: {error}", path.display())))?;
+    if !metadata["next-player-id"].as_i64().is_some_and(|id| id > 0) {
+        return Ok(None);
+    }
+    // VoxelCore creates the missing local player from this counter, but opens player 0.
+    metadata["next-player-id"] = serde_json::json!(0);
+    serde_json::to_vec_pretty(&metadata)
+        .map(Some)
+        .map_err(|error| PackageProblem::Invalid(error.to_string()))
+}
+
+fn repair_published_world_players(
+    game: &Path,
+    changes: &mut GameChanges,
+) -> Result<(), PackageProblem> {
+    let worlds = game.join("worlds");
+    if !worlds.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&worlds).map_err(|error| io_error(&worlds, error))? {
+        let entry = entry.map_err(|error| io_error(&worlds, error))?;
+        if !entry
+            .file_type()
+            .map_err(|error| io_error(&entry.path(), error))?
+            .is_dir()
+        {
+            continue;
+        }
+        let world = entry.path();
+        if world.join(".vlauncher-world.json").is_file()
+            && let Some(bytes) = world_without_player_metadata(&world)?
+        {
+            changes.write(&world.join("world.json"), &bytes)?;
+        }
+    }
     Ok(())
 }
 
@@ -4601,7 +4659,9 @@ mod tests {
         archive
             .start_file("world/world.json", SimpleFileOptions::default())
             .unwrap();
-        archive.write_all(b"{\"title\":\"Demo\"}").unwrap();
+        archive
+            .write_all(br#"{"title":"Demo","next-player-id":1}"#)
+            .unwrap();
         archive
             .start_file("world/regions/0_0.bin", SimpleFileOptions::default())
             .unwrap();
@@ -5837,7 +5897,11 @@ mod tests {
         let profile = store.create_initialized("World source", "0.31.4").unwrap();
         let world = store.profile_path(profile.id).join("game/worlds/home");
         fs::create_dir_all(world.join("regions")).unwrap();
-        fs::write(world.join("world.json"), "{}").unwrap();
+        fs::write(
+            world.join("world.json"),
+            r#"{"next-player-id":1,"next-entity-id":42}"#,
+        )
+        .unwrap();
         fs::write(world.join("player.json"), "private").unwrap();
         fs::write(world.join("regions/0_0.bin"), "terrain").unwrap();
         let embedded = world.join("content/EmbeddedPack-folder");
@@ -5874,6 +5938,13 @@ mod tests {
                 .is_ok()
         );
         assert!(archive.by_name("world/player.json").is_err());
+        let metadata: serde_json::Value =
+            serde_json::from_reader(archive.by_name("world/world.json").unwrap()).unwrap();
+        assert_eq!(metadata["next-player-id"], 0);
+        assert_eq!(metadata["next-entity-id"], 42);
+        let source: serde_json::Value =
+            serde_json::from_slice(&fs::read(world.join("world.json")).unwrap()).unwrap();
+        assert_eq!(source["next-player-id"], 1);
     }
 
     #[test]
@@ -6345,6 +6416,62 @@ mod tests {
             .unwrap();
         assert_eq!(fs::read(region).unwrap(), b"player changes");
         assert_eq!(fs::read_dir(game.join("worlds")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn installed_world_player_repair_preserves_data_and_rolls_back_on_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("World profile").unwrap();
+        store
+            .apply(
+                profile.id,
+                &InstallPlan {
+                    revision: "world-one".into(),
+                    packages: vec![world_archive(temp.path())],
+                },
+            )
+            .unwrap();
+        let game = store
+            .materialize_game_folder(profile.id, "world-one")
+            .unwrap();
+        let world = game.join("worlds/Demo-world");
+        let metadata = world.join("world.json");
+        let installed: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata).unwrap()).unwrap();
+        assert_eq!(installed["next-player-id"], 0);
+        let original = br#"{"next-player-id":1,"next-entity-id":42}"#;
+        fs::write(&metadata, original).unwrap();
+        let result = store.materialize_game_folder_with_commit(profile.id, "world-one", || {
+            invalid("simulated commit failure")
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&metadata).unwrap(), original);
+
+        let local = game.join("worlds/Local-world");
+        fs::create_dir(&local).unwrap();
+        fs::write(local.join("world.json"), original).unwrap();
+        store
+            .materialize_game_folder(profile.id, "world-one")
+            .unwrap();
+        let repaired: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata).unwrap()).unwrap();
+        assert_eq!(repaired["next-player-id"], 0);
+        assert_eq!(repaired["next-entity-id"], 42);
+        assert_eq!(
+            fs::read(world.join("regions/0_0.bin")).unwrap(),
+            b"original world"
+        );
+        assert_eq!(fs::read(local.join("world.json")).unwrap(), original);
+
+        fs::write(&metadata, original).unwrap();
+        let player = br#"{"players":[{"id":0}]}"#;
+        fs::write(world.join("player.json"), player).unwrap();
+        store
+            .materialize_game_folder(profile.id, "world-one")
+            .unwrap();
+        assert_eq!(fs::read(&metadata).unwrap(), original);
+        assert_eq!(fs::read(world.join("player.json")).unwrap(), player);
     }
 
     #[test]
