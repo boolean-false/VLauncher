@@ -388,6 +388,8 @@ pub struct ExternalRuntime {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LaunchSpec {
+    pub project_path: Option<PathBuf>,
+    pub resources_path: PathBuf,
     pub executable: PathBuf,
     pub arguments: Vec<String>,
     pub working_directory: PathBuf,
@@ -3122,7 +3124,7 @@ impl ProfileStore {
                     .join(&package.id)
             })
         };
-        if let Some(project_path) = project_path {
+        if let Some(project_path) = project_path.as_ref() {
             if !project_path.join("project.toml").is_file() {
                 return invalid("VoxelCore project is unavailable");
             }
@@ -3134,6 +3136,8 @@ impl ProfileStore {
             );
         }
         Ok(LaunchSpec {
+            project_path,
+            resources_path: runtime_path.join(&resources),
             executable: crate::launch_path::engine_path(&runtime_path.join(executable))?,
             arguments,
             working_directory: crate::launch_path::engine_path(&runtime_path)?,
@@ -5677,6 +5681,10 @@ mod tests {
             .create_local_project("Demo", &source, "0.31.4", None)
             .unwrap();
         let project_spec = store.launch_spec(project_profile.id, "0.31.4").unwrap();
+        assert_eq!(
+            project_spec.project_path.as_deref(),
+            Some(dunce::canonicalize(&source).unwrap().as_path())
+        );
         let project_argument = project_spec
             .arguments
             .iter()
@@ -5716,6 +5724,14 @@ mod tests {
             )
             .unwrap();
         let published_spec = store.launch_spec(published.id, "0.31.4").unwrap();
+        assert!(
+            published_spec
+                .project_path
+                .as_ref()
+                .unwrap()
+                .ends_with("projects/11111111-1111-1111-1111-111111111111")
+        );
+        assert!(published_spec.resources_path.ends_with("res"));
         let argument = published_spec
             .arguments
             .iter()

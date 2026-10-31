@@ -7,6 +7,7 @@ mod mainline;
 mod presence;
 #[cfg(unix)]
 mod presence_ipc;
+mod project_launch;
 mod registry_auth;
 mod voxelworld;
 mod vpack;
@@ -1740,9 +1741,23 @@ async fn restore_profile_package(
 }
 
 #[tauri::command]
-fn launch_profile(
+async fn launch_profile(
     app: tauri::AppHandle,
-    processes: tauri::State<GameProcesses>,
+    processes: tauri::State<'_, GameProcesses>,
+    profile_id: String,
+    runtime_version: String,
+) -> Result<u32, String> {
+    let processes = processes.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        launch_profile_inner(app, processes, profile_id, runtime_version)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn launch_profile_inner(
+    app: tauri::AppHandle,
+    processes: GameProcesses,
     profile_id: String,
     runtime_version: String,
 ) -> Result<u32, String> {
@@ -1761,9 +1776,13 @@ fn launch_profile(
         .lock()
         .map_err(|_| "process lock failed")?
         .remove(&profile_id);
-    let spec = profile_store(&app)?
+    let store = profile_store(&app)?;
+    let spec = store
         .launch_spec(id, &runtime_version)
         .map_err(|error| error.to_string())?;
+    // Keep engine paths inside the ASCII library even when the OS username is Cyrillic.
+    let cache = store.root_path().join("launch-cache");
+    let spec = project_launch::prepare(spec, &cache, &profile_id)?;
     let mut command = Command::new(&spec.executable);
     command
         .args(&spec.arguments)

@@ -37,6 +37,9 @@ tempfile = "3"
 uuid = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+image = { version = "0.25", default-features = false, features = ["png"] }
+sha2 = "0.10"
+
 [profile.release]
 codegen-units = 1
 lto = true
