@@ -24,6 +24,14 @@ impl GameChanges {
         staged: &Path,
         destination: &Path,
     ) -> Result<(), PackageProblem> {
+        self.remove(destination)?;
+        fs::rename(staged, destination).map_err(|source| PackageProblem::Rename {
+            from: staged.to_owned(),
+            to: destination.to_owned(),
+            source,
+        })
+    }
+    pub(super) fn remove(&mut self, destination: &Path) -> Result<(), PackageProblem> {
         let exists = match fs::symlink_metadata(destination) {
             Ok(_) => true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -31,13 +39,17 @@ impl GameChanges {
         };
         let backup = if exists {
             let backup = destination.with_extension(format!("vlauncher-backup-{}", Uuid::new_v4()));
-            fs::rename(destination, &backup).map_err(|e| io_error(destination, e))?;
+            fs::rename(destination, &backup).map_err(|source| PackageProblem::Rename {
+                from: destination.to_owned(),
+                to: backup.clone(),
+                source,
+            })?;
             Some(backup)
         } else {
             None
         };
         self.replaced.push((destination.to_owned(), backup));
-        fs::rename(staged, destination).map_err(|e| io_error(destination, e))
+        Ok(())
     }
     pub(super) fn write(&mut self, destination: &Path, bytes: &[u8]) -> Result<(), PackageProblem> {
         let staged =

@@ -3275,48 +3275,44 @@ impl ProfileStore {
         let result = (|| {
             copy_tree(&source, &staging)?;
             let content = game.join("content");
-            // Пользователь мог сам положить сюда другие паки.
-            let old_source = fs::read_to_string(&marker)
-                .ok()
-                .filter(|revision| safe_relative(Path::new(revision)).is_ok())
-                .map(|revision| profile.join("snapshots").join(revision).join("content"));
-            let preserve = (|| {
-                if content.is_dir() {
-                    for entry in fs::read_dir(&content).map_err(|e| io_error(&content, e))? {
-                        let entry = entry.map_err(|e| io_error(&content, e))?;
-                        if old_source
-                            .as_ref()
-                            .is_some_and(|old| old.join(entry.file_name()).exists())
-                        {
-                            continue;
-                        }
-                        let target = staging.join(entry.file_name());
-                        if target.exists() {
-                            return invalid(format!(
-                                "Локальный пакет '{}' совпадает с пакетом из каталога. Перенесите локальную копию из папки content перед запуском",
-                                entry.file_name().to_string_lossy()
-                            ));
-                        }
-                        let kind = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
-                        if kind.is_symlink() {
-                            return invalid(
-                                "Локальный контент содержит символическую ссылку. Перенесите её из папки content перед изменением состава",
-                            );
-                        }
-                        if kind.is_dir() {
-                            copy_tree(&entry.path(), &target)?;
-                        } else {
-                            fs::copy(entry.path(), &target).map_err(|e| io_error(&target, e))?;
-                        }
+            // Local packs can contain development symlinks or open files. Keep them
+            // in place, and never rename the content root (which Windows may lock).
+            let old_source = old_snapshot.as_ref().map(|old| old.join("content"));
+            let managed_before = |name: &std::ffi::OsStr| {
+                old_source
+                    .as_ref()
+                    .is_some_and(|old| old.join(name).exists())
+            };
+            if content.is_dir() {
+                let existing = fs::read_dir(&content)
+                    .map_err(|e| io_error(&content, e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| io_error(&content, e))?;
+                // Check every collision before changing any installed package.
+                for entry in &existing {
+                    if !managed_before(&entry.file_name())
+                        && staging.join(entry.file_name()).exists()
+                    {
+                        return invalid(format!(
+                            "Локальный пакет '{}' совпадает с пакетом из каталога. Перенесите локальную копию из папки content перед запуском",
+                            entry.file_name().to_string_lossy()
+                        ));
                     }
                 }
-                Ok(())
-            })();
-            if let Err(error) = preserve {
-                let _ = fs::remove_dir_all(&staging);
-                return Err(error);
+                for entry in &existing {
+                    if managed_before(&entry.file_name())
+                        && !staging.join(entry.file_name()).exists()
+                    {
+                        changes.remove(&entry.path())?;
+                    }
+                }
+                for entry in fs::read_dir(&staging).map_err(|e| io_error(&staging, e))? {
+                    let entry = entry.map_err(|e| io_error(&staging, e))?;
+                    changes.replace(&entry.path(), &content.join(entry.file_name()))?;
+                }
+            } else {
+                changes.replace(&staging, &content)?;
             }
-            changes.replace(&staging, &content)?;
             let templates = profile
                 .join("snapshots")
                 .join(revision)
@@ -5358,29 +5354,138 @@ mod tests {
                     fs::metadata(game.join("content")).unwrap().ino(),
                     content_inode
                 );
-                // Real package updates still use the existing strict materialization.
-                assert!(
-                    store
-                        .apply(
-                            profile.id,
-                            &InstallPlan {
-                                revision: "updated".into(),
-                                packages: vec![package_archive(temp.path(), "2.0.0")],
-                            }
-                        )
-                        .is_err()
-                );
+                store
+                    .apply(
+                        profile.id,
+                        &InstallPlan {
+                            revision: "updated".into(),
+                            packages: vec![package_archive(temp.path(), "2.0.0")],
+                        },
+                    )
+                    .unwrap();
                 assert_eq!(fs::read_link(&link).unwrap(), local);
                 assert_eq!(
-                    store
-                        .profile(profile.id)
-                        .unwrap()
-                        .active_revision
-                        .as_deref(),
-                    Some(previous.as_str())
+                    fs::metadata(game.join("content")).unwrap().ino(),
+                    content_inode
+                );
+                assert_eq!(
+                    store.profile(profile.id).unwrap().packages[0].version,
+                    "2.0.0"
                 );
             }
         }
+    }
+
+    #[test]
+    fn attached_content_updates_leave_local_content_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let game = temp.path().join("existing-game");
+        fs::create_dir_all(game.join("res")).unwrap();
+        fs::write(game.join("VoxelCore"), b"local executable").unwrap();
+        let content = game.join("content");
+        let local = content.join("local_pack");
+        fs::create_dir_all(local.join("modules")).unwrap();
+        fs::write(local.join("file.txt"), b"local content").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink("..", local.join("modules/local_pack")).unwrap();
+            symlink("missing", content.join("dangling_pack")).unwrap();
+            symlink("local_pack", content.join("linked_pack")).unwrap();
+        }
+        let profile = store
+            .attach_existing_game(&game, "Attached", "0.31.4")
+            .unwrap();
+        // Simulate a Windows process holding content open without delete sharing.
+        #[cfg(windows)]
+        let _content_handle = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE
+                .custom_flags(0x02000000) // FILE_FLAG_BACKUP_SEMANTICS
+                .open(&content)
+                .unwrap()
+        };
+        #[cfg(unix)]
+        let original_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&content).unwrap().ino()
+        };
+        for (revision, version) in [("installed", "1.0.0"), ("updated", "2.0.0")] {
+            store
+                .apply(
+                    profile.id,
+                    &InstallPlan {
+                        revision: revision.into(),
+                        packages: vec![package_archive(temp.path(), version)],
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                store.profile(profile.id).unwrap().packages[0].version,
+                version
+            );
+        }
+        store.clear_profile(profile.id).unwrap();
+        assert!(!content.join("demo_mod").exists());
+        assert_eq!(fs::read(local.join("file.txt")).unwrap(), b"local content");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&content).unwrap().ino(), original_inode);
+            assert_eq!(
+                fs::read_link(local.join("modules/local_pack")).unwrap(),
+                Path::new("..")
+            );
+            assert_eq!(
+                fs::read_link(content.join("dangling_pack")).unwrap(),
+                Path::new("missing")
+            );
+            assert_eq!(
+                fs::read_link(content.join("linked_pack")).unwrap(),
+                Path::new("local_pack")
+            );
+        }
+    }
+
+    #[test]
+    fn content_removals_and_additions_roll_back_when_commit_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProfileStore::open(temp.path().join("state")).unwrap();
+        let profile = store.create("Rollback content").unwrap();
+        store
+            .apply(
+                profile.id,
+                &InstallPlan {
+                    revision: "old".into(),
+                    packages: vec![package_archive(temp.path(), "1.0.0")],
+                },
+            )
+            .unwrap();
+        let content = store
+            .profile_path(profile.id)
+            .join("snapshots/new/content/new_pack");
+        fs::create_dir_all(&content).unwrap();
+        fs::write(content.join("file.txt"), b"new content").unwrap();
+        let game = store.game_directory(profile.id).unwrap();
+        let manifest = fs::read(game.join("content/demo_mod/package.json")).unwrap();
+        let result = store.materialize_game_folder_with_commit(profile.id, "new", || {
+            assert!(!game.join("content/demo_mod").exists());
+            assert!(game.join("content/new_pack/file.txt").is_file());
+            invalid("simulated commit failure")
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(game.join("content/demo_mod/package.json")).unwrap(),
+            manifest
+        );
+        assert!(!game.join("content/new_pack").exists());
+        assert_eq!(
+            fs::read_to_string(game.join(".vlauncher-revision")).unwrap(),
+            "old"
+        );
     }
 
     #[test]

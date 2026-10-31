@@ -23,6 +23,12 @@ pub enum PackageProblem {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("could not rename {from} to {to}: {source}")]
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+        source: std::io::Error,
+    },
     #[error("invalid JSON in {path}: {source}")]
     Json {
         path: PathBuf,
