@@ -1006,8 +1006,7 @@ main > div[hidden] {
 }
 
 .catalog-source-row .filter-row {
-  padding-left: 2px;
-  border-left: 1px solid var(--line);
+  flex-wrap: wrap;
 }
 
 .experimental-badge {
@@ -4438,4 +4437,66 @@ input[type="checkbox"]:disabled {
 
 .world-content-error {
   white-space: pre-wrap;
+}
+
+/* Launch and repair share the same compact progress layout. */
+.launch-progress {
+  margin: 0 0 20px;
+  padding: 16px 20px;
+  background: var(--panel);
+  border-radius: var(--radius);
+}
+.profile-repair-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+.profile-repair-modal .repair-intro {
+  margin: 0;
+  line-height: 1.6;
+}
+.repair-issues {
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.repair-issues p {
+  margin: 0;
+}
+.repair-actions {
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 0;
+  border: 0;
+}
+.install-progress {
+  min-width: 0;
+  gap: 10px;
+}
+.install-progress strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.install-progress > button {
+  justify-self: start;
+}
+.catalog-source-row {
+  flex-wrap: wrap;
+}
+@media (max-width: 600px) {
+  .repair-actions {
+    flex-wrap: wrap;
+  }
+  .repair-actions button {
+    flex: 1 1 auto;
+  }
+}
+
+.profile-status[data-state="failed"] .status-dot,
+.profile-status[data-state="unavailable"] .status-dot {
+  background: var(--warning);
+}
+.profile-status[data-state="installing"] .status-dot,
+.profile-status[data-state="launching"] .status-dot {
+  background: var(--accent);
 }

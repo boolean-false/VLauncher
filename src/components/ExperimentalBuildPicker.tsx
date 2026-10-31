@@ -183,6 +183,7 @@ export function RuntimeProgress({
           aria-label="Прогресс загрузки"
         />
       )}
+      {!task.total && <progress aria-label="Подготовка игры" />}
       {cancel && (
         <button type="button" onClick={cancel}>
           Отменить загрузку

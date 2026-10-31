@@ -1488,6 +1488,25 @@ async fn attach_existing_game(
 }
 
 #[tauri::command]
+async fn reconnect_profile_source(
+    app: tauri::AppHandle,
+    profile_id: String,
+    path: String,
+    project: bool,
+) -> Result<Profile, String> {
+    ensure_stopped(&app, &profile_id)?;
+    let id = profile_id.parse().map_err(|_| "invalid profile id")?;
+    let store = profile_store(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .reconnect_profile_source(id, Path::new(&path), project)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn reconnect_existing_game(
     app: tauri::AppHandle,
     profile_id: String,
@@ -2233,6 +2252,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            reconnect_profile_source,
             mainline::mainline_status,
             mainline::set_mainline_enabled,
             mainline::list_mainline_builds,

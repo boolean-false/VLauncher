@@ -20,6 +20,11 @@ impl ProfileStore {
             .find(|p| p.id == id)
             .ok_or_else(|| PackageProblem::Invalid("profile does not exist".into()))?;
         let mut issues = Vec::new();
+        let installed = self
+            .list_runtimes()?
+            .into_iter()
+            .find(|r| r.version == runtime_version);
+        let never_installed = profile.external_runtime.is_none() && installed.is_none();
         let runtime = if let Some(runtime) = &profile.external_runtime {
             Some((
                 runtime.path.clone(),
@@ -27,15 +32,12 @@ impl ProfileStore {
                 runtime.resources.clone(),
             ))
         } else {
-            self.list_runtimes()?
-                .into_iter()
-                .find(|r| r.version == runtime_version)
-                .and_then(|runtime| {
-                    let metadata: RuntimeManifest =
-                        serde_json::from_slice(&fs::read(runtime.path.join("runtime.json")).ok()?)
-                            .ok()?;
-                    Some((runtime.path, metadata.executable, metadata.resources))
-                })
+            installed.and_then(|runtime| {
+                let metadata: RuntimeManifest =
+                    serde_json::from_slice(&fs::read(runtime.path.join("runtime.json")).ok()?)
+                        .ok()?;
+                Some((runtime.path, metadata.executable, metadata.resources))
+            })
         };
         let runtime_ok = runtime.as_ref().is_some_and(|(root, exe, res)| {
             safe_relative(exe).is_ok()
@@ -44,13 +46,19 @@ impl ProfileStore {
                 && root.join(res).is_dir()
         });
         if !runtime_ok {
-            let message = if profile.external_runtime.is_some() {
+            let message = if never_installed {
+                "Эта версия VoxelCore ещё не установлена."
+            } else if profile.external_runtime.is_some() {
                 "Не найден подключённый движок VoxelCore или его папка ресурсов. Проверьте расположение внешнего движка в управлении профилем."
             } else {
                 "Не найден движок VoxelCore или его папка ресурсов. Переустановите движок; миры и содержимое профиля сохранятся."
             };
             issues.push(ProfileIssue {
-                kind: "runtime",
+                kind: if never_installed {
+                    "runtime_missing"
+                } else {
+                    "runtime"
+                },
                 component: "runtime".into(),
                 message: message.into(),
                 repairable: profile.external_runtime.is_none(),
@@ -114,6 +122,55 @@ impl ProfileStore {
             });
         }
         Ok(issues)
+    }
+
+    pub fn reconnect_profile_source(
+        &self,
+        id: Uuid,
+        source: &Path,
+        project: bool,
+    ) -> Result<Profile, PackageProblem> {
+        let _lock = self.lock_profile(id)?;
+        let profile = self.profile(id)?;
+        if project {
+            if profile.external_project_path.is_none() {
+                return invalid("Этот профиль не подключён к локальному проекту");
+            }
+            let source = dunce::canonicalize(source).map_err(|e| io_error(source, e))?;
+            VoxelCoreProject::read(&source)?;
+            self.with_database(|db| {
+                db.execute(
+                    "UPDATE profiles SET external_project_path = ?1 WHERE id = ?2",
+                    params![source.to_string_lossy(), id.to_string()],
+                )?;
+                Ok(())
+            })?;
+        } else if profile.external_game_path.is_some() {
+            return self.reconnect_existing_game(id, source);
+        } else if profile.external_runtime.is_some() {
+            let source = dunce::canonicalize(source).map_err(|e| io_error(source, e))?;
+            let analysis = analyze_existing_game_directory(&source)?;
+            if analysis
+                .runtime_version
+                .as_deref()
+                .is_some_and(|v| Some(v) != profile.voxelcore_version.as_deref())
+            {
+                return invalid("Версия выбранного движка не совпадает с версией профиля");
+            }
+            let runtime = external_runtime_for(&source, &analysis)?;
+            let json = serde_json::to_string(&runtime)
+                .map_err(|e| PackageProblem::Invalid(e.to_string()))?;
+            self.with_database(|db| {
+                db.execute(
+                    "UPDATE profiles SET external_runtime_json = ?1 WHERE id = ?2",
+                    params![json, id.to_string()],
+                )?;
+                Ok(())
+            })?;
+        } else {
+            return invalid("Этот профиль не использует подключённые папки");
+        }
+        self.profile(id)
     }
 
     pub fn restore_missing_package(

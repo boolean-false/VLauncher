@@ -33,14 +33,14 @@ export function VoxelWorldIntroduction({
   };
 
   return (
-    <section className="feature-introduction" aria-label="Интеграция с VoxelWorld">
+    <section
+      className="feature-introduction"
+      aria-label="Интеграция с VoxelWorld"
+    >
       <div>
         <span className="experimental-badge">Экспериментально</span>
         <h2>Моды VoxelWorld появились в VLauncher</h2>
-        <p>
-          Их можно искать рядом с проектами VSpace и устанавливать прямо в
-          профиль. Источник каждой карточки всегда указан.
-        </p>
+        <p>Ищите и устанавливайте моды прямо из каталога.</p>
       </div>
       <div className="feature-introduction-actions">
         <button className="primary" onClick={enable}>

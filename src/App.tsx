@@ -1,3 +1,4 @@
+import { profileStatus, type LaunchPhase } from "./profileStatus";
 import { GameFailureDetails } from "./components/GameFailureDetails";
 import { UpdateReleaseNotes } from "./components/UpdateReleaseNotes";
 import { useContentUpdates } from "./useContentUpdates";
@@ -230,7 +231,7 @@ export default function App() {
   const [profileHealth, setProfileHealth] = useState<{
     profile: LocalProfile;
     issues: {
-      kind: "runtime" | "package" | "project";
+      kind: "runtime" | "runtime_missing" | "package" | "project";
       component: string;
       message: string;
       repairable: boolean;
@@ -239,6 +240,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const taskLock = useRef(false);
   const [newProfile, setNewProfile] = useState(false);
+  const [launchError, setLaunchError] = useState<{
+    profileId: string;
+    message: string;
+  } | null>(null);
   const [profileActionError, setProfileActionError] = useState<{
     profileId: string;
     message: string;
@@ -590,8 +595,7 @@ export default function App() {
   ) => {
     version = requireEngineVersion(version);
     if (!force && runtimes.some((r) => r.version === version)) return;
-    stage(`Поиск VoxelCore ${version}…`);
-    stage(`Загрузка официального VoxelCore ${version} с GitHub…`);
+    stage(`Устанавливаем VoxelCore ${version}…`);
     setOfficialTransfer(true);
     try {
       await invoke("install_official_runtime", { version });
@@ -625,59 +629,117 @@ export default function App() {
       setLocalProject({ path, info });
     });
   };
+  const [launchingProfile, setLaunchingProfile] = useState<string | null>(null);
+  const [launchPhase, setLaunchPhase] = useState<LaunchPhase>("checking");
+  const selectedStatus = profileStatus({
+    running: !!profile && running.has(profile.id),
+    phase: profile && launchingProfile === profile.id ? launchPhase : undefined,
+    problem: profile?.problem,
+    error:
+      launchError?.profileId === profile?.id ? launchError?.message : undefined,
+    version: engineVersion(profile),
+    installed:
+      !!profile?.external_runtime ||
+      runtimes.some((r) => r.version === profileRuntimeId(profile)),
+  });
   const launchProfile = (profile: LocalProfile | null) => {
     if (!profile) return;
     setSelected(profile.id);
     setScreen("library");
-    setTab("logs");
+    if (taskLock.current) return;
+    setLaunchingProfile(profile.id);
+    setLaunchPhase("checking");
     void run(`Запуск · ${profile.name}`, async (stage) => {
-      setGameFailure(null);
-      const version = requireEngineVersion(engineVersion(profile));
-      stage("Проверяем движок, ресурсы и установленные паки…");
-      const issues = await invoke<NonNullable<typeof profileHealth>["issues"]>(
-        "check_profile_health",
-        {
+      try {
+        setGameFailure(null);
+        setLaunchError(null);
+        setProfileActionError(null);
+        const version = requireEngineVersion(engineVersion(profile));
+        stage("Проверяем движок, ресурсы и установленные паки…");
+        const issues = await invoke<
+          NonNullable<typeof profileHealth>["issues"]
+        >("check_profile_health", {
           profileId: profile.id,
           runtimeVersion: profile.main_build
             ? mainRuntimeId(profile.main_build)
             : version,
-        },
-      );
-      if (issues.length) {
-        setProfileHealth({ profile, issues });
-        return;
-      }
-      if (profile.main_build) {
-        if (
-          !runtimes.some(
-            (r) => r.version === mainRuntimeId(profile.main_build!),
-          )
-        ) {
-          stage("Загрузка закреплённой сборки main…");
-          setOfficialTransfer(true);
-          try {
-            await invoke("install_mainline_build", {
-              build: profile.main_build,
-            });
-          } finally {
-            setOfficialTransfer(false);
-          }
+        });
+        const missingRuntime = issues.some(
+          (issue) => issue.kind === "runtime_missing",
+        );
+        const problems = issues.filter(
+          (issue) => issue.kind !== "runtime_missing",
+        );
+        if (problems.length) {
+          setProfileHealth({ profile, issues: problems });
+          return;
         }
-      } else if (!profile.external_runtime) await installEngine(version, stage);
-      if (!profile.active_revision)
-        await invoke("initialize_vanilla", { profileId: profile.id, version });
-      stage("Запуск VoxelCore…");
-      setLogs((items) =>
-        items.filter((line) => line.profile_id !== profile.id),
-      );
-      await invoke("launch_profile", {
-        profileId: profile.id,
-        runtimeVersion: profile.main_build
-          ? mainRuntimeId(profile.main_build)
-          : version,
-      });
-      recordActivity("game_start");
-      await refresh();
+        if (profile.main_build) {
+          if (
+            missingRuntime ||
+            !runtimes.some(
+              (r) => r.version === mainRuntimeId(profile.main_build!),
+            )
+          ) {
+            setLaunchPhase("installing");
+            stage("Устанавливаем DEV-сборку VoxelCore…");
+            setOfficialTransfer(true);
+            try {
+              await invoke("install_mainline_build", {
+                build: profile.main_build,
+              });
+            } finally {
+              setOfficialTransfer(false);
+            }
+          }
+        } else if (!profile.external_runtime) {
+          if (missingRuntime || !runtimes.some((r) => r.version === version))
+            setLaunchPhase("installing");
+          await installEngine(version, stage, missingRuntime);
+        }
+        if (!profile.active_revision)
+          await invoke("initialize_vanilla", {
+            profileId: profile.id,
+            version,
+          });
+        const remaining = await invoke<
+          NonNullable<typeof profileHealth>["issues"]
+        >("check_profile_health", {
+          profileId: profile.id,
+          runtimeVersion: profileRuntimeId(profile),
+        });
+        if (remaining.length) {
+          setProfileHealth({ profile, issues: remaining });
+          return;
+        }
+        setLaunchPhase("launching");
+        setTab("logs");
+        stage("Запуск VoxelCore…");
+        setLogs((items) =>
+          items.filter((line) => line.profile_id !== profile.id),
+        );
+        await invoke("launch_profile", {
+          profileId: profile.id,
+          runtimeVersion: profile.main_build
+            ? mainRuntimeId(profile.main_build)
+            : version,
+        });
+        recordActivity("game_start");
+        await refresh();
+      } catch (error) {
+        setLaunchError({
+          profileId: profile.id,
+          message: friendlyError(error),
+        });
+        setProfileActionError({
+          profileId: profile.id,
+          message: friendlyError(error),
+        });
+        await refresh().catch(() => {});
+        throw error;
+      } finally {
+        setLaunchingProfile(null);
+      }
     });
   };
   const launch = () => launchProfile(profile);
@@ -1301,7 +1363,13 @@ export default function App() {
                           )}
                           <h2>{profile.name}</h2>
                           {profileActionError?.profileId === profile.id && (
-                            <ErrorNotice>
+                            <ErrorNotice
+                              retry={
+                                !busy && launchError?.profileId === profile.id
+                                  ? launch
+                                  : undefined
+                              }
+                            >
                               {profileActionError.message}
                             </ErrorNotice>
                           )}
@@ -1342,21 +1410,15 @@ export default function App() {
                               {installedModpack.version}
                             </button>
                           )}
-                          <p>
+                          <p
+                            className="profile-status"
+                            data-state={selectedStatus.state}
+                            aria-live="polite"
+                          >
                             <span
                               className={`status-dot ${running.has(profile.id) ? "live" : ""}`}
                             />
-                            {running.has(profile.id)
-                              ? "Игра запущена"
-                              : !engineVersion(profile)
-                                ? "Выберите версию в разделе «Управление»"
-                                : profile.external_runtime ||
-                                    runtimes.some(
-                                      (r) =>
-                                        r.version === profileRuntimeId(profile),
-                                    )
-                                  ? "Готов к запуску"
-                                  : "Требуется загрузка игры"}
+                            {selectedStatus.label}
                           </p>
                         </div>
                         <div className="launch-area">
@@ -1381,27 +1443,21 @@ export default function App() {
                           ) : (
                             <button
                               className="primary launch"
-                              disabled={
-                                busy ||
-                                !!loadError ||
-                                !!profile.problem ||
-                                !engineVersion(profile)
+                              disabled={busy || !!loadError}
+                              onClick={
+                                profile.problem || !engineVersion(profile)
+                                  ? () => setTab("manage")
+                                  : launch
                               }
-                              onClick={launch}
                             >
-                              <Icon name="play" />
-                              {busy
-                                ? "Подождите…"
-                                : !engineVersion(profile)
-                                  ? "Версия не выбрана"
-                                  : profile.external_runtime ||
-                                      runtimes.some(
-                                        (r) =>
-                                          r.version ===
-                                          profileRuntimeId(profile),
-                                      )
-                                    ? "Играть"
-                                    : "Установить и играть"}
+                              <Icon
+                                name={
+                                  profile.problem || !engineVersion(profile)
+                                    ? "settings"
+                                    : "play"
+                                }
+                              />
+                              {selectedStatus.action}
                             </button>
                           )}
                           {running.has(profile.id) && (
@@ -1409,6 +1465,18 @@ export default function App() {
                           )}
                         </div>
                       </section>
+                      {launchingProfile === profile.id && (
+                        <div className="launch-progress">
+                          <RuntimeProgress
+                            task={currentTask ?? undefined}
+                            cancel={
+                              busy && (officialTransfer || transferActive)
+                                ? () => void invoke("cancel_transfer")
+                                : undefined
+                            }
+                          />
+                        </div>
+                      )}
                       {profile.problem && (
                         <ErrorNotice>
                           <strong>
@@ -1538,12 +1606,12 @@ export default function App() {
                               <span className="supporting-label">
                                 {profile.external_project_path
                                   ? "Локальный проект VoxelCore"
-                                  : "Проект VSpace"}
+                                  : "Проект из каталога"}
                               </span>
                               <h3>{installedProject?.title || profile.name}</h3>
                               <p>
                                 {profile.external_project_path
-                                  ? "В будущем будет какой нибудь текст"
+                                  ? "Изменения в папке подхватываются при запуске."
                                   : "Код и встроенный контент установлены одной версией и обновляются вместе."}
                               </p>
                               {profile.external_project_path && (
@@ -1638,7 +1706,7 @@ export default function App() {
                                 )}
                                 {!!profile.external_packages?.length && (
                                   <small>
-                                    Автопроверка относится к пакам VSpace.
+                                    Внешние моды обновляются отдельно.
                                   </small>
                                 )}
                               </div>
@@ -2322,70 +2390,38 @@ export default function App() {
         )}
         {profileHealth && (
           <Modal
-            title={`Проверка · ${profileHealth.profile.name}`}
+            title={
+              profileHealth.issues.every(
+                (issue) => issue.kind === "runtime" && issue.repairable,
+              )
+                ? `Нужно переустановить VoxelCore ${engineVersion(profileHealth.profile)}`
+                : profileHealth.issues.some(
+                      (issue) => issue.kind === "runtime" && !issue.repairable,
+                    )
+                  ? "Не найдена подключённая игра"
+                  : "Не удалось подготовить игру"
+            }
+            className="profile-repair-modal"
             busy={busy}
             close={() => setProfileHealth(null)}
           >
-            {profileHealth.issues.length ? (
-              profileHealth.issues.map((issue) => (
-                <section
-                  className="setting-row"
-                  key={`${issue.kind}:${issue.component}`}
-                >
-                  <p>{issue.message}</p>
-                  {issue.repairable && (
-                    <button
-                      disabled={busy}
-                      onClick={() =>
-                        void run("Восстановление профиля", async (stage) => {
-                          const target = profileHealth.profile;
-                          if (issue.kind === "runtime") {
-                            if (target.main_build) {
-                              stage("Восстанавливаем закреплённую DEV-сборку…");
-                              setOfficialTransfer(true);
-                              try {
-                                await invoke("install_mainline_build", {
-                                  build: target.main_build,
-                                });
-                              } finally {
-                                setOfficialTransfer(false);
-                              }
-                            } else
-                              await installEngine(
-                                engineVersion(target),
-                                stage,
-                                true,
-                              );
-                          } else {
-                            stage(`Восстанавливаем ${issue.component}…`);
-                            await invoke("restore_profile_package", {
-                              profileId: target.id,
-                              packageId: issue.component,
-                            });
-                          }
-                          await refresh();
-                          const issues = await invoke<
-                            NonNullable<typeof profileHealth>["issues"]
-                          >("check_profile_health", {
-                            profileId: target.id,
-                            runtimeVersion: target.main_build
-                              ? mainRuntimeId(target.main_build)
-                              : engineVersion(target),
-                          });
-                          setProfileHealth({ profile: target, issues });
-                        })
-                      }
-                    >
-                      Восстановить
-                    </button>
-                  )}
-                </section>
-              ))
-            ) : (
-              <p>
-                Движок, ресурсы и установленные паки найдены. Профиль готов к
-                запуску.
-              </p>
+            <p className="repair-intro">
+              {profileHealth.issues.every(
+                (issue) => issue.kind === "runtime" && issue.repairable,
+              )
+                ? "Не найдены файлы игры. Миры и настройки сохранятся."
+                : "Перед запуском нужно исправить файлы профиля."}
+            </p>
+            {!profileHealth.issues.every(
+              (issue) => issue.kind === "runtime" && issue.repairable,
+            ) && (
+              <div className="repair-issues">
+                {profileHealth.issues.map((issue) => (
+                  <p key={`${issue.kind}:${issue.component}`}>
+                    {issue.message}
+                  </p>
+                ))}
+              </div>
             )}
             {tasks[0]?.status === "error" && (
               <p className="notice error">{tasks[0].detail}</p>
@@ -2398,20 +2434,100 @@ export default function App() {
                   : undefined
               }
             />
-            <div className="actions">
+            <div className="actions repair-actions">
               <button disabled={busy} onClick={() => setProfileHealth(null)}>
-                Закрыть
+                Отмена
               </button>
-              {!profileHealth.issues.length && (
+              {profileHealth.issues.some(
+                (issue) =>
+                  !issue.repairable &&
+                  (issue.kind === "runtime" || issue.kind === "project"),
+              ) && (
                 <button
+                  className="primary"
                   disabled={busy}
-                  onClick={() => {
+                  onClick={async () => {
                     const target = profileHealth.profile;
-                    setProfileHealth(null);
-                    launchProfile(target);
+                    const project = profileHealth.issues.some(
+                      (issue) => issue.kind === "project",
+                    );
+                    const path = await open({
+                      directory: true,
+                      multiple: false,
+                      title: project
+                        ? "Выберите папку с project.toml"
+                        : "Выберите папку VoxelCore",
+                    });
+                    if (typeof path !== "string") return;
+                    let updated: LocalProfile | undefined;
+                    const ok = await run("Подключение папки", async () => {
+                      updated = await invoke<LocalProfile>(
+                        "reconnect_profile_source",
+                        { profileId: target.id, path, project },
+                      );
+                      await refresh();
+                    });
+                    if (ok && updated) {
+                      setProfileHealth(null);
+                      launchProfile(updated);
+                    }
                   }}
                 >
-                  Запустить
+                  Указать папку
+                </button>
+              )}
+              {profileHealth.issues.every((issue) => issue.repairable) && (
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={async () => {
+                    const target = profileHealth.profile;
+                    const ok = await run("Подготовка игры", async (stage) => {
+                      for (const issue of profileHealth.issues) {
+                        if (
+                          issue.kind === "runtime" ||
+                          issue.kind === "runtime_missing"
+                        ) {
+                          if (target.main_build) {
+                            stage("Переустанавливаем DEV-сборку…");
+                            setOfficialTransfer(true);
+                            try {
+                              await invoke("install_mainline_build", {
+                                build: target.main_build,
+                              });
+                            } finally {
+                              setOfficialTransfer(false);
+                            }
+                          } else
+                            await installEngine(
+                              engineVersion(target),
+                              stage,
+                              true,
+                            );
+                        } else {
+                          stage(`Восстанавливаем ${issue.component}…`);
+                          await invoke("restore_profile_package", {
+                            profileId: target.id,
+                            packageId: issue.component,
+                          });
+                        }
+                      }
+                      await refresh();
+                    });
+                    if (ok) {
+                      setProfileHealth(null);
+                      launchProfile(target);
+                    }
+                  }}
+                >
+                  {busy
+                    ? "Подготовка…"
+                    : profileHealth.issues.every(
+                          (issue) =>
+                            issue.kind === "runtime" && issue.repairable,
+                        )
+                      ? "Переустановить и играть"
+                      : "Исправить и играть"}
                 </button>
               )}
             </div>
@@ -3125,9 +3241,6 @@ function CreateProfile({
                 ))}
               </Select>
             </label>
-            <small>
-              При необходимости движок будет скачан при первом запуске.
-            </small>
             {runtimeCatalogError && (
               <ErrorNotice retry={reloadRuntimes}>
                 {runtimeCatalogError}
