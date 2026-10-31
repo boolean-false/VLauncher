@@ -45,6 +45,7 @@ import {
   voxelCoreVersionLabel,
   profileModpack,
   profileProject,
+  isProjectProfile,
   profileRuntimeContext,
   mainRuntimeContext,
   type MainBuild,
@@ -329,9 +330,13 @@ export default function App() {
     setScreen("catalog");
   }, []);
   const profile = profiles.find((p) => p.id === selected) ?? profiles[0];
+  const installedModpack = profileModpack(profile);
+  const installedProject = profileProject(profile);
+  const projectProfile = isProjectProfile(profile);
+  const profileTab = projectProfile && tab === "worlds" ? "content" : tab;
   const contentUpdates = useContentUpdates(
     profile,
-    screen === "library" && tab === "content" && !busy,
+    screen === "library" && profileTab === "content" && !busy,
   );
   const contentUpdateCount = Object.keys(contentUpdates.versions).length;
   let contentUpdateMessage = "Обновлений для текущего движка нет.";
@@ -343,9 +348,6 @@ export default function App() {
   else if (Object.keys(contentUpdates.newer).length)
     contentUpdateMessage =
       "Есть новые версии, требующие проверки совместимости.";
-  const installedModpack = profileModpack(profile);
-  const installedProject = profileProject(profile);
-  const projectProfile = !!profile?.external_project_path || !!installedProject;
   const latestVoxelCoreVersion =
     latestPublishedVoxelCoreVersion(
       availableRuntimes
@@ -1498,14 +1500,6 @@ export default function App() {
                               Подключённая папка · {profile.external_game_path}
                             </span>
                           )}
-                          {profile.external_project_path && (
-                            <span
-                              className="attached-profile-path selectable"
-                              title={profile.external_project_path}
-                            >
-                              Локальный проект · {profile.external_project_path}
-                            </span>
-                          )}
                           {installedModpack && (
                             <button
                               className="profile-modpack-link"
@@ -1577,7 +1571,7 @@ export default function App() {
                               {selectedStatus.action}
                             </button>
                           )}
-                          {running.has(profile.id) && (
+                          {running.has(profile.id) && !projectProfile && (
                             <small>Контент доступен только для просмотра</small>
                           )}
                         </div>
@@ -1653,15 +1647,15 @@ export default function App() {
                       >
                         {[
                           ["content", projectProfile ? "Проект" : "Контент"],
-                          ["worlds", "Миры"],
+                          ...(!projectProfile ? [["worlds", "Миры"]] : []),
                           ["logs", "Логи"],
                           ["manage", "Управление"],
                         ].map(([id, title]) => (
                           <button
                             key={id}
                             role="tab"
-                            aria-selected={tab === id}
-                            className={tab === id ? "active" : ""}
+                            aria-selected={profileTab === id}
+                            className={profileTab === id ? "active" : ""}
                             onClick={() => setTab(id)}
                           >
                             {title}
@@ -1702,16 +1696,18 @@ export default function App() {
                       <section
                         role="tabpanel"
                         aria-label={
-                          tab === "content"
-                            ? "Контент"
-                            : tab === "worlds"
+                          profileTab === "content"
+                            ? projectProfile
+                              ? "Проект"
+                              : "Контент"
+                            : profileTab === "worlds"
                               ? "Миры"
-                              : tab === "logs"
+                              : profileTab === "logs"
                                 ? "Логи"
                                 : "Управление"
                         }
                       >
-                        {tab === "content" && projectProfile && (
+                        {profileTab === "content" && projectProfile && (
                           <div className="project-profile-overview">
                             <div
                               className="project-profile-mark"
@@ -1722,15 +1718,13 @@ export default function App() {
                             <div className="project-profile-copy">
                               <span className="supporting-label">
                                 {profile.external_project_path
-                                  ? "Локальный проект VoxelCore"
+                                  ? "Локальный проект"
                                   : "Проект из каталога"}
                               </span>
                               <h3>{installedProject?.title || profile.name}</h3>
-                              <p>
-                                {profile.external_project_path
-                                  ? "Изменения в папке подхватываются при запуске."
-                                  : "Код и встроенный контент установлены одной версией и обновляются вместе."}
-                              </p>
+                              {profile.external_project_path && (
+                                <p>Изменения подхватываются при запуске.</p>
+                              )}
                               {profile.external_project_path && (
                                 <code
                                   className="project-profile-path selectable"
@@ -1762,7 +1756,7 @@ export default function App() {
                             </div>
                           </div>
                         )}
-                        {tab === "content" && !projectProfile && (
+                        {profileTab === "content" && !projectProfile && (
                           <>
                             <div className="section-heading">
                               <div>
@@ -2084,7 +2078,7 @@ export default function App() {
                             )}
                           </>
                         )}
-                        {tab === "worlds" && (
+                        {profileTab === "worlds" && !projectProfile && (
                           <Worlds
                             key={profile.id}
                             profile={profile}
@@ -2107,7 +2101,7 @@ export default function App() {
                             }}
                           />
                         )}
-                        {tab === "logs" && (
+                        {profileTab === "logs" && (
                           <ProfileLogs
                             profile={profile}
                             logs={logs.filter(
@@ -2123,7 +2117,7 @@ export default function App() {
                             }
                           />
                         )}
-                        {tab === "manage" && (
+                        {profileTab === "manage" && (
                           <ProfileSettings
                             key={profile.id}
                             profile={profile}
@@ -3577,7 +3571,9 @@ function ProfileSettings({
   const [name, setName] = useState(profile.name);
   const modpack = profileModpack(profile);
   const project = profileProject(profile);
-  const managedRelease = modpack || project;
+  const projectProfile = isProjectProfile(profile);
+  const managedRelease =
+    modpack || (!profile.external_project_path ? project : undefined);
   const mainBuilds = runtimes.flatMap((runtime) =>
     runtime.main_build ? [runtime.main_build] : [],
   );
@@ -3593,14 +3589,16 @@ function ProfileSettings({
     });
   return (
     <div className="profile-settings">
-      <ProfileSettingsTransfer
-        profile={profile}
-        profiles={profiles}
-        running={running}
-        busy={busy}
-        run={run}
-        refresh={refresh}
-      />
+      {!projectProfile && (
+        <ProfileSettingsTransfer
+          profile={profile}
+          profiles={profiles}
+          running={running}
+          busy={busy}
+          run={run}
+          refresh={refresh}
+        />
+      )}
       <section className="setting-row">
         <div>
           <h3>Версия VoxelCore</h3>
@@ -3702,42 +3700,47 @@ function ProfileSettings({
           </details>
         )}
       </section>
-      {!profile.external_runtime && (
-        <section className="setting-row">
-          <div>
-            <h3>Обновить VoxelCore</h3>
-            <p>
-              {profile.main_build
-                ? "Проверим новые DEV-сборки и совместимость с содержимым профиля."
-                : "Можно перейти на DEV-сборку. Перед применением проверим совместимость модов."}
-            </p>
-          </div>
-          <div className="actions">
-            <button
-              disabled={busy}
-              onClick={() =>
-                changeRuntime(
-                  profile.main_build ? "experimental-latest" : "stable-latest",
-                )
-              }
-            >
-              Проверить обновление VoxelCore
-            </button>
-            <button
-              disabled={busy}
-              onClick={() =>
-                changeRuntime(
-                  profile.main_build ? "stable-latest" : "experimental-latest",
-                )
-              }
-            >
-              {profile.main_build
-                ? "Перейти на стабильную версию"
-                : "Попробовать DEV-сборку"}
-            </button>
-          </div>
-        </section>
-      )}
+      {!profile.external_runtime &&
+        (!project || !!profile.external_project_path) && (
+          <section className="setting-row">
+            <div>
+              <h3>Обновить VoxelCore</h3>
+              <p>
+                {profile.main_build
+                  ? "Проверим новые DEV-сборки и совместимость с содержимым профиля."
+                  : "Можно перейти на DEV-сборку. Перед применением проверим совместимость модов."}
+              </p>
+            </div>
+            <div className="actions">
+              <button
+                disabled={busy}
+                onClick={() =>
+                  changeRuntime(
+                    profile.main_build
+                      ? "experimental-latest"
+                      : "stable-latest",
+                  )
+                }
+              >
+                Проверить обновление VoxelCore
+              </button>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  changeRuntime(
+                    profile.main_build
+                      ? "stable-latest"
+                      : "experimental-latest",
+                  )
+                }
+              >
+                {profile.main_build
+                  ? "Перейти на стабильную версию"
+                  : "Попробовать DEV-сборку"}
+              </button>
+            </div>
+          </section>
+        )}
       {profile.external_game_path && (
         <section className="setting-row">
           <div className="connected-folder-details">
@@ -3834,8 +3837,9 @@ function ProfileSettings({
         <div>
           <h3>Вернуть предыдущий снимок</h3>
           <p>
-            Восстанавливает прошлые версии пакетов, VoxelCore и закрепления.
-            Миры и настройки не откатываются.
+            {projectProfile
+              ? "Вернёт предыдущую версию проекта. Прохождение и настройки сохранятся."
+              : "Восстанавливает прошлые версии пакетов, VoxelCore и закрепления. Миры и настройки не откатываются."}
           </p>
         </div>
         <button
@@ -3940,9 +3944,9 @@ function ProfileSettings({
         <div>
           <h3>Создать полную копию</h3>
           <p>
-            Создаст отдельный профиль с теми же пакетами,
-            <br />
-            мирами и настройками игры.
+            {projectProfile
+              ? "Создаст отдельную копию игры с прохождением и настройками."
+              : "Создаст отдельный профиль с теми же пакетами, мирами и настройками игры."}
           </p>
         </div>
         <button
@@ -3966,31 +3970,38 @@ function ProfileSettings({
         busy={busy || running.has(profile.id)}
         run={run}
       />
-      <section className="setting-row">
-        <div>
-          <h3>Поделиться составом</h3>
-          <p>
-            Файл с версией игры и списком пакетов.
-            <br />
-            Миры в него не входят.
-          </p>
-        </div>
-        <button
-          disabled={busy}
-          onClick={() =>
-            void run("Экспорт профиля", async () => {
-              const path = await save({
-                defaultPath: "profile.vlauncher.json",
-                filters: [{ name: "Профиль VLauncher", extensions: ["json"] }],
-              });
-              if (path)
-                await invoke("export_profile", { profileId: profile.id, path });
-            })
-          }
-        >
-          Экспортировать
-        </button>
-      </section>
+      {!projectProfile && (
+        <section className="setting-row">
+          <div>
+            <h3>Поделиться составом</h3>
+            <p>
+              Файл с версией игры и списком пакетов.
+              <br />
+              Миры в него не входят.
+            </p>
+          </div>
+          <button
+            disabled={busy}
+            onClick={() =>
+              void run("Экспорт профиля", async () => {
+                const path = await save({
+                  defaultPath: "profile.vlauncher.json",
+                  filters: [
+                    { name: "Профиль VLauncher", extensions: ["json"] },
+                  ],
+                });
+                if (path)
+                  await invoke("export_profile", {
+                    profileId: profile.id,
+                    path,
+                  });
+              })
+            }
+          >
+            Экспортировать
+          </button>
+        </section>
+      )}
       <section className="setting-row">
         <div>
           <h3>Удалить профиль</h3>

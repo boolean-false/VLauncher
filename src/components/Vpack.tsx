@@ -8,6 +8,7 @@ import { RuntimeProgress } from "./ExperimentalBuildPicker";
 import {
   formatBytes,
   friendlyError,
+  isProjectProfile,
   type LocalProfile,
   type RunTask,
   type Task,
@@ -195,7 +196,11 @@ export function VpackExport({
     <>
       <section className="setting-row">
         <div>
-          <h3>Поделиться сборкой</h3>
+          <h3>
+            {isProjectProfile(profile)
+              ? "Поделиться проектом"
+              : "Поделиться сборкой"}
+          </h3>
         </div>
         <button disabled={busy} onClick={() => setOpened(true)}>
           Экспортировать vpack
@@ -334,7 +339,9 @@ function VpackExportDialog({
               disabled={busy}
               onChange={(e) => setWorlds(e.target.checked)}
             />
-            Включить миры
+            {isProjectProfile(profile)
+              ? "Включить прохождение"
+              : "Включить миры"}
           </label>
           <label className="checkbox-row">
             <input

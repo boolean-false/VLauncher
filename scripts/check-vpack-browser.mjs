@@ -74,6 +74,12 @@ mockIPC(async(cmd,args)=>{
  default:return null;
  }
 },{shouldMockEvents:true});
+if(location.search.includes('project-navigation')){
+ window.qa.installed=true;window.qa.mode='ready';
+ window.qa.profiles=[profile,
+ {...profile,id:'33333333-3333-4333-8333-333333333333',name:'Игра-проект',packages:[{id:'demo-project',kind:'project',version:'1.0.0',title:'Демо-проект'}]},
+ {...profile,id:'44444444-4444-4444-8444-444444444444',name:'Локальная игра',external_project_path:'/tmp/local-project'}];
+}
 if(location.search.includes('stale')){window.qa.mode='stale';window.qa.installed=true;}
 if(location.search.includes('startup'))window.qa.pending=[{id:'cold',path:'/tmp/cold.vpack'}];
 await import('/src/main.tsx');`;
@@ -351,6 +357,101 @@ await import('/src/main.tsx');`;
     1,
   );
   console.log("PASS: runtime health overrides a stale installed-version list");
+  await page.goto("http://127.0.0.1:1423/?project-navigation");
+  await page.getByRole("tab", { name: "Миры", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Миры профиля", exact: true })
+    .waitFor();
+  await page
+    .locator(".profile-link")
+    .filter({ hasText: "Игра-проект" })
+    .click();
+  await page.getByRole("tabpanel", { name: "Проект", exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("tab", { name: "Миры", exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("tab", { name: "Проект", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  assert.equal(
+    await page
+      .getByRole("heading", { name: "Миры профиля", exact: true })
+      .count(),
+    0,
+  );
+  await page.screenshot({ path: out + "/project-overview.png" });
+  await page.getByRole("tab", { name: "Управление", exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Импортировать из профиля…", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("heading", { name: "Поделиться составом", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("heading", { name: "Обновить VoxelCore", exact: true })
+      .count(),
+    0,
+  );
+  await page
+    .getByRole("heading", { name: "Поделиться проектом", exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "Экспортировать vpack", exact: true })
+    .click();
+  await page
+    .getByRole("checkbox", { name: "Включить прохождение", exact: true })
+    .waitFor();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Отмена", exact: true })
+    .click();
+  await page
+    .locator(".profile-link")
+    .filter({ hasText: "Локальная игра" })
+    .click();
+  assert.equal(
+    await page.getByRole("tab", { name: "Миры", exact: true }).count(),
+    0,
+  );
+  await page.getByText("Другие версии VoxelCore", { exact: true }).waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.qa.records.filter(
+          (r) =>
+            r.cmd === "list_worlds" &&
+            r.args.profileId !== window.qa.profile.id,
+        ).length,
+    ),
+    0,
+  );
+  await page
+    .locator(".profile-link")
+    .filter({ hasText: "VoxelCore" })
+    .first()
+    .click();
+  await page.getByRole("tab", { name: "Миры", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Управление", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Импортировать из профиля…", exact: true })
+    .waitFor();
+  await page
+    .getByRole("heading", { name: "Поделиться составом", exact: true })
+    .waitFor();
+  console.log(
+    "PASS: project cards hide world management and unrelated actions, preserving local engine selection and regular profiles",
+  );
   if (errors.length) throw Error(JSON.stringify(errors));
 } finally {
   await browser?.close();
