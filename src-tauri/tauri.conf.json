@@ -65,7 +65,25 @@
           "Russian"
         ]
       }
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "vpack"
+        ],
+        "name": "VLauncher Pack",
+        "description": "Сборка VLauncher",
+        "mimeType": "application/x-vlauncher-vpack",
+        "role": "Viewer",
+        "rank": "Owner",
+        "exportedType": {
+          "identifier": "space.vlauncher.vpack",
+          "conformsTo": [
+            "public.zip-archive"
+          ]
+        }
+      }
+    ]
   },
   "plugins": {
     "deep-link": {

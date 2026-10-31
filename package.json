@@ -27,7 +27,8 @@
     "licenses:npm": "node scripts/generate-npm-licenses.mjs",
     "licenses:rust": "cargo about generate --locked --fail --manifest-path src-tauri/Cargo.toml --output-file RUST_THIRD_PARTY_LICENSES.html about.hbs && node scripts/normalize-text-file.mjs RUST_THIRD_PARTY_LICENSES.html",
     "icons": "node scripts/generate-icons.mjs",
-    "test:cache": "node --experimental-strip-types --test tests/*.test.ts"
+    "test:cache": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:browser": "node scripts/check-vpack-browser.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -48,6 +49,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
     "axe-core": "^4.13.0",
+    "playwright": "1.62.1",
     "prettier": "^3.9.6",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"

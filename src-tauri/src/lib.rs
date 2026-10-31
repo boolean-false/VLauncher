@@ -1,7 +1,7 @@
 mod download_retry;
 mod game_diagnostics;
 mod github_releases;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 mod linux_desktop;
 mod mainline;
 mod presence;
@@ -9,6 +9,8 @@ mod presence;
 mod presence_ipc;
 mod registry_auth;
 mod voxelworld;
+mod vpack;
+mod vpack_open;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
 #[cfg(windows)]
@@ -2211,22 +2213,28 @@ pub fn run() {
                 }
             }
         })
-        .plugin(tauri_plugin_single_instance::init(
-            |app, _arguments, _cwd| {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            },
-        ))
+        .plugin(tauri_plugin_single_instance::init(|app, arguments, cwd| {
+            vpack_open::enqueue(app, arguments.into_iter().skip(1), Path::new(&cwd));
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(presence::Presence::new())
         .manage(GameProcesses::default())
         .manage(TransferControl::default())
+        .manage(vpack_open::OpenFiles::default())
+        .manage(vpack::PreparedExports::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            vpack_open::enqueue(
+                app.handle(),
+                std::env::args().skip(1),
+                &std::env::current_dir()?,
+            );
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 window.with_webview(|webview| {
@@ -2253,6 +2261,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             reconnect_profile_source,
+            vpack_open::pending_vpack_files,
+            vpack_open::acknowledge_vpack_file,
+            vpack::prepare_vpack_export,
+            vpack::save_vpack_export,
+            vpack::discard_vpack_export,
+            vpack::inspect_vpack,
+            vpack::import_vpack,
             mainline::mainline_status,
             mainline::set_mainline_enabled,
             mainline::list_mainline_builds,
@@ -2338,6 +2353,24 @@ pub fn run() {
             apply_remote_install_plan,
             rollback_profile
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(&event, tauri::RunEvent::Exit) {
+                vpack::cleanup_exports(app);
+            }
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                vpack_open::enqueue(
+                    app,
+                    urls.into_iter()
+                        .filter(|url| url.scheme() == "file")
+                        .map(|url| url.to_string()),
+                    &cwd,
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

@@ -1,4 +1,9 @@
 import { profileStatus, type LaunchPhase } from "./profileStatus";
+import {
+  VpackExport,
+  VpackImport,
+  type VpackPreview,
+} from "./components/Vpack";
 import { GameFailureDetails } from "./components/GameFailureDetails";
 import { UpdateReleaseNotes } from "./components/UpdateReleaseNotes";
 import { useContentUpdates } from "./useContentUpdates";
@@ -212,6 +217,25 @@ export default function App() {
       void subscription.then((unlisten) => unlisten());
     };
   }, []);
+  useEffect(() => {
+    const subscription = listen<string>("vpack-stage", ({ payload }) => {
+      setTasks((items) =>
+        items.map((item) =>
+          item.status === "working"
+            ? {
+                ...item,
+                detail: payload,
+                total: undefined,
+                completed: undefined,
+              }
+            : item,
+        ),
+      );
+    });
+    return () => {
+      void subscription.then((fn) => fn());
+    };
+  }, []);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [showGameFailure, setShowGameFailure] = useState(false);
@@ -228,6 +252,16 @@ export default function App() {
     target: string;
     channels: string[];
   } | null>(null);
+  const [vpackImport, setVpackImport] = useState<{
+    path: string;
+    preview: VpackPreview;
+  } | null>(null);
+  const [vpackOpenError, setVpackOpenError] = useState("");
+  const [vpackRequests, setVpackRequests] = useState<
+    { id: string; path: string }[]
+  >([]);
+  const openingVpack = useRef(false);
+  const handledVpacks = useRef(new Set<string>());
   const [profileHealth, setProfileHealth] = useState<{
     profile: LocalProfile;
     issues: {
@@ -996,9 +1030,20 @@ export default function App() {
     void run("Создание профиля из файла", async (stage) => {
       const path = await open({
         multiple: false,
-        filters: [{ name: "Профиль VLauncher", extensions: ["json"] }],
+        filters: [
+          {
+            name: "Сборка или профиль VLauncher",
+            extensions: ["vpack", "json"],
+          },
+        ],
       });
       if (!path) return;
+      if (path.toLowerCase().endsWith(".vpack")) {
+        stage("Читаем описание сборки…");
+        const preview = await invoke<VpackPreview>("inspect_vpack", { path });
+        setVpackImport({ path, preview });
+        return;
+      }
       const definition = await invoke<{
         main_build?: MainBuild | null;
         name: string;
@@ -1072,6 +1117,71 @@ export default function App() {
         setScreen("library");
       }
     });
+
+  useEffect(() => {
+    let active = true;
+    let sequence = 0;
+    const read = () => {
+      const current = ++sequence;
+      void invoke<{ id: string; path: string }[]>("pending_vpack_files")
+        .then((requests) => {
+          if (active && current === sequence)
+            setVpackRequests(
+              (requests ?? []).filter(
+                (request) => !handledVpacks.current.has(request.id),
+              ),
+            );
+        })
+        .catch(() => {});
+    };
+    const subscription = listen("vpack-open-requested", read);
+    void subscription.then(read);
+    return () => {
+      active = false;
+      void subscription.then((fn) => fn());
+    };
+  }, []);
+  useEffect(() => {
+    if (!vpackRequests.length) return;
+    const next = vpackRequests[0];
+    const process = () => {
+      if (
+        busy ||
+        loading ||
+        taskLock.current ||
+        openingVpack.current ||
+        handledVpacks.current.has(next.id) ||
+        document.querySelector("dialog[open]")
+      )
+        return;
+      openingVpack.current = true;
+      void run("Открытие сборки", async (stage) => {
+        setVpackOpenError("");
+        stage("Читаем описание сборки…");
+        try {
+          const preview = await invoke<VpackPreview>("inspect_vpack", {
+            path: next.path,
+          });
+          setVpackImport({ path: next.path, preview });
+          setScreen("library");
+        } catch (reason) {
+          setVpackOpenError(friendlyError(reason));
+          throw reason;
+        } finally {
+          handledVpacks.current.add(next.id);
+          setVpackRequests((items) =>
+            items.filter((item) => item.id !== next.id),
+          );
+          await invoke("acknowledge_vpack_file", { id: next.id });
+        }
+      }).finally(() => {
+        openingVpack.current = false;
+      });
+    };
+    process();
+    const interval = window.setInterval(process, 400);
+    return () => window.clearInterval(interval);
+  }, [vpackRequests, busy, loading, run]);
 
   return (
     <VoxelCoreVersionProvider
@@ -1253,6 +1363,13 @@ export default function App() {
                 </div>
               </div>
             )}
+            {vpackOpenError && (
+              <ErrorNotice>
+                <strong>Не удалось открыть сборку</strong>
+                <p>{vpackOpenError}</p>
+                <button onClick={() => setVpackOpenError("")}>Закрыть</button>
+              </ErrorNotice>
+            )}
             {loadError && (
               <ErrorNotice retry={() => void load()}>
                 <strong>Не удалось прочитать библиотеку</strong>
@@ -1295,11 +1412,11 @@ export default function App() {
                     </div>
                     <button
                       disabled={busy || !!loadError}
-                      title="Создать профиль из файла с версией VoxelCore и списком пакетов"
+                      title="Импортировать сборку vpack или описание профиля"
                       onClick={importProfile}
                     >
                       <Icon name="download" size={16} />
-                      Создать из файла
+                      Импортировать
                     </button>
                     <button
                       disabled={busy || !!loadError}
@@ -2385,6 +2502,26 @@ export default function App() {
                 notes.target,
                 notes.channels,
               );
+            }}
+          />
+        )}
+        {vpackImport && (
+          <VpackImport
+            key={`${vpackImport.path}:${vpackImport.preview.archive_sha256}`}
+            {...vpackImport}
+            busy={busy}
+            run={run}
+            task={currentTask ?? undefined}
+            close={() => setVpackImport(null)}
+            imported={async (created) => {
+              await refresh();
+              setSelected(created.id);
+              setScreen("library");
+              setTab("content");
+            }}
+            play={(created) => {
+              setVpackImport(null);
+              launchProfile(created);
             }}
           />
         )}
@@ -3824,6 +3961,11 @@ function ProfileSettings({
           Создать копию
         </button>
       </section>
+      <VpackExport
+        profile={profile}
+        busy={busy || running.has(profile.id)}
+        run={run}
+      />
       <section className="setting-row">
         <div>
           <h3>Поделиться составом</h3>

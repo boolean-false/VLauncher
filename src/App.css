@@ -4492,6 +4492,47 @@ input[type="checkbox"]:disabled {
   }
 }
 
+.vpack-modal {
+  width: min(600px, calc(100vw - 32px));
+}
+.vpack-summary {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 20px;
+  padding: 16px 0;
+}
+.vpack-summary strong {
+  text-align: right;
+}
+.vpack-packages {
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  list-style: none;
+}
+.vpack-packages li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+}
+.vpack-packages small {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.vpack-saved-path {
+  overflow-wrap: anywhere;
+  padding: 12px 0;
+}
+.vpack-summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.vpack-packages li > span {
+  min-width: 0;
+}
 .profile-status[data-state="failed"] .status-dot,
 .profile-status[data-state="unavailable"] .status-dot {
   background: var(--warning);

@@ -47,6 +47,7 @@ pub fn clean_environment(command: &mut Command, appdir: Option<&Path>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn open_folder(path: &Path) -> Result<(), String> {
     let mut command = Command::new("/usr/bin/xdg-open");
     let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
@@ -154,13 +155,17 @@ fn install_desktop_files(data_dir: &Path, executable: &Path) -> Result<PathBuf, 
         .join("icons/hicolor/512x512/apps")
         .join(format!("{APP_ID}.png"));
     let handler_contents = format!(
-        "[Desktop Entry]\nType=Application\nName=VLauncher\nComment=VoxelCore launcher and content platform\nExec={} %u\nIcon={APP_ID}\nStartupWMClass={WINDOW_ID}\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/vlauncher;\n",
+        "[Desktop Entry]\nType=Application\nName=VLauncher\nComment=VoxelCore launcher and content platform\nExec={} %u\nIcon={APP_ID}\nStartupWMClass={WINDOW_ID}\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/vlauncher;application/x-vlauncher-vpack;\n",
         desktop_exec(executable)?
     );
+    let mime = data_dir.join("mime/packages/space.vlauncher.vpack.xml");
+    write_atomic(&mime, br#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info"><mime-type type="application/x-vlauncher-vpack"><comment>VLauncher Pack</comment><sub-class-of type="application/zip"/><glob pattern="*.vpack"/></mime-type></mime-info>
+"#)?;
     write_atomic(&desktop, handler_contents.as_bytes())?;
     write_atomic(&icon, ICON)?;
     let launcher_contents = format!(
-        "[Desktop Entry]\nType=Application\nName=VLauncher\nComment=VoxelCore launcher and content platform\nExec={}\nIcon={}\nStartupWMClass={WINDOW_ID}\nTerminal=false\nCategories=Game;\n",
+        "[Desktop Entry]\nType=Application\nName=VLauncher\nComment=VoxelCore launcher and content platform\nExec={} %u\nMimeType=application/x-vlauncher-vpack;\nIcon={}\nStartupWMClass={WINDOW_ID}\nTerminal=false\nCategories=Game;\n",
         desktop_exec(executable)?,
         icon.display()
     );
@@ -177,6 +182,7 @@ fn install_desktop_files(data_dir: &Path, executable: &Path) -> Result<PathBuf, 
     Ok(desktop)
 }
 
+#[cfg(target_os = "linux")]
 pub fn register_desktop_integration(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     let data_dir = app.path().data_dir().map_err(|error| error.to_string())?;
@@ -189,6 +195,15 @@ pub fn register_desktop_integration(app: &tauri::AppHandle) -> Result<(), String
     let desktop = install_desktop_files(&data_dir, &executable)?;
     let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
 
+    let mut mime_database = Command::new("update-mime-database");
+    clean_environment(&mut mime_database, appdir.as_deref());
+    let status = mime_database
+        .arg(data_dir.join("mime"))
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err(format!("update-mime-database завершился с {status}"));
+    }
     let mut database = Command::new("update-desktop-database");
     clean_environment(&mut database, appdir.as_deref());
     let status = database
@@ -208,6 +223,19 @@ pub fn register_desktop_integration(app: &tauri::AppHandle) -> Result<(), String
         .arg("x-scheme-handler/vlauncher")
         .status()
         .map_err(|error| format!("Не удалось зарегистрировать ссылки VLauncher: {error}"))?;
+    if !status.success() {
+        return Err(format!("xdg-mime завершился с {status}"));
+    }
+    let mut vpack_mime = Command::new("xdg-mime");
+    clean_environment(&mut vpack_mime, appdir.as_deref());
+    let status = vpack_mime
+        .args([
+            std::ffi::OsStr::new("default"),
+            file_name,
+            std::ffi::OsStr::new("application/x-vlauncher-vpack"),
+        ])
+        .status()
+        .map_err(|e| e.to_string())?;
     if !status.success() {
         return Err(format!("xdg-mime завершился с {status}"));
     }
@@ -332,7 +360,16 @@ mod tests {
                 .display()
         )));
         assert!(!alias.contains("NoDisplay="));
-        assert!(!alias.contains("MimeType="));
+        assert!(alias.contains("MimeType=application/x-vlauncher-vpack;\n"));
+        assert!(alias.contains(" %u\n"));
+        let mime = fs::read_to_string(
+            directory
+                .path()
+                .join("mime/packages/space.vlauncher.vpack.xml"),
+        )
+        .unwrap();
+        assert!(mime.contains("application/x-vlauncher-vpack"));
+        assert!(mime.contains("*.vpack"));
         #[cfg(unix)]
         assert_eq!(
             fs::metadata(applications.join("space.vlauncher.desktop"))
