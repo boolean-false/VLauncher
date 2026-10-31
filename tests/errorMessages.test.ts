@@ -25,3 +25,11 @@ test("HTTP errors get actionable messages without matching version numbers", () 
     "bad package 503",
   );
 });
+
+test("GitHub release errors retain the server message instead of a download error", () => {
+  const error = Object.assign(
+    new Error("GitHub не выполнил операцию с выпуском (422)"),
+    { status: 502, code: "github_release_failed" },
+  );
+  assert.equal(friendlyError(error), error.message);
+});

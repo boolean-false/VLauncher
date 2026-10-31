@@ -244,6 +244,8 @@ export const friendlyError = (value: unknown) => {
   }
   if (structured?.code === "package_conflict")
     return "Выбранные паки несовместимы друг с другом. Проверьте зависимости в карточках проектов и удалите конфликтующий пак либо выберите другие версии. Подробности доступны в журнале операций.";
+  if (structured?.code?.startsWith("github_") && value instanceof Error)
+    return value.message;
   const status =
     structured?.status?.toString() ??
     text.match(
