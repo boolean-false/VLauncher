@@ -6,6 +6,8 @@ mod materialization;
 use materialization::GameChanges;
 #[path = "profile_health.rs"]
 mod health;
+#[path = "project_worlds.rs"]
+mod project_worlds;
 pub use health::ProfileIssue;
 
 #[path = "profile_settings.rs"]
@@ -3234,6 +3236,7 @@ impl ProfileStore {
         {
             let mut changes = GameChanges::default();
             let result = (|| {
+                self.install_project_worlds(profile_id, revision, &game, &mut changes)?;
                 repair_published_world_players(&game, &mut changes)?;
                 commit()?;
                 Ok(game)
@@ -3267,6 +3270,7 @@ impl ProfileStore {
         if game.join("content").is_dir() && (same_packages || no_managed_data) {
             let mut changes = GameChanges::default();
             let result = (|| {
+                self.install_project_worlds(profile_id, revision, &game, &mut changes)?;
                 repair_published_world_players(&game, &mut changes)?;
                 changes.write(&marker, revision.as_bytes())?;
                 commit()?;
@@ -3427,6 +3431,7 @@ impl ProfileStore {
                     changes.replace(&staged_config, &config)?;
                 }
             }
+            self.install_project_worlds(profile_id, revision, &game, &mut changes)?;
             repair_published_world_players(&game, &mut changes)?;
             changes.write(&marker, revision.as_bytes())?;
             commit()?;

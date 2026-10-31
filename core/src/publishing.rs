@@ -912,6 +912,7 @@ mod tests {
         let source = temp.path().join("project");
         fs::create_dir_all(source.join("modules")).unwrap();
         fs::create_dir_all(source.join("user/worlds")).unwrap();
+        fs::create_dir_all(source.join("worlds/level_01/regions")).unwrap();
         fs::write(
             source.join("project.toml"),
             "name = \"demo-project\"\ntitle = \"Demo\"\npermissions = [\"network\"]\n",
@@ -919,6 +920,12 @@ mod tests {
         .unwrap();
         fs::write(source.join("modules/main.lua"), "print('hello')").unwrap();
         fs::write(source.join("user/worlds/private.dat"), "private").unwrap();
+        fs::write(source.join("worlds/level_01/world.json"), "{}").unwrap();
+        fs::write(
+            source.join("worlds/level_01/regions/0_0.bin"),
+            b"level data",
+        )
+        .unwrap();
         let artifact =
             prepare_project(&source, temp.path().join("out"), "1.2", "Tester", "MIT").unwrap();
         assert_eq!(artifact.manifest.kind, PackageKind::Project);
@@ -927,6 +934,13 @@ mod tests {
         let mut zip = ZipArchive::new(archive).unwrap();
         assert!(zip.by_name("project.toml").is_ok());
         assert!(zip.by_name("modules/main.lua").is_ok());
+        assert!(zip.by_name("worlds/level_01/world.json").is_ok());
+        let mut level = Vec::new();
+        zip.by_name("worlds/level_01/regions/0_0.bin")
+            .unwrap()
+            .read_to_end(&mut level)
+            .unwrap();
+        assert_eq!(level, b"level data");
         assert!(zip.by_name("user/worlds/private.dat").is_err());
     }
     fn upload_fixture(temp: &Path) -> PreparedArtifact {
