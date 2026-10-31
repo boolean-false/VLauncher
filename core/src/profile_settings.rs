@@ -15,7 +15,7 @@ struct Backup {
     files: Vec<(String, bool)>,
 }
 
-fn read_settings_file(path: &Path) -> Result<Option<Vec<u8>>, PackageProblem> {
+pub(super) fn read_settings_file(path: &Path) -> Result<Option<Vec<u8>>, PackageProblem> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

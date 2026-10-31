@@ -1,3 +1,6 @@
+#[path = "vpack.rs"]
+mod vpack;
+pub use vpack::{VpackManifest, VpackPreview};
 #[path = "materialization.rs"]
 mod materialization;
 use materialization::GameChanges;
@@ -3930,7 +3933,27 @@ fn extract_archive<R: Read + Seek>(reader: R, destination: &Path) -> Result<(), 
             }
             let mut target =
                 fs::File::create(&output).map_err(|source| io_error(&output, source))?;
-            std::io::copy(&mut file, &mut target).map_err(|source| io_error(&output, source))?;
+            let expected = file.size();
+            let executable = file.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+            let copied = std::io::copy(
+                &mut file.by_ref().take(expected.saturating_add(1)),
+                &mut target,
+            )
+            .map_err(|source| io_error(&output, source))?;
+            if copied != expected {
+                return invalid("archive entry size differs from its metadata");
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(
+                    &output,
+                    fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
+                )
+                .map_err(|source| io_error(&output, source))?;
+            }
+            #[cfg(not(unix))]
+            let _ = executable;
         }
     }
     Ok(())
